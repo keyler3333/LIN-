@@ -16,7 +16,7 @@ ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 OBFUSCATOR_PATTERNS = {
     'luraph': [
@@ -645,8 +645,8 @@ async def constants_cmd(ctx):
         out += f'-- XOR key: {consts["xor_key"]}\n'
     await ctx.send(file=discord.File(fp=io.StringIO(out), filename='constants.lua'))
 
-@bot.command(name='help')
-async def help_cmd(ctx):
+@bot.command(name='info')
+async def info_cmd(ctx):
     embed = discord.Embed(title='Lua Deobfuscator', color=0x3498db)
     embed.add_field(
         name='Commands',

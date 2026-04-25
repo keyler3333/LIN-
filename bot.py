@@ -80,6 +80,26 @@ OBFUSCATOR_PATTERNS = {
         r'ProtectedString',
         r'ByteCode\s*=',
     ],
+    'xen': [
+        r'Xen\s*=\s*',
+        r'Bytecode',
+    ],
+    'sentinel': [
+        r'Sentinel\s*=\s*',
+        r'V3',
+    ],
+    'aurora': [
+        r'__aurora\s*=\s*',
+        r'Aurora\s*=\s*',
+    ],
+    'obfuscated': [
+        r'local\s+\w+\s*=\s*loadstring',
+        r'string\.char\s*\(',
+        r'\\x[0-9a-fA-F]{2}',
+    ],
+    'sk8r': [
+        r'sk8r\s*=\s*',
+    ],
 }
 
 def detect_obfuscator(text):
@@ -500,7 +520,7 @@ def run_sandboxed(source: str, timeout: int = 6) -> tuple:
         return result.get('captured', []), result.get('error')
     return [], 'No response from sandbox'
 
-def run_multilayer(source: str, max_passes: int = 6, timeout: int = 6) -> tuple:
+def run_multilayer(source: str, max_passes: int = 8, timeout: int = 6) -> tuple:
     current = source
     layers = 0
     previews = []
@@ -613,7 +633,7 @@ async def deobf(ctx, flags: str = ''):
     await msg.edit(embed=embed)
 
     final_code, layers, previews = await asyncio.to_thread(
-        run_multilayer, text, 6, 6
+        run_multilayer, text, 8, 6
     )
 
     if layers > 0:
@@ -639,7 +659,7 @@ async def deobf(ctx, flags: str = ''):
         embed.add_field(
             name='What this means',
             value=(
-                'This script likely uses a custom VM (e.g. Luraph 3, IronBrew 2/3). '
+                'This script likely uses a custom VM. '
                 'VM-protected scripts compile Lua into a private instruction set. '
                 'The static-cleaned version is attached with string decoding and constant folding applied.'
             ),
@@ -701,7 +721,7 @@ async def info_cmd(ctx):
         value=(
             'WeareDevs, basic Luraph, IronBrew 1: sandbox intercept\n'
             'String encoding (\\x41, string.char, base64)\n'
-            'Nested loadstring layers (up to 6 deep)\n'
+            'Nested loadstring layers (up to 8 deep)\n'
             'Bytecode constants (survives most obfuscation)\n'
             'IronBrew 2/3, modern Luraph: partial (static only)\n'
             'Full custom VM: not reversible automatically'

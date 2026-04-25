@@ -1,5 +1,4 @@
-[services.bot]
-  root = "bot/"
-
-[services.backend]
-  root = "backend/"
+[build]
+  [build.services]
+    backend = "backend/"
+    bot = "bot/"

@@ -8,6 +8,8 @@ import base64
 import subprocess
 import tempfile
 import httpx
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from discord.ext import commands
 from lupa import LuaRuntime
 
@@ -19,7 +21,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# ---------- detection ----------
 OBFUSCATOR_PATTERNS = {
     'luraph':     [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
     'moonsec':    [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
@@ -44,7 +45,6 @@ def detect_obfuscator(text):
             scores[name] = s
     return max(scores, key=lambda k: scores[k]) if scores else 'generic'
 
-# ---------- static decode ----------
 def static_clean(code):
     code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
     code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
@@ -74,7 +74,6 @@ def beautify(code):
             indent += 1
     return '\n'.join(out)
 
-# ---------- bytecode constants ----------
 class BytecodeParser:
     def __init__(self, data):
         self.data = data
@@ -143,7 +142,6 @@ def extract_constants(source):
                 if p.parse(): return {'strings': p.strings, 'numbers': p.numbers, 'xor_key': key}
     return None
 
-# ---------- Lupa sandbox ----------
 LUA_SANDBOX = """
 game             = setmetatable({}, {__index=function() return function() end end})
 workspace        = game
@@ -249,7 +247,6 @@ def sandbox_lupa(source, timeout=6):
         pass
     return captured
 
-# ---------- real Lua subprocess hook ----------
 REAL_LUA_HOOK = """
 local __captured = {}
 local __outdir   = {OUTDIR}
@@ -356,7 +353,6 @@ def sandbox_real_lua(source, timeout=8):
             i += 1
     return captured, None
 
-# ---------- AI post‑processing ----------
 async def ai_clean(code):
     if not ANTHROPIC_KEY:
         return code
@@ -389,13 +385,11 @@ async def ai_clean(code):
     except:
         return code
 
-# ---------- main deobfuscation pipeline ----------
 def deobfuscate_engine(source):
     obf_type = detect_obfuscator(source)
     cleaned = static_clean(source)
     layers = 0
     final = cleaned
-    # Lupa sandbox
     captured = sandbox_lupa(cleaned)
     if captured:
         best = max(captured, key=len)
@@ -408,7 +402,6 @@ def deobfuscate_engine(source):
                 if best2 != final and len(best2.strip()) > 10:
                     final = best2
                     layers += 1
-    # if no layers, try real Lua subprocess
     if layers == 0:
         real_captured, err = sandbox_real_lua(cleaned)
         if real_captured:
@@ -421,7 +414,6 @@ def deobfuscate_engine(source):
     constants = extract_constants(source)
     return final, obf_type, layers, constants
 
-# ---------- Discord commands ----------
 @bot.command(name='deobf')
 async def deobf(ctx, flags: str = ''):
     if not ctx.message.attachments:
@@ -465,9 +457,23 @@ async def info_cmd(ctx):
     em.add_field(name='Coverage', value='Luraph, Moonsec, Ironbrew, WeAreDevs, Prometheus, custom VMs, and more.', inline=False)
     await ctx.send(embed=em)
 
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
+    def log_message(self, format, *args):
+        return
+
+def start_http():
+    port = int(os.environ.get('PORT', 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    server.serve_forever()
+
 @bot.event
 async def on_ready():
     print(f'Bot online as {bot.user}')
 
 if __name__ == '__main__':
+    threading.Thread(target=start_http, daemon=True).start()
     bot.run(TOKEN)

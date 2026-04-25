@@ -227,7 +227,8 @@ def _fold_match(m):
         ops = {'+': a+b, '-': a-b, '*': a*b,
                '/': a/b if b else None, '%': a%b if b else None}
         r = ops.get(op)
-        if r is None: return m.group(0)
+        if r is None:
+            return m.group(0)
         return str(int(r)) if r == int(r) else str(r)
     except:
         return m.group(0)
@@ -303,8 +304,6 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
         from lupa import LuaRuntime
         captured = []
 
-        lua = LuaRuntime(unpack_returned_tuples=True)
-
         def safe_loadstring(code, *args):
             if callable(code):
                 chunks = []
@@ -317,6 +316,8 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             if code and len(str(code).strip()) > 5:
                 captured.append(str(code))
             return lua.eval("function(...) end")
+
+        lua = LuaRuntime(unpack_returned_tuples=True)
 
         for name in ['io','os','require','dofile','loadfile','debug','package',
                      'collectgarbage','newproxy','module']:
@@ -335,31 +336,6 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             Players       = {LocalPlayer = {Name="Player", UserId=1}}
             RunService    = {Heartbeat={Connect=function() end}}
             UserInputService = {}
-            
-            _G            = {}
-            _ENV          = {}
-
-            local _env = {
-                string=string, math=math, table=table, bit=bit,
-                pairs=pairs, ipairs=ipairs, select=select, next=next,
-                tostring=tostring, tonumber=tonumber, type=type,
-                rawget=rawget, rawset=rawset, rawlen=rawlen,
-                setmetatable=setmetatable, getmetatable=getmetatable,
-                unpack=table.unpack or unpack,
-                loadstring=loadstring, load=load,
-                pcall=pcall, xpcall=xpcall, error=error, assert=assert,
-                print=print, warn=warn,
-                game=game, workspace=workspace, script=script,
-                _G=_G, shared=shared, coroutine=coroutine
-            }
-            getfenv = function(n) return _env end
-            setfenv = function(n, t)
-                for k,v in pairs(t) do _env[k]=v end
-                return t
-            end
-            _G = _env
-            _ENV = _env
-
             tick          = function() return 0 end
             time          = function() return 0 end
             wait          = function(n) return n or 0 end
@@ -370,8 +346,6 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             error         = function(e) end
             assert        = function(v, m) if not v then error(m or 'assertion failed') end return v end
 
-            shared        = {}
-
             HttpService   = {JSONDecode=function(s) return {} end, JSONEncode=function(t) return "{}" end}
             TweenService  = {}
             CFrame        = {new=function() return {} end}
@@ -380,17 +354,16 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             UDim2         = {new=function() return {} end}
             Instance      = {new=function(n) return setmetatable({},{__index=function() return function() end end}) end}
 
-            bit = bit or {}
-            bit.bxor = bit.bxor or function(a,b)
+            bit = {}
+            bit.bxor = function(a,b)
                 local result, place = 0, 1
                 while a > 0 or b > 0 do
-                    local ra = a % 2; local rb = b % 2
-                    if ra ~= rb then result = result + place end
+                    if a % 2 ~= b % 2 then result = result + place end
                     a = math.floor(a/2); b = math.floor(b/2); place = place*2
                 end
                 return result
             end
-            bit.band = bit.band or function(a,b)
+            bit.band = function(a,b)
                 local result, place = 0, 1
                 while a > 0 and b > 0 do
                     if a % 2 == 1 and b % 2 == 1 then result = result + place end
@@ -398,7 +371,7 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
                 end
                 return result
             end
-            bit.bor = bit.bor or function(a,b)
+            bit.bor = function(a,b)
                 local result, place = 0, 1
                 while a > 0 or b > 0 do
                     if a % 2 == 1 or b % 2 == 1 then result = result + place end
@@ -406,11 +379,10 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
                 end
                 return result
             end
-            bit.bnot = bit.bnot or function(a) return -a - 1 end
-            bit.rshift = bit.rshift or function(a,b) return math.floor(a / (2^b)) end
-            bit.lshift = bit.lshift or function(a,b) return a * (2^b) end
-
-            bit32 = bit32 or bit
+            bit.bnot = function(a) return -a - 1 end
+            bit.rshift = function(a,b) return math.floor(a / (2^b)) end
+            bit.lshift = function(a,b) return a * (2^b) end
+            bit32 = bit
 
             string.byte   = string.byte
             string.char   = string.char
@@ -460,6 +432,7 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
                 status  = function() return "dead" end,
                 running = function() return nil end
             }
+
             Drawing       = setmetatable({}, {__index=function() return function() end end})
             debug         = {traceback=function() return "" end, getinfo=function() return {} end}
             syn           = {protect_gui=function() end, queue_on_teleport=function() end}
@@ -476,6 +449,28 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             getexecutorname  = function() return "synapse" end
             checkcaller      = function() return true end
             isrbxactive      = function() return true end
+
+            local _realenv = {
+                string=string, math=math, table=table, bit=bit,
+                pairs=pairs, ipairs=ipairs, select=select, next=next,
+                tostring=tostring, tonumber=tonumber, type=type,
+                rawget=rawget, rawset=rawset, rawlen=rawlen,
+                setmetatable=setmetatable, getmetatable=getmetatable,
+                unpack=table.unpack or unpack,
+                loadstring=loadstring, load=load,
+                pcall=pcall, xpcall=xpcall, error=error, assert=assert,
+                print=print, warn=warn,
+                game=game, workspace=workspace, script=script,
+                coroutine=coroutine, shared=shared
+            }
+            getfenv = function(n) return _realenv end
+            setfenv = function(n, t)
+                for k,v in pairs(t) do _realenv[k]=v end
+                return t
+            end
+
+            _G = _realenv
+            _ENV = _realenv
         """)
 
         try:
@@ -499,7 +494,7 @@ def run_sandboxed(source: str, timeout: int = 6) -> tuple:
     if p.is_alive():
         p.kill()
         p.join()
-        return [], 'Timeout — script may be an infinite loop or VM-protected'
+        return [], 'Timeout'
     if not q.empty():
         result = q.get()
         return result.get('captured', []), result.get('error')
@@ -531,8 +526,7 @@ async def ai_explain(code: str) -> str:
         "You are a Lua reverse engineer. The following is deobfuscated Lua code. "
         "Rename meaningless variable names (like _0x1a, l_0_0, _A, R1 etc) to descriptive names "
         "based on what the code actually does. Add short comments explaining each section. "
-        "Preserve all logic exactly — only improve readability. "
-        "Return only the improved Lua code, no markdown fences.\n\n"
+        "Preserve all logic exactly. Return only the improved Lua code, no markdown fences.\n\n"
         + snippet
     )
     try:
@@ -588,7 +582,7 @@ async def deobf(ctx, flags: str = ''):
     obf_type = detect_obfuscator(text)
 
     embed = discord.Embed(
-        title=f'🔍 Detected: `{obf_type}`',
+        title=f'Detected: {obf_type}',
         color=0x3498db
     )
     embed.add_field(name='File', value=attachment.filename, inline=True)
@@ -599,23 +593,23 @@ async def deobf(ctx, flags: str = ''):
     if constants:
         str_preview = ', '.join(repr(s) for s in constants['strings'][:12])
         embed.add_field(
-            name='📦 Bytecode constants found',
-            value=f"**Strings:** {str_preview or 'none'}\n"
-                  f"**XOR key:** {constants.get('xor_key', 'none')}",
+            name='Bytecode constants found',
+            value=f"Strings: {str_preview or 'none'}\n"
+                  f"XOR key: {constants.get('xor_key', 'none')}",
             inline=False
         )
         await msg.edit(embed=embed)
 
     if scan_only:
-        embed.title = f'✅ Scan complete: `{obf_type}`'
+        embed.title = f'Scan complete: {obf_type}'
         embed.color = 0x2ecc71
         await msg.edit(embed=embed)
         return
 
-    embed.description = '⚙️ Running static transforms...'
+    embed.description = 'Running static transforms...'
     await msg.edit(embed=embed)
 
-    embed.description = '🏗️ Sandboxing and intercepting loadstring...'
+    embed.description = 'Sandboxing and intercepting loadstring...'
     await msg.edit(embed=embed)
 
     final_code, layers, previews = await asyncio.to_thread(
@@ -627,15 +621,15 @@ async def deobf(ctx, flags: str = ''):
         final_code = beautify_lua(final_code)
 
         embed.description = (
-            f'✅ {layers} layer(s) peeled via loadstring intercept.\n'
+            f'{layers} layer(s) peeled via loadstring intercept.\n'
         )
         if previews:
-            preview_text = '\n'.join(f'`Layer {i+1}:` {p}...' for i, p in enumerate(previews))
+            preview_text = '\n'.join(f'Layer {i+1}: {p}...' for i, p in enumerate(previews))
             embed.add_field(name='Layer previews', value=preview_text[:900], inline=False)
         embed.color = 0x2ecc71
 
     else:
-        embed.description = '⚠️ Sandbox captured nothing (VM-protected or crashed).\nRunning static transforms only...'
+        embed.description = 'Sandbox captured nothing (VM-protected or crashed). Running static transforms only...'
         embed.color = 0xe67e22
         await msg.edit(embed=embed)
 
@@ -643,31 +637,29 @@ async def deobf(ctx, flags: str = ''):
         final_code = beautify_lua(final_code)
 
         embed.add_field(
-            name='ℹ️ What this means',
+            name='What this means',
             value=(
-                'This script likely uses a **custom VM** (e.g. Luraph 3, IronBrew 2/3, LEXØ).\n'
-                'VM-protected scripts compile Lua into a private instruction set — '
-                'no tool can fully reverse this automatically.\n'
-                'The static-cleaned version is attached — string decoding and constant '
-                'folding were applied.'
+                'This script likely uses a custom VM (e.g. Luraph 3, IronBrew 2/3). '
+                'VM-protected scripts compile Lua into a private instruction set. '
+                'The static-cleaned version is attached with string decoding and constant folding applied.'
             ),
             inline=False
         )
 
     if use_ai and ANTHROPIC_KEY:
-        embed.description += '\n🤖 Running AI rename pass...'
+        embed.description += '\nRunning AI rename pass...'
         await msg.edit(embed=embed)
         final_code = await ai_explain(final_code)
         embed.add_field(name='AI', value='Variables renamed + comments added', inline=True)
     elif use_ai and not ANTHROPIC_KEY:
-        embed.add_field(name='AI', value='⚠️ No ANTHROPIC_API_KEY set', inline=True)
+        embed.add_field(name='AI', value='No ANTHROPIC_API_KEY set', inline=True)
 
     await msg.edit(embed=embed)
 
     out_name = f'deobf_{attachment.filename}'
     file = discord.File(fp=io.StringIO(final_code), filename=out_name)
     await ctx.send(
-        f'**Result** — {layers} sandbox layer(s) | {len(final_code):,} chars',
+        f'Result: {layers} sandbox layer(s) | {len(final_code):,} chars',
         file=file
     )
 
@@ -679,7 +671,7 @@ async def constants_cmd(ctx):
     text  = raw.decode('latin-1', errors='replace')
     consts = extract_bytecode_constants(text)
     if not consts:
-        return await ctx.send('No Lua 5.1 bytecode found (or XOR key not in 0-255 range).')
+        return await ctx.send('No Lua 5.1 bytecode found.')
     out = '-- Extracted constants\n'
     out += '-- Strings:\n'
     for s in consts['strings']:
@@ -698,21 +690,21 @@ async def info_cmd(ctx):
         name='Commands',
         value=(
             '`!deobf` — Deobfuscate attached `.lua` file\n'
-            '`!deobf --ai` — Same + AI renames variables and adds comments\n'
-            '`!deobf --scan` — Detect obfuscator + dump constants (no execution)\n'
-            '`!constants` — Dump raw string/number constants from bytecode'
+            '`!deobf --ai` — AI renames variables and adds comments\n'
+            '`!deobf --scan` — Detect obfuscator + dump constants\n'
+            '`!constants` — Dump string/number constants from bytecode'
         ),
         inline=False
     )
     embed.add_field(
         name='What it can reverse',
         value=(
-            '✅ WeareDevs, basic Luraph, IronBrew 1 — via sandbox intercept\n'
-            '✅ String encoding (`\\x41`, `string.char`, base64)\n'
-            '✅ Nested `loadstring` layers (up to 6 deep)\n'
-            '✅ Bytecode constants (survives most obfuscation)\n'
-            '⚠️ IronBrew 2/3, modern Luraph — partial (static only)\n'
-            '❌ Full custom VM (LEXØ etc.) — not reversible automatically'
+            'WeareDevs, basic Luraph, IronBrew 1: sandbox intercept\n'
+            'String encoding (\\x41, string.char, base64)\n'
+            'Nested loadstring layers (up to 6 deep)\n'
+            'Bytecode constants (survives most obfuscation)\n'
+            'IronBrew 2/3, modern Luraph: partial (static only)\n'
+            'Full custom VM: not reversible automatically'
         ),
         inline=False
     )

@@ -12,21 +12,25 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-BLOCKED_GLOBALS = ['io', 'os', 'require', 'dofile', 'loadfile', 'debug', 'package', 'rawget', 'rawset', 'rawequal', 'rawlen', 'collectgarbage', 'module', 'newproxy']
+BLOCKED_GLOBALS = [
+    'io', 'os', 'require', 'dofile', 'loadfile', 'debug', 'package',
+    'rawget', 'rawset', 'rawequal', 'rawlen', 'collectgarbage', 'module',
+    'newproxy'
+]
 
 OBFUSCATOR_PATTERNS = {
-    'luraph': [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
-    'moonsec': [r'local\s+\w+\s*=\s*\{[\d\s,]+\}', r'_moon\s*=\s*function'],
-    'ironbrew': [r'local\s+\w+\s*=\s*\{\s*"\\x', r'getfenv\s*\(\)'],
-    'wearedevs': [r'show_\w+\s*=\s*function', r'getfenv\s*\(\)'],
-    'custom_vm': [r'mkexec', r'constTags', r'protoFormats'],
-    'synapse': [r'syn\.', r'Bytecode'],
-    'aurora': [r'__aurora', r'Aurora\s*='],
-    'sentinel': [r'Sentinel\s*=', r'V3'],
-    'psu': [r'ProtectedString', r'ByteCode'],
-    'xen': [r'Xen\s*=', r'Bytecode'],
-    'luaarmor': [r'armor\s*=', r'___armor_'],
-    'vmprotect': [r'local\s+f\s*=\s*loadstring'],
+    'luraph':       [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
+    'moonsec':      [r'local\s+\w+\s*=\s*\{[\d\s,]+\}', r'_moon\s*=\s*function'],
+    'ironbrew':     [r'local\s+\w+\s*=\s*\{\s*"\\x', r'getfenv\s*\(\)'],
+    'wearedevs':    [r'show_\w+\s*=\s*function', r'getfenv\s*\(\)'],
+    'custom_vm':    [r'mkexec', r'constTags', r'protoFormats'],
+    'synapse':      [r'syn\.', r'Bytecode'],
+    'aurora':       [r'__aurora', r'Aurora\s*='],
+    'sentinel':     [r'Sentinel\s*=', r'V3'],
+    'psu':          [r'ProtectedString', r'ByteCode'],
+    'xen':          [r'Xen\s*=', r'Bytecode'],
+    'luaarmor':     [r'armor\s*=', r'___armor_'],
+    'vmprotect':    [r'local\s+f\s*=\s*loadstring'],
 }
 
 def detect_obfuscator(text):
@@ -117,17 +121,15 @@ def beautify_lua(code):
         if not stripped:
             out.append('')
             continue
-        if stripped.startswith('end') or stripped.startswith('else') or stripped.startswith('elseif') or stripped.startswith('until'):
+        if stripped.startswith(('end', 'else', 'elseif', 'until')):
             indent = max(0, indent - 1)
         out.append('    ' * indent + stripped)
-        if stripped.startswith('if ') or stripped.startswith('for ') or stripped.startswith('while ') or stripped.startswith('repeat'):
+        if stripped.startswith(('if ', 'for ', 'while ', 'repeat')):
             indent += 1
-        if stripped.startswith('function ') or stripped.startswith('local function '):
+        if stripped.startswith(('function ', 'local function ')):
             indent += 1
         if stripped == 'do':
             indent += 1
-        if stripped.endswith('then') and not stripped.startswith('if '):
-            pass
     return '\n'.join(out)
 
 def deobfuscate_static(text):
@@ -135,11 +137,13 @@ def deobfuscate_static(text):
     code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
     code = re.sub(r'\\u\{([0-9a-fA-F]+)\}', lambda m: chr(int(m.group(1), 16)), code)
     code = re.sub(r'\\(\\d{1,3})', lambda m: chr(int(m.group(1))), code)
+
     def char_decode(m):
-        nums = re.findall(r'\\d+', m.group(1))
+        nums = re.findall(r'\d+', m.group(1))
         chars = ''.join([chr(int(n)) for n in nums if int(n) < 256])
         return '"' + chars + '"'
     code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', char_decode, code)
+
     for _ in range(10):
         match = re.search(r'loadstring\s*\(\s*["\'](.*?)["\']\s*\)\s*\(?\s*\)?', code, re.DOTALL)
         if not match:
@@ -171,19 +175,19 @@ async def deobf(ctx):
             return await ctx.send('File encoding not supported.')
 
     obf_type = detect_obfuscator(text)
-    embed = discord.Embed(title="🔍 Static pass: decoding strings...", color=0x3498db)
+    embed = discord.Embed(title="Static pass: decoding strings...", color=0x3498db)
     msg = await ctx.send(embed=embed)
     await asyncio.sleep(0.5)
 
     text = deobfuscate_static(text)
-    embed.title = "⏳ Sandbox: intercepting loadstring..."
+    embed.title = "Sandbox: intercepting loadstring..."
     embed.color = 0xf39c12
     await msg.edit(embed=embed)
     await asyncio.sleep(0.5)
 
     result = await asyncio.to_thread(run_sandboxed, text, 6)
     if result:
-        embed.title = "⏳ Deeper sandbox pass..."
+        embed.title = "Deeper sandbox pass..."
         await msg.edit(embed=embed)
         await asyncio.sleep(0.5)
         deeper = await asyncio.to_thread(run_sandboxed, result, 4)
@@ -194,15 +198,19 @@ async def deobf(ctx):
 
     if result and len(result.strip()) > 10:
         result = beautify_lua(result)
-        embed.title = "✅ Deobfuscated successfully"
+        embed.title = "Deobfuscated successfully"
         embed.description = f"Detected: {obf_type}\nPayload captured from loadstring intercept."
         embed.color = 0x2ecc71
         await msg.edit(embed=embed)
         file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{ctx.message.attachments[0].filename}')
         await ctx.send(file=file)
     else:
-        embed.title = "❌ Could not deobfuscate"
-        embed.description = f"Detected: {obf_type}\nThe script uses a custom VM that cannot be reversed this way."
+        embed.title = "Could not deobfuscate"
+        embed.description = (
+            f"Detected: {obf_type}\n"
+            "The script likely uses a custom VM (Luraph 3, IronBrew 2/3, etc.). "
+            "These require manual reverse engineering of their instruction set."
+        )
         embed.color = 0xe74c3c
         await msg.edit(embed=embed)
 

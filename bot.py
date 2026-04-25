@@ -7,7 +7,9 @@ import struct
 from discord.ext import commands
 
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
-bot = commands.Bot(command_prefix='!', intents=discord.Intents.default())
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 SIGNATURES = {
     'custom_vm': [
@@ -785,15 +787,9 @@ async def deobf(ctx):
     obf_type = detect_obfuscator(raw)
     result = deobfuscate(text, obf_type)
     
-    header = f"Detected obfuscator: {obf_type}\n"
-    header += f"Original filename: {attachment.filename}\n"
-    header += f"Deobfuscated code:\n\n"
-    
-    full_output = header + result
-    
-    if len(full_output) > 1900:
+    if len(result) > 1900:
         file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{attachment.filename}')
-        await ctx.send(f'Detected obfuscator: **{obf_type}**\nResult is too large, sending as file:', file=file)
+        await ctx.send(f'Detected obfuscator: **{obf_type}**', file=file)
     else:
         file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{attachment.filename}')
         await ctx.send(f'Detected obfuscator: **{obf_type}**', file=file)

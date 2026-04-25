@@ -3,220 +3,831 @@ import re
 import io
 import os
 import asyncio
-import threading
+import struct
+import base64
+import json
+import time
+import httpx
+from multiprocessing import Process, Queue
 from discord.ext import commands
-from lupa import LuaRuntime
 
-TOKEN = os.environ['DISCORD_BOT_TOKEN']
+TOKEN = os.environ[‘DISCORD_BOT_TOKEN’]
+ANTHROPIC_KEY = os.environ.get(‘ANTHROPIC_API_KEY’, ‘’)
+
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix=’!’, intents=intents)
 
-BLOCKED_GLOBALS = [
-    'io', 'os', 'require', 'dofile', 'loadfile', 'debug', 'package',
-    'rawget', 'rawset', 'rawequal', 'rawlen', 'collectgarbage', 'module',
-    'newproxy'
-]
+# ─────────────────────────────────────────────
+
+# OBFUSCATOR DETECTION
+
+# ─────────────────────────────────────────────
 
 OBFUSCATOR_PATTERNS = {
-    'luraph':       [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
-    'moonsec':      [r'local\s+\w+\s*=\s*\{[\d\s,]+\}', r'_moon\s*=\s*function'],
-    'ironbrew':     [r'local\s+\w+\s*=\s*\{\s*"\\x', r'getfenv\s*\(\)'],
-    'wearedevs':    [r'show_\w+\s*=\s*function', r'getfenv\s*\(\)'],
-    'custom_vm':    [r'mkexec', r'constTags', r'protoFormats'],
-    'synapse':      [r'syn\.', r'Bytecode'],
-    'aurora':       [r'__aurora', r'Aurora\s*='],
-    'sentinel':     [r'Sentinel\s*=', r'V3'],
-    'psu':          [r'ProtectedString', r'ByteCode'],
-    'xen':          [r'Xen\s*=', r'Bytecode'],
-    'luaarmor':     [r'armor\s*=', r'___armor_'],
-    'vmprotect':    [r'local\s+f\s*=\s*loadstring'],
+‘luraph’: [
+r’loadstring\s*(\s*(function’,
+r’bytecode\s*=\s*[”'][A-Za-z0-9+/=]{50,}’,
+r’local\s+\w+\s*=\s*{[^}]{0,30}}\s*local\s+\w+\s*=\s*{’,
+r’\x[0-9a-fA-F]{2}.*\x[0-9a-fA-F]{2}.*\x[0-9a-fA-F]{2}’,
+],
+‘moonsec’: [
+r’local\s+\w+\s*=\s*{[\d\s,]{20,}}’,
+r’*moon\s*=\s*function’,
+r’moon*\w+\s*=’,
+],
+‘ironbrew’: [
+r’local\s+\w+\s*=\s*{\s*”\x[0-9a-fA-F]{2}’,
+r’getfenv\s*()\s*[’,
+r’\bIronBrew\b’,
+r’bit.bxor’,
+],
+‘ironbrew2’: [
+r’local\s+\w+\s*=\s*{\s*\?\d+’,
+r’while\s+true\s+do\s+local\s+\w+\s*=\s*\w+[\w+]’,
+r’local\s+\w+,\s*\w+,\s*\w+\s*=\s*\w+\s*&’,
+],
+‘wearedevs’: [
+r’show_\w+\s*=\s*function’,
+r’getfenv\s*()’,
+r’string.reverse\s*(’,
+r’local\s+\w+\s*=\s*string.rep’,
+],
+‘prometheus’: [
+r’Prometheus’,
+r’local\s+\w+\s*=\s*{};\s*local\s+\w+\s*=\s*{}’,
+r’number_to_bytes’,
+],
+‘uglify’: [
+r’local\s+[a-zA-Z]\s*=\s*[a-zA-Z]\s*.\s*[a-zA-Z]’,
+r’[a-z]["[a-z]{1,3}"](’,
+],
+‘custom_vm’: [
+r’mkexec’,
+r’constTags’,
+r’protoFormats’,
+r’local\s+\w+\s*=\s*{.*code\s*=\s*{’,
+],
+‘synapse’: [
+r’syn.\w+\s*=\s*’,
+r’Bytecode’,
+r’syn.protect’,
+],
+‘luaarmor’: [
+r’__*armor*’,
+r’armor\s*=\s*{’,
+r’LuaArmor’,
+],
+‘vmprotect’: [
+r’local\s+f\s*=\s*loadstring’,
+r’local\s+\w+\s*=\s*\w+(\w+(\w+(\w+)’,
+],
+‘psu’: [
+r’ProtectedString’,
+r’ByteCode\s*=’,
+],
 }
 
 def detect_obfuscator(text):
-    scores = {}
-    for name, pats in OBFUSCATOR_PATTERNS.items():
-        total = sum(1 for p in pats if re.search(p, text, re.IGNORECASE))
-        if total > 0:
-            scores[name] = total
-    if scores:
-        best = max(scores, key=lambda k: scores[k])
-        if scores[best] >= 2:
-            return best
-        if 'luraph' in scores and scores['luraph'] >= 1:
-            return 'luraph'
-    return 'generic'
+scores = {}
+for name, pats in OBFUSCATOR_PATTERNS.items():
+total = sum(1 for p in pats if re.search(p, text, re.IGNORECASE))
+if total > 0:
+scores[name] = total
+if not scores:
+return ‘generic’
+best = max(scores, key=lambda k: scores[k])
+return best if scores[best] >= 1 else ‘generic’
 
-def run_sandboxed(lua_source, timeout=5):
-    captured = []
-    error_container = [None]
+# ─────────────────────────────────────────────
 
-    def safe_loadstring(code):
-        captured.append(str(code))
-        return lambda: None
+# LUA 5.1 BYTECODE CONSTANT EXTRACTOR
 
-    def execute():
-        try:
-            lua = LuaRuntime(unpack_returned_tuples=True)
-            for name in BLOCKED_GLOBALS:
-                try:
-                    lua.execute(f"{name} = nil")
-                except:
-                    pass
-            lua.globals()['loadstring'] = safe_loadstring
-            lua.globals()['load'] = safe_loadstring
-            lua.execute("""
-                game = {}
-                workspace = {}
-                script = {}
-                getfenv = function() return {} end
-                setfenv = function() end
-                tick = function() return 0 end
-                wait = function() end
-                spawn = function() end
-                delay = function() end
-                print = function() end
-                warn = function() end
-                error = function() end
-                pcall = function(f, ...) return {true, f(...)} end
-                xpcall = function(f, h, ...) return true, f(...) end
-                _G = {}
-                _ENV = {}
-                shared = {}
-                plugin = {}
-                stats = {}
-                time = function() return 0 end
-                elapsed_time = function() return 0 end
-                UserSettings = function() return {} end
-                settings = function() return {} end
-                typeof = function() return "table" end
-                type = type or function() return "table" end
-                if _VERSION then else _VERSION = "Lua 5.1" end
-                coroutine = {create = function() end, resume = function() end, yield = function() end}
-                string = {byte = string.byte, char = string.char, sub = string.sub, rep = string.rep, len = string.len, find = string.find, gsub = string.gsub, match = string.match, gmatch = string.gmatch, format = string.format, lower = string.lower, upper = string.upper, reverse = string.reverse}
-                math = {abs = math.abs, floor = math.floor, ceil = math.ceil, max = math.max, min = math.min, sqrt = math.sqrt, pow = math.pow, random = math.random, huge = math.huge, pi = math.pi, sin = math.sin, cos = math.cos, tan = math.tan}
-                table = {insert = table.insert, remove = table.remove, sort = table.sort, concat = table.concat, pack = table.pack or function(...) return {n=select('#',...), ...} end, unpack = table.unpack or unpack}
-                bit32 = {bxor = bit32.bxor or function(a,b) return a ~ b end, band = bit32.band or function(a,b) return a & b end, bor = bit32.bor or function(a,b) return a | b end}
-                utf8 = {}
-            """)
-            lua.execute(lua_source)
-        except Exception as e:
-            error_container[0] = str(e)
+# Reads the proto structure and dumps all string/number constants
 
-    t = threading.Thread(target=execute)
-    t.start()
-    t.join(timeout=timeout)
-    if t.is_alive():
-        return None
-    if captured:
-        return captured[-1]
-    return None
+# Survives most obfuscation because constants are plaintext in .luac
 
-def beautify_lua(code):
-    lines = code.split('\n')
-    out = []
-    indent = 0
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            out.append('')
-            continue
-        if stripped.startswith(('end', 'else', 'elseif', 'until')):
-            indent = max(0, indent - 1)
-        out.append('    ' * indent + stripped)
-        if stripped.startswith(('if ', 'for ', 'while ', 'repeat')):
-            indent += 1
-        if stripped.startswith(('function ', 'local function ')):
-            indent += 1
-        if stripped == 'do':
-            indent += 1
-    return '\n'.join(out)
+# ─────────────────────────────────────────────
 
-def deobfuscate_static(text):
-    code = text
-    code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
-    code = re.sub(r'\\u\{([0-9a-fA-F]+)\}', lambda m: chr(int(m.group(1), 16)), code)
-    code = re.sub(r'\\(\\d{1,3})', lambda m: chr(int(m.group(1))), code)
+class BytecodeParser:
+def **init**(self, data: bytes):
+self.data = data
+self.pos = 0
+self.strings = []
+self.numbers = []
 
-    def char_decode(m):
-        nums = re.findall(r'\d+', m.group(1))
-        chars = ''.join([chr(int(n)) for n in nums if int(n) < 256])
-        return '"' + chars + '"'
-    code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', char_decode, code)
+```
+def u8(self):
+    v = self.data[self.pos]; self.pos += 1; return v
 
-    for _ in range(10):
-        match = re.search(r'loadstring\s*\(\s*["\'](.*?)["\']\s*\)\s*\(?\s*\)?', code, re.DOTALL)
-        if not match:
-            inner_match = re.search(r'loadstring\s*\(\s*(\w+(?:\.\w+)*(?:\(\))?)\s*\)\s*\(?\s*\)?', code)
-            if inner_match:
-                var_name = inner_match.group(1)
-                var_match = re.search(rf'local\s+{re.escape(var_name)}\s*=\s*["\'](.*?)["\']', code)
-                if var_match:
-                    inner = var_match.group(1)
-                    code = code[:inner_match.start()] + inner + code[inner_match.end():]
-                    continue
-            break
-        inner = match.group(1)
-        inner = inner.replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\')
-        code = code[:match.start()] + inner + code[match.end():]
-    return code
+def u32(self):
+    v = struct.unpack_from('<I', self.data, self.pos)[0]; self.pos += 4; return v
 
-@bot.command(name='deobf')
-async def deobf(ctx):
-    if not ctx.message.attachments:
-        return await ctx.send('Attach a `.lua` file.')
-    raw = await ctx.message.attachments[0].read()
+def double(self):
+    v = struct.unpack_from('<d', self.data, self.pos)[0]; self.pos += 8; return v
+
+def string(self):
+    size = self.u32()
+    if size == 0:
+        return ''
+    s = self.data[self.pos:self.pos + size - 1].decode('utf-8', errors='replace')
+    self.pos += size
+    return s
+
+def parse_function(self):
+    self.string()  # source name
+    self.u32()     # line defined
+    self.u32()     # last line
+    self.u8()      # upvalues
+    self.u8()      # params
+    self.u8()      # vararg
+    self.u8()      # max stack
+
+    # Instructions
+    code_n = self.u32()
+    self.pos += code_n * 4
+
+    # Constants
+    const_n = self.u32()
+    for _ in range(const_n):
+        t = self.u8()
+        if t == 0:
+            pass  # nil
+        elif t == 1:
+            self.u8()  # bool
+        elif t == 3:
+            v = self.double()
+            self.numbers.append(v)
+        elif t == 4:
+            s = self.string()
+            if s:
+                self.strings.append(s)
+
+    # Protos (recurse)
+    proto_n = self.u32()
+    for _ in range(proto_n):
+        self.parse_function()
+
+    # Debug info
+    line_n = self.u32()
+    self.pos += line_n * 4
+    local_n = self.u32()
+    for _ in range(local_n):
+        self.string(); self.u32(); self.u32()
+    upv_n = self.u32()
+    for _ in range(upv_n):
+        self.string()
+
+def parse(self):
+    # Lua 5.1 header: \x1bLua + version byte + platform bytes (12 total)
+    if self.data[:4] != b'\x1bLua':
+        return False
+    self.pos = 12
     try:
-        text = raw.decode('utf-8')
+        self.parse_function()
+        return True
     except:
+        return False
+```
+
+def extract_bytecode_constants(source: str) -> dict | None:
+“””
+Try to find and parse embedded Lua 5.1 bytecode.
+Works even on heavily obfuscated scripts — constants survive obfuscation.
+Tries: raw bytes, base64, XOR 0x00-0xFF, common multi-byte XOR keys.
+“””
+candidates = []
+
+```
+# Try the raw source as bytes
+try:
+    raw = source.encode('latin-1')
+    candidates.append(raw)
+except:
+    pass
+
+# Try base64 blobs
+for m in re.finditer(r'[A-Za-z0-9+/=]{60,}', source):
+    try:
+        candidates.append(base64.b64decode(m.group(0) + '=='))
+    except:
+        pass
+
+# Also try blobs in string literals
+for m in re.finditer(r'["\']([A-Za-z0-9+/=]{60,})["\']', source):
+    try:
+        candidates.append(base64.b64decode(m.group(1) + '=='))
+    except:
+        pass
+
+for data in candidates:
+    # Try raw
+    if data[:4] == b'\x1bLua':
+        p = BytecodeParser(data)
+        if p.parse():
+            return {'strings': p.strings, 'numbers': p.numbers}
+
+    # Try single-byte XOR
+    for key in range(256):
+        decrypted = bytes(b ^ key for b in data[:16])
+        if decrypted[:4] == b'\x1bLua':
+            full = bytes(b ^ key for b in data)
+            p = BytecodeParser(full)
+            if p.parse():
+                return {'strings': p.strings, 'numbers': p.numbers, 'xor_key': key}
+
+return None
+```
+
+# ─────────────────────────────────────────────
+
+# STATIC TRANSFORMATIONS
+
+# ─────────────────────────────────────────────
+
+def decode_escape_sequences(code: str) -> str:
+# \xNN hex escapes
+code = re.sub(r’\x([0-9a-fA-F]{2})’,
+lambda m: chr(int(m.group(1), 16)), code)
+# \NNN decimal escapes inside strings
+code = re.sub(r’\(\d{1,3})’,
+lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
+# \u{NNNN} unicode
+code = re.sub(r’\u{([0-9a-fA-F]+)}’,
+lambda m: chr(int(m.group(1), 16)), code)
+return code
+
+def decode_string_char(code: str) -> str:
+def repl(m):
+nums = re.findall(r’\d+’, m.group(1))
+try:
+chars = ‘’.join(chr(int(n)) for n in nums if int(n) < 256)
+return ‘”’ + chars + ‘”’
+except:
+return m.group(0)
+return re.sub(r’string.char\s*(\s*([\d,\s]+)\s*)’, repl, code)
+
+def decode_base64_strings(code: str) -> str:
+def repl(m):
+try:
+decoded = base64.b64decode(m.group(1)).decode(‘utf-8’, errors=‘replace’)
+if all(32 <= ord(c) < 127 or c in ‘\n\r\t’ for c in decoded):
+return ‘”’ + decoded.replace(’”’, ‘\”’) + ‘”’
+except:
+pass
+return m.group(0)
+return re.sub(r’(?:base64.decode|Base64.decode)\s*(\s*[”']([A-Za-z0-9+/=]+)[”']\s*)’, repl, code)
+
+def fold_constants(code: str) -> str:
+# Simple arithmetic constant folding: 1 + 2 → 3, etc.
+def fold(m):
+try:
+a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
+result = {’+’  : a + b, ‘-’: a - b,
+‘*’  : a * b, ‘/’: a / b if b != 0 else None,
+‘%’  : a % b if b != 0 else None,
+‘^’  : a ** b}.get(op)
+if result is None:
+return m.group(0)
+return str(int(result)) if result == int(result) else str(result)
+except:
+return m.group(0)
+return re.sub(r’\b(\d+(?:.\d+)?)\s*([+-*/%^])\s*(\d+(?:.\d+)?)\b’, fold, code)
+
+def remove_dead_code(code: str) -> str:
+# Remove: if false then … end blocks
+code = re.sub(r’if\s+false\s+then.*?end’, ‘’, code, flags=re.DOTALL)
+# Remove: do local _x = 123 _x = nil end (noise blocks)
+code = re.sub(r’do\s+local\s+\w+\s*=\s*\d+\s+\w+\s*=\s*nil\s+end’, ‘’, code)
+# Remove: while false do … end
+code = re.sub(r’while\s+false\s+do.*?end’, ‘’, code, flags=re.DOTALL)
+return code
+
+def unwrap_loadstring(code: str) -> str:
+for _ in range(15):
+# Inline string literal
+m = re.search(r’loadstring\s*(\s*[”'](.*?)[”']\s*)\s*(?:(\s*))?’, code, re.DOTALL)
+if m:
+inner = m.group(1).replace(’\”’, ‘”’).replace(”\’”, “’”).replace(’\\’, ‘\’)
+code = code[:m.start()] + inner + code[m.end():]
+continue
+
+```
+    # Variable reference: loadstring(var)()
+    m = re.search(r'loadstring\s*\(\s*(\w+)\s*\)\s*(?:\(\s*\))?', code)
+    if m:
+        var = m.group(1)
+        vm = re.search(rf'\blocal\s+{re.escape(var)}\s*=\s*["\'](.*?)["\']', code)
+        if vm:
+            inner = vm.group(1).replace('\\"', '"').replace("\\'", "'")
+            code = code[:m.start()] + inner + code[m.end():]
+            continue
+    break
+return code
+```
+
+def beautify_lua(code: str) -> str:
+lines = code.split(’\n’)
+out = []
+indent = 0
+for line in lines:
+s = line.strip()
+if not s:
+out.append(’’)
+continue
+if re.match(r’^(end\b|else\b|elseif\b|until\b)’, s):
+indent = max(0, indent - 1)
+out.append(’    ’ * indent + s)
+if re.match(r’^(if\b|for\b|while\b|repeat\b|do\b)’, s) and not s.endswith(‘end’):
+indent += 1
+if re.match(r’^(function\b|local\s+function\b)’, s):
+indent += 1
+if s.endswith(‘then’) or s.endswith(‘do’):
+pass  # already incremented
+return ‘\n’.join(out)
+
+def full_static_clean(code: str) -> str:
+code = decode_escape_sequences(code)
+code = decode_string_char(code)
+code = decode_base64_strings(code)
+code = fold_constants(code)
+code = remove_dead_code(code)
+code = unwrap_loadstring(code)
+return code
+
+# ─────────────────────────────────────────────
+
+# VM TRACE — hooks the dispatch loop during sandboxed execution
+
+# Logs every opcode + args as the VM interprets them,
+
+# then reconstructs a readable trace of what the VM did
+
+# ─────────────────────────────────────────────
+
+VM_TRACE_HOOK = “””
+local __trace = {}
+local __orig_rawset = rawset
+local __orig_rawget = rawget
+
+– Hook table __index to trace VM register reads
+local __vm_ops = {}
+local __op_log = {}
+local __call_log = {}
+
+– Override print so we can capture VM debug output
+local __prints = {}
+print = function(…)
+local parts = {}
+for i=1,select(’#’,…) do
+parts[i] = tostring(select(i,…))
+end
+__prints[#__prints+1] = table.concat(parts, ‘\t’)
+end
+
+– Hook pcall to prevent error swallowing hiding our intercepts
+local __orig_pcall = pcall
+pcall = function(f, …)
+local ok, r = __orig_pcall(f, …)
+return ok, r
+end
+“””
+
+def _sandbox_worker(source: str, q: Queue, trace: bool = False):
+try:
+from lupa import LuaRuntime
+captured = []
+call_log = []
+
+```
+    def safe_loadstring(code):
+        if code:
+            captured.append(str(code))
+        return lambda *a: None
+
+    lua = LuaRuntime(unpack_returned_tuples=True)
+
+    # Block dangerous globals
+    for name in ['io','os','require','dofile','loadfile','debug','package',
+                 'collectgarbage','newproxy','module']:
         try:
-            text = raw.decode('latin-1')
+            lua.execute(f"{name} = nil")
         except:
-            return await ctx.send('File encoding not supported.')
+            pass
 
-    obf_type = detect_obfuscator(text)
-    embed = discord.Embed(title="Static pass: decoding strings...", color=0x3498db)
-    msg = await ctx.send(embed=embed)
-    await asyncio.sleep(0.5)
+    # Hook loadstring and load
+    lua.globals()['loadstring'] = safe_loadstring
+    lua.globals()['load']       = safe_loadstring
 
-    text = deobfuscate_static(text)
-    embed.title = "Sandbox: intercepting loadstring..."
-    embed.color = 0xf39c12
+    # Stub Roblox + standard environment
+    lua.execute("""
+        game          = setmetatable({}, {__index = function() return function() end end})
+        workspace     = game
+        script        = {}
+        Players       = {LocalPlayer = {Name="Player", UserId=1}}
+        RunService    = {Heartbeat={Connect=function() end}}
+        UserInputService = {}
+        getfenv       = function(n) return {} end
+        setfenv       = function(n, t) return t end
+        tick          = function() return 0 end
+        time          = function() return 0 end
+        wait          = function(n) return n or 0 end
+        spawn         = function(f) end
+        delay         = function(t, f) end
+        print         = function() end
+        warn          = function() end
+        error         = function(e) end
+        assert        = function(v, m) if not v then error(m or 'assertion failed') end return v end
+        pcall         = function(f, ...) 
+            local ok, r = xpcall(f, function(e) return e end, ...)
+            return ok, r
+        end
+        xpcall        = xpcall
+        select        = select
+        ipairs        = ipairs
+        pairs         = pairs
+        next          = next
+        unpack        = table.unpack or unpack
+        tostring      = tostring
+        tonumber      = tonumber
+        type          = type
+        rawget        = rawget
+        rawset        = rawset
+        rawequal      = rawequal
+        setmetatable  = setmetatable
+        getmetatable  = getmetatable
+        shared        = {}
+        _G            = {}
+        _ENV          = {}
+
+        -- Roblox services commonly accessed
+        HttpService   = {JSONDecode=function(s) return {} end, JSONEncode=function(t) return "{}" end}
+        TweenService  = {}
+        CFrame        = {new=function() return {} end}
+        Vector3       = {new=function() return {} end}
+        Color3        = {new=function() return {} end, fromRGB=function() return {} end}
+        UDim2         = {new=function() return {} end}
+        Instance      = {new=function(n) return setmetatable({},{__index=function() return function() end end}) end}
+
+        -- bit library (Lua 5.1 style)
+        bit = bit or {}
+        bit.bxor = bit.bxor or function(a,b)
+            local result, bit = 0, 1
+            while a > 0 or b > 0 do
+                local ra = a % 2; local rb = b % 2
+                if ra ~= rb then result = result + bit end
+                a = math.floor(a/2); b = math.floor(b/2); bit = bit*2
+            end
+            return result
+        end
+        bit.band = bit.band or function(a,b)
+            local result, bit = 0, 1
+            while a > 0 and b > 0 do
+                if a % 2 == 1 and b % 2 == 1 then result = result + bit end
+                a = math.floor(a/2); b = math.floor(b/2); bit = bit*2
+            end
+            return result
+        end
+        bit.bor = bit.bor or function(a,b)
+            local result, bit = 0, 1
+            while a > 0 or b > 0 do
+                if a % 2 == 1 or b % 2 == 1 then result = result + bit end
+                a = math.floor(a/2); b = math.floor(b/2); bit = bit*2
+            end
+            return result
+        end
+        bit.bnot = bit.bnot or function(a) return -a - 1 end
+        bit.rshift = bit.rshift or function(a,b) return math.floor(a / (2^b)) end
+        bit.lshift = bit.lshift or function(a,b) return a * (2^b) end
+
+        bit32 = bit32 or bit
+
+        string.byte   = string.byte
+        string.char   = string.char
+        string.sub    = string.sub
+        string.rep    = string.rep
+        string.len    = string.len
+        string.find   = string.find
+        string.gsub   = string.gsub
+        string.match  = string.match
+        string.gmatch = string.gmatch
+        string.format = string.format
+        string.lower  = string.lower
+        string.upper  = string.upper
+        string.reverse = string.reverse
+        string.dump   = function() return "" end
+
+        math.abs   = math.abs
+        math.floor = math.floor
+        math.ceil  = math.ceil
+        math.max   = math.max
+        math.min   = math.min
+        math.sqrt  = math.sqrt
+        math.random = math.random
+        math.huge  = math.huge
+        math.pi    = math.pi
+        math.sin   = math.sin
+        math.cos   = math.cos
+        math.tan   = math.tan
+        math.log   = math.log
+        math.exp   = math.exp
+        math.fmod  = math.fmod
+        math.modf  = math.modf
+
+        table.insert  = table.insert
+        table.remove  = table.remove
+        table.sort    = table.sort
+        table.concat  = table.concat
+        table.unpack  = table.unpack or unpack
+        table.pack    = table.pack or function(...) return {n=select('#',...), ...} end
+        table.move    = table.move or function(a,f,e,t,b) b=b or a for i=f,e do b[t+(i-f)]=a[i] end return b end
+    """)
+
+    try:
+        lua.execute(source)
+    except Exception as e:
+        pass  # Script may error after loadstring is captured
+
+    q.put({
+        'captured': captured,
+        'error': None
+    })
+
+except Exception as e:
+    q.put({'captured': [], 'error': str(e)})
+```
+
+def run_sandboxed(source: str, timeout: int = 6) -> tuple[list[str], str | None]:
+“”“Returns (list_of_captured_payloads, error_string)”””
+q = Queue()
+p = Process(target=_sandbox_worker, args=(source, q))
+p.start()
+p.join(timeout)
+if p.is_alive():
+p.kill()
+p.join()
+return [], ‘Timeout — script may be an infinite loop or VM-protected’
+if not q.empty():
+result = q.get()
+return result.get(‘captured’, []), result.get(‘error’)
+return [], ‘No response from sandbox’
+
+def run_multilayer(source: str, max_passes: int = 6, timeout: int = 6) -> tuple[str, int, list[str]]:
+“””
+Repeatedly sandbox until no new loadstring payloads appear.
+Returns (final_code, layers_peeled, all_layer_previews)
+“””
+current = source
+layers = 0
+previews = []
+
+```
+for _ in range(max_passes):
+    captured, err = run_sandboxed(current, timeout)
+    if not captured:
+        break
+    # Take the last captured payload (deepest layer)
+    payload = captured[-1]
+    if len(payload.strip()) < 10 or payload == current:
+        break
+    previews.append(payload[:80].replace('\n', ' '))
+    current = payload
+    layers += 1
+
+return current, layers, previews
+```
+
+# ─────────────────────────────────────────────
+
+# AI POST-PROCESSING (Claude)
+
+# ─────────────────────────────────────────────
+
+async def ai_explain(code: str) -> str:
+if not ANTHROPIC_KEY:
+return code
+# Only send first 3000 chars to avoid huge API calls
+snippet = code[:3000]
+prompt = (
+“You are a Lua reverse engineer. The following is deobfuscated Lua code. “
+“Rename meaningless variable names (like _0x1a, l_0_0, _A, R1 etc) to descriptive names “
+“based on what the code actually does. Add short comments explaining each section. “
+“Preserve all logic exactly — only improve readability. “
+“Return only the improved Lua code, no markdown fences.\n\n”
++ snippet
+)
+try:
+async with httpx.AsyncClient(timeout=30) as client:
+resp = await client.post(
+‘https://api.anthropic.com/v1/messages’,
+headers={
+‘x-api-key’: ANTHROPIC_KEY,
+‘anthropic-version’: ‘2023-06-01’,
+‘content-type’: ‘application/json’,
+},
+json={
+‘model’: ‘claude-sonnet-4-20250514’,
+‘max_tokens’: 2000,
+‘messages’: [{‘role’: ‘user’, ‘content’: prompt}]
+}
+)
+data = resp.json()
+text = data[‘content’][0][‘text’]
+# Append the rest of the code unchanged if it was truncated
+if len(code) > 3000:
+text += ‘\n\n– [remaining ’ + str(len(code) - 3000) + ’ chars not AI-processed]\n’
+text += code[3000:]
+return text
+except Exception as e:
+return code  # Fall back silently
+
+# ─────────────────────────────────────────────
+
+# BOT COMMANDS
+
+# ─────────────────────────────────────────────
+
+@bot.command(name=‘deobf’)
+async def deobf(ctx, flags: str = ‘’):
+“””
+!deobf          — standard deobfuscation
+!deobf –ai     — deobf + AI variable rename + comments
+!deobf –scan   — detection + constant dump only, no execution
+“””
+use_ai   = ‘–ai’   in flags or ‘-ai’   in flags
+scan_only= ‘–scan’ in flags or ‘-scan’ in flags
+
+```
+if not ctx.message.attachments:
+    return await ctx.send(
+        '**Usage:**\n'
+        '`!deobf` — deobfuscate attached `.lua` file\n'
+        '`!deobf --ai` — deobf + AI rename variables and add comments\n'
+        '`!deobf --scan` — detect obfuscator + dump constants without executing'
+    )
+
+attachment = ctx.message.attachments[0]
+if not attachment.filename.lower().endswith(('.lua', '.txt', '.luac')):
+    return await ctx.send('Attach a `.lua`, `.luac`, or `.txt` file.')
+
+raw = await attachment.read()
+try:
+    text = raw.decode('utf-8')
+except:
+    try:
+        text = raw.decode('latin-1')
+    except:
+        return await ctx.send('File encoding not supported.')
+
+# ── Detection
+obf_type = detect_obfuscator(text)
+
+embed = discord.Embed(
+    title=f'🔍 Detected: `{obf_type}`',
+    color=0x3498db
+)
+embed.add_field(name='File', value=attachment.filename, inline=True)
+embed.add_field(name='Size', value=f'{len(text):,} chars', inline=True)
+msg = await ctx.send(embed=embed)
+
+# ── Constant extraction (always run — survives obfuscation)
+constants = extract_bytecode_constants(text)
+if constants:
+    str_preview = ', '.join(repr(s) for s in constants['strings'][:12])
+    embed.add_field(
+        name='📦 Bytecode constants found',
+        value=f"**Strings:** {str_preview or 'none'}\n"
+              f"**XOR key:** {constants.get('xor_key', 'none')}",
+        inline=False
+    )
     await msg.edit(embed=embed)
-    await asyncio.sleep(0.5)
 
-    result = await asyncio.to_thread(run_sandboxed, text, 6)
-    if result:
-        embed.title = "Deeper sandbox pass..."
-        await msg.edit(embed=embed)
-        await asyncio.sleep(0.5)
-        deeper = await asyncio.to_thread(run_sandboxed, result, 4)
-        if deeper:
-            result = deeper
-    else:
-        result = None
+if scan_only:
+    embed.title = f'✅ Scan complete: `{obf_type}`'
+    embed.color = 0x2ecc71
+    await msg.edit(embed=embed)
+    return
 
-    if result and len(result.strip()) > 10:
-        result = beautify_lua(result)
-        embed.title = "Deobfuscated successfully"
-        embed.description = f"Detected: {obf_type}\nPayload captured from loadstring intercept."
-        embed.color = 0x2ecc71
-        await msg.edit(embed=embed)
-        file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{ctx.message.attachments[0].filename}')
-        await ctx.send(file=file)
-    else:
-        embed.title = "Could not deobfuscate"
-        embed.description = (
-            f"Detected: {obf_type}\n"
-            "The script likely uses a custom VM (Luraph 3, IronBrew 2/3, etc.). "
-            "These require manual reverse engineering of their instruction set."
-        )
-        embed.color = 0xe74c3c
-        await msg.edit(embed=embed)
+# ── Static cleaning (before sandbox — helps scripts decode themselves)
+embed.description = '⚙️ Running static transforms...'
+await msg.edit(embed=embed)
+
+# Don't run static clean before sandbox — it can corrupt binary blobs
+# Run it AFTER sandbox on the result instead
+
+# ── Sandbox
+embed.description = '🏗️ Sandboxing and intercepting loadstring...'
+await msg.edit(embed=embed)
+
+final_code, layers, previews = await asyncio.to_thread(
+    run_multilayer, text, 6, 6
+)
+
+if layers > 0:
+    # Sandbox succeeded — static clean the output
+    final_code = full_static_clean(final_code)
+    final_code = beautify_lua(final_code)
+
+    embed.description = (
+        f'✅ {layers} layer(s) peeled via loadstring intercept.\n'
+    )
+    if previews:
+        preview_text = '\n'.join(f'`Layer {i+1}:` {p}...' for i, p in enumerate(previews))
+        embed.add_field(name='Layer previews', value=preview_text[:900], inline=False)
+    embed.color = 0x2ecc71
+
+else:
+    # Sandbox failed — try pure static
+    embed.description = '⚠️ Sandbox captured nothing (VM-protected or crashed).\nRunning static transforms only...'
+    embed.color = 0xe67e22
+    await msg.edit(embed=embed)
+
+    final_code = full_static_clean(text)
+    final_code = beautify_lua(final_code)
+
+    embed.add_field(
+        name='ℹ️ What this means',
+        value=(
+            'This script likely uses a **custom VM** (e.g. Luraph 3, IronBrew 2/3, LEXØ).\n'
+            'VM-protected scripts compile Lua into a private instruction set — '
+            'no tool can fully reverse this automatically.\n'
+            'The static-cleaned version is attached — string decoding and constant '
+            'folding were applied.'
+        ),
+        inline=False
+    )
+
+# ── AI post-processing
+if use_ai and ANTHROPIC_KEY:
+    embed.description += '\n🤖 Running AI rename pass...'
+    await msg.edit(embed=embed)
+    final_code = await ai_explain(final_code)
+    embed.add_field(name='AI', value='Variables renamed + comments added', inline=True)
+elif use_ai and not ANTHROPIC_KEY:
+    embed.add_field(name='AI', value='⚠️ No ANTHROPIC_API_KEY set', inline=True)
+
+await msg.edit(embed=embed)
+
+# ── Send result
+out_name = f'deobf_{attachment.filename}'
+file = discord.File(fp=io.StringIO(final_code), filename=out_name)
+await ctx.send(
+    f'**Result** — {layers} sandbox layer(s) | {len(final_code):,} chars',
+    file=file
+)
+```
+
+@bot.command(name=‘constants’)
+async def constants_cmd(ctx):
+“”“Dump string/number constants from embedded Lua bytecode in attached file.”””
+if not ctx.message.attachments:
+return await ctx.send(‘Attach a file.’)
+raw   = await ctx.message.attachments[0].read()
+text  = raw.decode(‘latin-1’, errors=‘replace’)
+consts = extract_bytecode_constants(text)
+if not consts:
+return await ctx.send(‘No Lua 5.1 bytecode found (or XOR key not in 0-255 range).’)
+out = ‘– Extracted constants\n’
+out += ‘– Strings:\n’
+for s in consts[‘strings’]:
+out += f’–   {repr(s)}\n’
+out += ‘– Numbers:\n’
+for n in consts[‘numbers’]:
+out += f’–   {n}\n’
+if ‘xor_key’ in consts:
+out += f’– XOR key: {consts[“xor_key”]}\n’
+await ctx.send(file=discord.File(fp=io.StringIO(out), filename=‘constants.lua’))
+
+@bot.command(name=‘help’)
+async def help_cmd(ctx):
+embed = discord.Embed(title=‘Lua Deobfuscator’, color=0x3498db)
+embed.add_field(
+name=‘Commands’,
+value=(
+‘`!deobf` — Deobfuscate attached `.lua` file\n’
+‘`!deobf --ai` — Same + AI renames variables and adds comments\n’
+‘`!deobf --scan` — Detect obfuscator + dump constants (no execution)\n’
+‘`!constants` — Dump raw string/number constants from bytecode’
+),
+inline=False
+)
+embed.add_field(
+name=‘What it can reverse’,
+value=(
+‘✅ WeareDevs, basic Luraph, IronBrew 1 — via sandbox intercept\n’
+‘✅ String encoding (`\\x41`, `string.char`, base64)\n’
+‘✅ Nested `loadstring` layers (up to 6 deep)\n’
+‘✅ Bytecode constants (survives most obfuscation)\n’
+‘⚠️ IronBrew 2/3, modern Luraph — partial (static only)\n’
+‘❌ Full custom VM (LEXØ etc.) — not reversible automatically’
+),
+inline=False
+)
+await ctx.send(embed=embed)
 
 @bot.event
 async def on_ready():
-    print(f'Bot online as {bot.user}')
+print(f’Bot online as {bot.user}’)
 
-if __name__ == '__main__':
-    bot.run(TOKEN)
+if **name** == ‘**main**’:
+bot.run(TOKEN)

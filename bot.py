@@ -8,7 +8,7 @@ import base64
 import json
 import time
 import httpx
-from multiprocessing import Process, Queue
+from multiprocessing import e Process, Queue
 from discord.ext import commands
 
 TOKEN = os.environ['DISCORD_BOT_TOKEN']

@@ -37,7 +37,7 @@ OBFUSCATOR_PATTERNS = {
         r'bit\.bxor',
     ],
     'ironbrew2': [
-        r'local\s+\w+\s*=\s*\{\s*\?\d+',
+        r'local\s+\w+\s*=\s*\{?\d+',
         r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[\w+\]',
         r'local\s+\w+,\s*\w+,\s*\w+\s*=\s*\w+\s*&',
     ],
@@ -196,7 +196,7 @@ def extract_bytecode_constants(source: str):
 
 def decode_escape_sequences(code: str) -> str:
     code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
-    code = re.sub(r'\\(\\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
+    code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
     code = re.sub(r'\\u\{([0-9a-fA-F]+)\}', lambda m: chr(int(m.group(1), 16)), code)
     return code
 
@@ -221,20 +221,29 @@ def decode_base64_strings(code: str) -> str:
         return m.group(0)
     return re.sub(r'(?:base64\.decode|Base64\.decode)\s*\(\s*["\']([A-Za-z0-9+/=]+)["\']\s*\)', repl, code)
 
+def _fold_match(m):
+    try:
+        a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
+        ops = {'+': a+b, '-': a-b, '*': a*b,
+               '/': a/b if b else None, '%': a%b if b else None}
+        r = ops.get(op)
+        if r is None: return m.group(0)
+        return str(int(r)) if r == int(r) else str(r)
+    except:
+        return m.group(0)
+
 def fold_constants(code: str) -> str:
-    def fold(m):
-        try:
-            a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
-            result = {'+': a + b, '-': a - b,
-                      '*': a * b, '/': a / b if b != 0 else None,
-                      '%': a % b if b != 0 else None,
-                      '^': a ** b}.get(op)
-            if result is None:
-                return m.group(0)
-            return str(int(result)) if result == int(result) else str(result)
-        except:
-            return m.group(0)
-    return re.sub(r'\b(\d+(?:\.\d+)?)\s*([+\-*/%^])\s*(\d+(?:\.\d+)?)\b', fold, code)
+    result = []
+    parts = re.split(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', code)
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            result.append(part)
+        else:
+            result.append(re.sub(
+                r'\b(\d+(?:\.\d+)?)\s*([+\-*/%])\s*(\d+(?:\.\d+)?)\b',
+                _fold_match, part
+            ))
+    return ''.join(result)
 
 def remove_dead_code(code: str) -> str:
     code = re.sub(r'if\s+false\s+then.*?end', '', code, flags=re.DOTALL)
@@ -294,12 +303,20 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
         from lupa import LuaRuntime
         captured = []
 
-        def safe_loadstring(code):
-            if code:
-                captured.append(str(code))
-            return lambda *a: None
-
         lua = LuaRuntime(unpack_returned_tuples=True)
+
+        def safe_loadstring(code, *args):
+            if callable(code):
+                chunks = []
+                while True:
+                    chunk = code()
+                    if not chunk:
+                        break
+                    chunks.append(str(chunk))
+                code = ''.join(chunks)
+            if code and len(str(code).strip()) > 5:
+                captured.append(str(code))
+            return lua.eval("function(...) end")
 
         for name in ['io','os','require','dofile','loadfile','debug','package',
                      'collectgarbage','newproxy','module']:
@@ -318,8 +335,31 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             Players       = {LocalPlayer = {Name="Player", UserId=1}}
             RunService    = {Heartbeat={Connect=function() end}}
             UserInputService = {}
-            getfenv       = function(n) return {} end
-            setfenv       = function(n, t) return t end
+            
+            _G            = {}
+            _ENV          = {}
+
+            local _env = {
+                string=string, math=math, table=table, bit=bit,
+                pairs=pairs, ipairs=ipairs, select=select, next=next,
+                tostring=tostring, tonumber=tonumber, type=type,
+                rawget=rawget, rawset=rawset, rawlen=rawlen,
+                setmetatable=setmetatable, getmetatable=getmetatable,
+                unpack=table.unpack or unpack,
+                loadstring=loadstring, load=load,
+                pcall=pcall, xpcall=xpcall, error=error, assert=assert,
+                print=print, warn=warn,
+                game=game, workspace=workspace, script=script,
+                _G=_G, shared=shared, coroutine=coroutine
+            }
+            getfenv = function(n) return _env end
+            setfenv = function(n, t)
+                for k,v in pairs(t) do _env[k]=v end
+                return t
+            end
+            _G = _env
+            _ENV = _env
+
             tick          = function() return 0 end
             time          = function() return 0 end
             wait          = function(n) return n or 0 end
@@ -329,27 +369,8 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             warn          = function() end
             error         = function(e) end
             assert        = function(v, m) if not v then error(m or 'assertion failed') end return v end
-            pcall         = function(f, ...) 
-                local ok, r = xpcall(f, function(e) return e end, ...)
-                return ok, r
-            end
-            xpcall        = xpcall
-            select        = select
-            ipairs        = ipairs
-            pairs         = pairs
-            next          = next
-            unpack        = table.unpack or unpack
-            tostring      = tostring
-            tonumber      = tonumber
-            type          = type
-            rawget        = rawget
-            rawset        = rawset
-            rawequal      = rawequal
-            setmetatable  = setmetatable
-            getmetatable  = getmetatable
+
             shared        = {}
-            _G            = {}
-            _ENV          = {}
 
             HttpService   = {JSONDecode=function(s) return {} end, JSONEncode=function(t) return "{}" end}
             TweenService  = {}
@@ -361,27 +382,27 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
 
             bit = bit or {}
             bit.bxor = bit.bxor or function(a,b)
-                local result, bit = 0, 1
+                local result, place = 0, 1
                 while a > 0 or b > 0 do
                     local ra = a % 2; local rb = b % 2
-                    if ra ~= rb then result = result + bit end
-                    a = math.floor(a/2); b = math.floor(b/2); bit = bit*2
+                    if ra ~= rb then result = result + place end
+                    a = math.floor(a/2); b = math.floor(b/2); place = place*2
                 end
                 return result
             end
             bit.band = bit.band or function(a,b)
-                local result, bit = 0, 1
+                local result, place = 0, 1
                 while a > 0 and b > 0 do
-                    if a % 2 == 1 and b % 2 == 1 then result = result + bit end
-                    a = math.floor(a/2); b = math.floor(b/2); bit = bit*2
+                    if a % 2 == 1 and b % 2 == 1 then result = result + place end
+                    a = math.floor(a/2); b = math.floor(b/2); place = place*2
                 end
                 return result
             end
             bit.bor = bit.bor or function(a,b)
-                local result, bit = 0, 1
+                local result, place = 0, 1
                 while a > 0 or b > 0 do
-                    if a % 2 == 1 or b % 2 == 1 then result = result + bit end
-                    a = math.floor(a/2); b = math.floor(b/2); bit = bit*2
+                    if a % 2 == 1 or b % 2 == 1 then result = result + place end
+                    a = math.floor(a/2); b = math.floor(b/2); place = place*2
                 end
                 return result
             end
@@ -430,6 +451,31 @@ def _sandbox_worker(source: str, q: Queue, trace: bool = False):
             table.unpack  = table.unpack or unpack
             table.pack    = table.pack or function(...) return {n=select('#',...), ...} end
             table.move    = table.move or function(a,f,e,t,b) b=b or a for i=f,e do b[t+(i-f)]=a[i] end return b end
+
+            coroutine = {
+                create  = function(f) return f end,
+                resume  = function(f,...) return pcall(f,...) end,
+                yield   = function(...) return ... end,
+                wrap    = function(f) return f end,
+                status  = function() return "dead" end,
+                running = function() return nil end
+            }
+            Drawing       = setmetatable({}, {__index=function() return function() end end})
+            debug         = {traceback=function() return "" end, getinfo=function() return {} end}
+            syn           = {protect_gui=function() end, queue_on_teleport=function() end}
+            writefile     = function() end
+            readfile      = function() return "" end
+            isfile        = function() return false end
+            isfolder      = function() return false end
+            makefolder    = function() end
+            listfiles     = function() return {} end
+            request       = function() return {Body="",StatusCode=200,Success=true} end
+            http          = {request=function() return {Body="",StatusCode=200} end}
+            rconsole      = {print=function() end, clear=function() end}
+            identifyexecutor = function() return "synapse", "2.0" end
+            getexecutorname  = function() return "synapse" end
+            checkcaller      = function() return true end
+            isrbxactive      = function() return true end
         """)
 
         try:

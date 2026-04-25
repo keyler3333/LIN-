@@ -8,7 +8,9 @@ import asyncio
 from discord.ext import commands
 
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
-bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 SIGNATURES = {
     'luraph': {
@@ -454,18 +456,18 @@ async def deobf(ctx):
             except:
                 return await ctx.send('File encoding not supported.')
         
-        await ctx.send('🔍 **Analyzing obfuscation...**')
+        await ctx.send('\U0001f50d **Analyzing obfuscation...**')
         await asyncio.sleep(0.5)
         obf_type = detect_obfuscator(raw)
         
-        await ctx.send(f'🔓 **Detected:** `{obf_type}` — reversing protection layers...')
+        await ctx.send(f'\U0001f513 **Detected:** `{obf_type}` — reversing protection layers...')
         await asyncio.sleep(0.5)
         result = deobfuscate(text, obf_type)
         
         await asyncio.sleep(0.5)
         
         file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{attachment.filename}')
-        await ctx.send(f'✅ **Deobfuscated!** `{obf_type}` → clean Lua below:', file=file)
+        await ctx.send(f'\u2705 **Deobfuscated!** `{obf_type}` → clean Lua below:', file=file)
 
 @bot.event
 async def on_ready():

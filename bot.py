@@ -5,8 +5,9 @@ import os
 import asyncio
 import struct
 import base64
+import subprocess
+import tempfile
 import httpx
-from multiprocessing import Process, Queue
 from discord.ext import commands
 
 TOKEN = os.environ['DISCORD_BOT_TOKEN']
@@ -16,32 +17,30 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
+LUA_BIN = os.environ.get('LUA_BIN', 'lua5.1')
+
 OBFUSCATOR_PATTERNS = {
     'luraph':     [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
     'moonsec':    [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
-    'ironbrew':   [r'local\s+\w+\s*=\s*\{\s*"\\x[0-9a-fA-F]{2}', r'getfenv\s*\(\s*\)\s*\[', r'\bIronBrew\b'],
-    'ironbrew2':  [r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[\w+\]', r'local\s+\w+,\s*\w+,\s*\w+\s*=\s*\w+\s*&'],
+    'ironbrew':   [r'local\s+\w+\s*=\s*\{\s*"\\x[0-9a-fA-F]{2}', r'\bIronBrew\b', r'bit\.bxor'],
+    'ironbrew2':  [r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[\w+\]'],
     'wearedevs':  [r'show_\w+\s*=\s*function', r'getfenv\s*\(\s*\)', r'string\.reverse\s*\('],
     'prometheus': [r'Prometheus', r'number_to_bytes'],
     'custom_vm':  [r'mkexec', r'constTags', r'protoFormats'],
     'synapse':    [r'syn\.\w+\s*=\s*', r'syn\.protect'],
     'luaarmor':   [r'__*armor*', r'LuaArmor'],
-    'vmprotect':  [r'local\s+f\s*=\s*loadstring'],
     'psu':        [r'ProtectedString', r'ByteCode\s*='],
     'aurora':     [r'__aurora\s*=\s*', r'Aurora\s*=\s*'],
-    'sentinel':   [r'Sentinel\s*=\s*'],
     'obfuscated': [r'string\.char\s*\(', r'\\x[0-9a-fA-F]{2}'],
 }
 
 def detect_obfuscator(text):
     scores = {}
     for name, pats in OBFUSCATOR_PATTERNS.items():
-        score = sum(1 for p in pats if re.search(p, text, re.IGNORECASE))
-        if score:
-            scores[name] = score
-    if not scores:
-        return 'generic'
-    return max(scores, key=lambda k: scores[k])
+        s = sum(1 for p in pats if re.search(p, text, re.IGNORECASE))
+        if s:
+            scores[name] = s
+    return max(scores, key=lambda k: scores[k]) if scores else 'generic'
 
 class BytecodeParser:
     def __init__(self, data):
@@ -60,21 +59,21 @@ class BytecodeParser:
         self.pos += 4
         return v
 
-    def double(self):
+    def f64(self):
         v = struct.unpack_from('<d', self.data, self.pos)[0]
         self.pos += 8
         return v
 
-    def lua_string(self):
-        size = self.u32()
-        if size == 0:
+    def lstring(self):
+        n = self.u32()
+        if n == 0:
             return ''
-        s = self.data[self.pos:self.pos + size - 1].decode('utf-8', errors='replace')
-        self.pos += size
+        s = self.data[self.pos:self.pos+n-1].decode('utf-8', errors='replace')
+        self.pos += n
         return s
 
-    def parse_proto(self):
-        self.lua_string()
+    def proto(self):
+        self.lstring()
         self.u32()
         self.u32()
         self.u8()
@@ -87,27 +86,27 @@ class BytecodeParser:
             if t == 1:
                 self.u8()
             elif t == 3:
-                self.numbers.append(self.double())
+                self.numbers.append(self.f64())
             elif t == 4:
-                s = self.lua_string()
+                s = self.lstring()
                 if s:
                     self.strings.append(s)
         for _ in range(self.u32()):
-            self.parse_proto()
+            self.proto()
         self.pos += self.u32() * 4
         for _ in range(self.u32()):
-            self.lua_string()
+            self.lstring()
             self.u32()
             self.u32()
         for _ in range(self.u32()):
-            self.lua_string()
+            self.lstring()
 
     def parse(self):
         if self.data[:4] != b'\x1bLua':
             return False
         self.pos = 12
         try:
-            self.parse_proto()
+            self.proto()
             return True
         except:
             return False
@@ -138,28 +137,36 @@ def extract_constants(source):
                     return {'strings': p.strings, 'numbers': p.numbers, 'xor_key': key}
     return None
 
-def _fold(m):
-    try:
-        a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
-        r = {'+': a+b, '-': a-b, '*': a*b,
-             '/': a/b if b else None, '%': a%b if b else None}.get(op)
-        if r is None:
-            return m.group(0)
-        return str(int(r)) if r == int(r) else str(r)
-    except:
-        return m.group(0)
+def static_decode(code):
+    code = re.sub(r'\\x([0-9a-fA-F]{2})',
+                  lambda m: chr(int(m.group(1), 16)), code)
+    code = re.sub(r'\\(\d{1,3})',
+                  lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
 
-def static_clean(code):
-    code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
-    code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
-    code = re.sub(
-        r'string\.char\s*\(\s*([\d,\s]+)\s*\)',
-        lambda m: '"' + ''.join(chr(int(n)) for n in re.findall(r'\d+', m.group(1)) if int(n) < 256) + '"',
-        code
-    )
+    def sc(m):
+        nums = re.findall(r'\d+', m.group(1))
+        try:
+            return '"' + ''.join(chr(int(n)) for n in nums if int(n) < 256) + '"'
+        except:
+            return m.group(0)
+    code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', sc, code)
+
+    def fold(m):
+        try:
+            a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
+            r = {'+': a+b, '-': a-b, '*': a*b,
+                 '/': a/b if b else None,
+                 '%': a%b if b else None}.get(op)
+            if r is None:
+                return m.group(0)
+            return str(int(r)) if r == int(r) else str(r)
+        except:
+            return m.group(0)
+
     parts = re.split(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', code)
     code = ''.join(
-        re.sub(r'\b(\d+(?:\.\d+)?)\s*([+\-*/%])\s*(\d+(?:\.\d+)?)\b', _fold, p) if i % 2 == 0 else p
+        re.sub(r'\b(\d+(?:\.\d+)?)\s*([+\-*/%])\s*(\d+(?:\.\d+)?)\b', fold, p)
+        if i % 2 == 0 else p
         for i, p in enumerate(parts)
     )
     code = re.sub(r'if\s+false\s+then.*?end', '', code, flags=re.DOTALL)
@@ -167,8 +174,7 @@ def static_clean(code):
     return code
 
 def beautify(code):
-    out = []
-    indent = 0
+    out, indent = [], 0
     for line in code.split('\n'):
         s = line.strip()
         if not s:
@@ -183,272 +189,158 @@ def beautify(code):
             indent += 1
     return '\n'.join(out)
 
-LUA_SANDBOX = """
+HOOK_TEMPLATE = """
+local __captured = {}
+local __outdir   = {OUTDIR}
+local __real_ls  = loadstring
+local __real_l   = load
+
+local function __hook(code, ...)
+  if type(code) == "string" and #code > 5 then
+    local n = #__captured + 1
+    __captured[n] = code
+    local f = io.open(__outdir .. "/layer_" .. n .. ".lua", "w")
+    if f then f:write(code) f:close() end
+  end
+  return function() end
+end
+
+loadstring = __hook
+load       = __hook
+
+local function __safe_getfenv(n)
+  return {
+    string=string, math=math, table=table, bit=bit or {},
+    pairs=pairs, ipairs=ipairs, select=select, next=next,
+    tostring=tostring, tonumber=tonumber, type=type,
+    rawget=rawget, rawset=rawset, setmetatable=setmetatable,
+    getmetatable=getmetatable, unpack=unpack or table.unpack,
+    loadstring=loadstring, load=load, pcall=pcall, xpcall=xpcall,
+    error=error, assert=assert, print=print
+  }
+end
+getfenv = __safe_getfenv
+setfenv = function(n, t) return t end
+
 game             = setmetatable({}, {__index=function() return function() end end})
 workspace        = game
-script           = setmetatable({}, {__index=function() return "" end})
-Players          = {LocalPlayer={Name="Player",UserId=1,Character={}}}
-RunService       = {Heartbeat={Connect=function() end},RenderStepped={Connect=function() end}}
-UserInputService = setmetatable({}, {__index=function() return function() end end})
-TweenService     = setmetatable({}, {__index=function() return function() end end})
-HttpService      = {JSONDecode=function() return {} end,JSONEncode=function() return "{}" end}
-CFrame           = {new=function(...) return {} end,Angles=function(...) return {} end}
+script           = {}
+Players          = {LocalPlayer={Name="Player",UserId=1}}
+RunService       = {Heartbeat={Connect=function()end}}
+UserInputService = {}
+HttpService      = {JSONDecode=function() return {} end}
+Instance         = {new=function() return setmetatable({},{__index=function()return function()end end}) end}
 Vector3          = {new=function(...) return {} end}
-Vector2          = {new=function(...) return {} end}
-Color3           = {new=function(...) return {} end,fromRGB=function(...) return {} end}
+CFrame           = {new=function(...) return {} end}
+Color3           = {new=function(...) return {} end, fromRGB=function(...) return {} end}
 UDim2            = {new=function(...) return {} end}
-UDim             = {new=function(...) return {} end}
-Enum             = setmetatable({}, {__index=function() return setmetatable({},{__index=function() return 0 end}) end})
-Instance         = {new=function() return setmetatable({},{__index=function() return function() end end}) end}
-Drawing          = setmetatable({}, {__index=function() return function() end end})
-debug            = {traceback=function() return "" end,getinfo=function() return {} end,getupvalue=function() end,setupvalue=function() end}
-syn              = {protect_gui=function() end,queue_on_teleport=function() end,request=function() return {Body="",StatusCode=200} end}
-rconsole         = {print=function() end,clear=function() end,settitle=function() end}
+Enum             = setmetatable({},{__index=function() return setmetatable({},{__index=function() return 0 end}) end})
+tick             = function() return 0 end
+time             = function() return 0 end
+wait             = function(n) return n or 0 end
+spawn            = function() end
+delay            = function() end
+warn             = function() end
+print            = function() end
+error            = function(e) end
+assert           = function(v,m) if not v then error(m or "assert") end return v end
+shared           = {}
+_G.game          = game
+_G.workspace     = workspace
+identifyexecutor = function() return "synapse","2.0" end
+checkcaller      = function() return true end
 writefile        = function() end
 readfile         = function() return "" end
 isfile           = function() return false end
-isfolder         = function() return false end
 makefolder       = function() end
-listfiles        = function() return {} end
-delfile          = function() end
-request          = function() return {Body="",StatusCode=200,Success=true} end
-http             = {request=function() return {Body="",StatusCode=200} end}
-identifyexecutor = function() return "synapse","2.0" end
-getexecutorname  = function() return "synapse" end
-checkcaller      = function() return true end
-isrbxactive      = function() return true end
-gethiddenproperty= function() return nil,false end
-sethiddenproperty= function() end
-getrawmetatable  = getmetatable
-setrawmetatable  = setmetatable
-hookmetamethod   = function() end
-hookfunction     = function(a,b) return a end
-newcclosure      = function(f) return f end
-clonefunction    = function(f) return f end
-isexecutorclosure= function() return false end
-tick             = function() return 0 end
-time             = function() return 0 end
-elapsedtime      = function() return 0 end
-wait             = function(n) return n or 0 end
-spawn            = function(f) end
-delay            = function(t,f) end
-print            = function() end
-warn             = function() end
-error            = function(e) end
-assert           = function(v,m) if not v then error(m or "assertion failed") end return v end
-select           = select
-ipairs           = ipairs
-pairs            = pairs
-next             = next
-tostring         = tostring
-tonumber         = tonumber
-type             = type
-rawget           = rawget
-rawset           = rawset
-rawequal         = rawequal
-rawlen           = rawlen
-setmetatable     = setmetatable
-getmetatable     = getmetatable
-shared           = {}
-_VERSION         = "Lua 5.1"
+request          = function() return {Body="",StatusCode=200} end
+Drawing          = setmetatable({},{__index=function() return function() end end})
+syn              = {protect_gui=function()end}
+debug            = {traceback=function() return "" end}
 
-bit = {}
-bit.bxor = function(a,b)
-local r,p=0,1
-while a>0 or b>0 do
-if a%2~=b%2 then r=r+p end
-a=math.floor(a/2); b=math.floor(b/2); p=p*2
+if not bit then
+  bit = {}
+  bit.bxor=function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+  bit.band=function(a,b) local r,p=0,1 while a>0 and b>0 do if a%2==1 and b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+  bit.bor =function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2==1 or b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+  bit.bnot=function(a) return -a-1 end
+  bit.rshift=function(a,b) return math.floor(a/(2^b)) end
+  bit.lshift=function(a,b) return math.floor(a*(2^b)) end
+  bit32 = bit
 end
-return r
-end
-bit.band = function(a,b)
-local r,p=0,1
-while a>0 and b>0 do
-if a%2==1 and b%2==1 then r=r+p end
-a=math.floor(a/2); b=math.floor(b/2); p=p*2
-end
-return r
-end
-bit.bor = function(a,b)
-local r,p=0,1
-while a>0 or b>0 do
-if a%2==1 or b%2==1 then r=r+p end
-a=math.floor(a/2); b=math.floor(b/2); p=p*2
-end
-return r
-end
-bit.bnot   = function(a) return -a-1 end
-bit.rshift = function(a,b) return math.floor(a/(2^b)) end
-bit.lshift = function(a,b) return math.floor(a*(2^b)) end
-bit.arshift= function(a,b) return math.floor(a/(2^b)) end
-bit.btest  = function(a,b) return bit.band(a,b)~=0 end
-bit.tobit  = function(a) return a end
-bit.tohex  = function(a) return string.format("%x",a) end
-bit32 = bit
 
-coroutine = {
-create =function(f) return f end,
-resume =function(f,...) return pcall(f,...) end,
-yield  =function(...) return ... end,
-wrap   =function(f) return f end,
-status =function() return "dead" end,
-running=function() return nil end
-}
-
-string.byte    = string.byte
-string.char    = string.char
-string.sub     = string.sub
-string.rep     = string.rep
-string.len     = string.len
-string.find    = string.find
-string.gsub    = string.gsub
-string.match   = string.match
-string.gmatch  = string.gmatch
-string.format  = string.format
-string.lower   = string.lower
-string.upper   = string.upper
-string.reverse = string.reverse
-string.dump    = function() return "" end
-string.split   = function(s,sep) local t={} for p in s:gmatch("[^"..sep.."]+") do t[#t+1]=p end return t end
-
-math.abs   = math.abs
-math.floor = math.floor
-math.ceil  = math.ceil
-math.max   = math.max
-math.min   = math.min
-math.sqrt  = math.sqrt
-math.random= math.random
-math.huge  = math.huge
-math.pi    = math.pi
-math.sin   = math.sin
-math.cos   = math.cos
-math.tan   = math.tan
-math.log   = math.log
-math.exp   = math.exp
-math.fmod  = math.fmod
-math.modf  = math.modf
-math.pow   = function(a,b) return a^b end
-math.log10 = function(a) return math.log(a)/math.log(10) end
-
-table.insert = table.insert
-table.remove = table.remove
-table.sort   = table.sort
-table.concat = table.concat
+coroutine.wrap   = coroutine.wrap   or function(f) return f end
+coroutine.create = coroutine.create or function(f) return f end
+table.pack   = table.pack   or function(...) return {n=select('#',...), ...} end
 table.unpack = table.unpack or unpack
-table.pack   = table.pack or function(...) return {n=select('#',...), ...} end
-table.move   = table.move or function(a,f,e,t,b) b=b or a for i=f,e do b[t+(i-f)]=a[i] end return b end
-
-local _env = {
-string=string, math=math, table=table, bit=bit, bit32=bit32,
-coroutine=coroutine, pairs=pairs, ipairs=ipairs, select=select, next=next,
-tostring=tostring, tonumber=tonumber, type=type,
-rawget=rawget, rawset=rawset, rawequal=rawequal, rawlen=rawlen,
-setmetatable=setmetatable, getmetatable=getmetatable,
-unpack=table.unpack, loadstring=loadstring, load=load,
-pcall=pcall, xpcall=xpcall, error=error, assert=assert,
-print=print, warn=warn, game=game, workspace=workspace,
-script=script, tick=tick, time=time, wait=wait, spawn=spawn,
-shared=shared, Drawing=Drawing, syn=syn,
-writefile=writefile, readfile=readfile, request=request,
-identifyexecutor=identifyexecutor, checkcaller=checkcaller,
-hookfunction=hookfunction, newcclosure=newcclosure,
-Instance=Instance, Vector3=Vector3, Vector2=Vector2,
-CFrame=CFrame, Color3=Color3, UDim2=UDim2, Enum=Enum,
-Players=Players, RunService=RunService, HttpService=HttpService,
-debug=debug, _VERSION=_VERSION
-}
-getfenv = function(n) return _env end
-setfenv = function(n,t)
-for k,v in pairs(t) do _env[k]=v end
-return t
-end
-_G   = _env
-_ENV = _env
 """
 
-def _worker(source, q):
-    try:
-        from lupa import LuaRuntime
-        captured = []
-        lua = LuaRuntime(unpack_returned_tuples=True)
+def sandbox_exec(source, timeout=8):
+    captured = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        outdir_escaped = tmpdir.replace('\\', '\\\\').replace('"', '\\"')
+        hook = HOOK_TEMPLATE.replace('{OUTDIR}', f'"{outdir_escaped}"')
+        full_script = hook + '\n' + source
 
-        for name in ['io', 'os', 'require', 'dofile', 'loadfile',
-                     'package', 'collectgarbage', 'newproxy', 'module']:
-            try:
-                lua.execute(f"{name} = nil")
-            except:
-                pass
-
-        lua.execute(LUA_SANDBOX)
-
-        def safe_ls(code, *args):
-            if callable(code):
-                chunks = []
-                try:
-                    while True:
-                        c = code()
-                        if not c:
-                            break
-                        chunks.append(str(c))
-                except:
-                    pass
-                code = ''.join(chunks)
-            s = str(code) if code else ''
-            if len(s.strip()) > 5:
-                captured.append(s)
-            return lua.eval("function(...) end")
-
-        lua.globals()['loadstring'] = safe_ls
-        lua.globals()['load']       = safe_ls
+        script_path = os.path.join(tmpdir, 'script.lua')
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(full_script)
 
         try:
-            lua.execute(source)
-        except:
+            subprocess.run(
+                [LUA_BIN, script_path],
+                timeout=timeout,
+                capture_output=True,
+                cwd=tmpdir
+            )
+        except subprocess.TimeoutExpired:
             pass
+        except FileNotFoundError:
+            return None, 'lua5.1 binary not found - install lua5.1 on the server'
+        except Exception as e:
+            return [], str(e)
 
-        q.put({'ok': True, 'captured': captured})
+        i = 1
+        while True:
+            layer_path = os.path.join(tmpdir, f'layer_{i}.lua')
+            if not os.path.exists(layer_path):
+                break
+            with open(layer_path, 'r', encoding='utf-8', errors='replace') as f:
+                data = f.read()
+            if data.strip():
+                captured.append(data)
+            i += 1
 
-    except Exception as e:
-        q.put({'ok': False, 'captured': [], 'err': str(e)})
+    return captured, None
 
-def sandbox_run(source, timeout=7):
-    q = Queue()
-    p = Process(target=_worker, args=(source, q), daemon=True)
-    p.start()
-    p.join(timeout)
-    if p.is_alive():
-        p.kill()
-        p.join()
-        return [], 'timeout'
-    if not q.empty():
-        r = q.get()
-        return r.get('captured', []), r.get('err')
-    return [], 'no_response'
-
-def peel_layers(source, max_layers=8, timeout=7):
+def peel_layers(source, max_layers=8, timeout=8):
     current = source
     count   = 0
-    layers  = []
+    previews = []
+
     for _ in range(max_layers):
-        captured, err = sandbox_run(current, timeout)
+        captured, err = sandbox_exec(current, timeout)
+        if captured is None:
+            return current, count, previews, err
         if not captured:
             break
         best = max(captured, key=len)
         if len(best.strip()) < 10 or best == current:
             break
-        layers.append(best[:100].replace('\n', ' '))
+        previews.append(best[:100].replace('\n', ' '))
         current = best
         count  += 1
-    return current, count, layers
+
+    return current, count, previews, None
 
 async def ai_clean(code):
     if not ANTHROPIC_KEY:
         return code
     prompt = (
         "You are a Lua reverse engineer. Below is deobfuscated Lua. "
-        "Rename cryptic variables to meaningful names. "
+        "Rename cryptic variables to meaningful names based on context. "
         "Add brief comments explaining each section. "
-        "Preserve all logic. Return only Lua code, no markdown.\n\n"
+        "Preserve all logic exactly. Return ONLY Lua code, no markdown.\n\n"
         + code[:3500]
     )
     try:
@@ -499,11 +391,11 @@ async def deobf(ctx, flags: str = ''):
         except:
             return await ctx.send('Cannot decode file.')
 
-    obf = detect_obfuscator(text)
-    em  = discord.Embed(title=f'Detected: {obf}', color=0x3498db)
+    obf  = detect_obfuscator(text)
+    em   = discord.Embed(title=f'Detected: {obf}', color=0x3498db)
     em.add_field(name='File', value=att.filename, inline=True)
     em.add_field(name='Size', value=f'{len(text):,} chars', inline=True)
-    msg = await ctx.send(embed=em)
+    msg  = await ctx.send(embed=em)
 
     consts = extract_constants(text)
     if consts:
@@ -517,45 +409,56 @@ async def deobf(ctx, flags: str = ''):
 
     if scan_only:
         em.title = f'Scan done: {obf}'
-        em.color = 0x2ecc71
+        em.color  = 0x2ecc71
         await msg.edit(embed=em)
         return
 
-    em.description = 'Running sandbox...'
+    em.description = 'Running Lua 5.1 sandbox...'
     await msg.edit(embed=em)
 
-    result, layers, previews = await asyncio.to_thread(peel_layers, text, 8, 7)
+    result, layers, previews, err = await asyncio.to_thread(peel_layers, text, 8, 8)
+
+    if err:
+        em.description = f'Error: {err}'
+        em.color = 0xe74c3c
+        await msg.edit(embed=em)
+        return
 
     if layers > 0:
-        result = static_clean(result)
+        result = static_decode(result)
         result = beautify(result)
-        em.description = f'Peeled {layers} layer(s).'
+        em.description = f'Peeled {layers} layer(s) via loadstring intercept.'
         em.color       = 0x2ecc71
         if previews:
             em.add_field(
-                name='Layers',
+                name='Layers captured',
                 value='\n'.join(f'{i+1}: {p}...' for i, p in enumerate(previews))[:900],
                 inline=False
             )
     else:
-        em.description = 'Sandbox got nothing - static clean only.'
+        em.description = 'Sandbox got nothing - applying static transforms only.'
         em.color       = 0xe67e22
         await msg.edit(embed=em)
-        result = static_clean(text)
+        result = static_decode(text)
         result = beautify(result)
         em.add_field(
             name='Note',
-            value='Custom VM or sandbox crash. Cannot fully reverse automatically.',
+            value=(
+                'Script likely uses a custom VM (Luraph 3, IronBrew 2/3). '
+                'These compile Lua into a private instruction set - '
+                'no automated tool can fully reverse this. '
+                'String decoding and formatting were applied.'
+            ),
             inline=False
         )
 
     if use_ai and ANTHROPIC_KEY:
-        em.description += '\nAI pass running...'
+        em.description += '\nAI rename pass running...'
         await msg.edit(embed=em)
         result = await ai_clean(result)
-        em.add_field(name='AI', value='Done', inline=True)
+        em.add_field(name='AI', value='Variables renamed + comments added', inline=True)
     elif use_ai:
-        em.add_field(name='AI', value='No API key set', inline=True)
+        em.add_field(name='AI', value='No ANTHROPIC_API_KEY env var set', inline=True)
 
     await msg.edit(embed=em)
     await ctx.send(
@@ -572,7 +475,7 @@ async def constants_cmd(ctx):
     consts = extract_constants(text)
     if not consts:
         return await ctx.send('No Lua 5.1 bytecode found.')
-    out = '-- Strings:\n' + ''.join(f'--   {repr(s)}\n' for s in consts['strings'])
+    out  = '-- Strings:\n' + ''.join(f'--   {repr(s)}\n' for s in consts['strings'])
     out += '-- Numbers:\n' + ''.join(f'--   {n}\n' for n in consts['numbers'])
     if 'xor_key' in consts:
         out += f'-- XOR key: {consts["xor_key"]}\n'
@@ -584,21 +487,26 @@ async def info_cmd(ctx):
     em.add_field(name='Commands', value=(
         '`!deobf` - deobfuscate `.lua`\n'
         '`!deobf --ai` - deobf + AI rename\n'
-        '`!deobf --scan` - scan only\n'
+        '`!deobf --scan` - scan + constants only\n'
         '`!constants` - dump bytecode constants'
     ), inline=False)
     em.add_field(name='Coverage', value=(
-        'WeareDevs, IronBrew 1, basic Luraph\n'
-        'String encoding, loadstring layers\n'
+        'WeareDevs, IronBrew 1, basic Luraph - real Lua 5.1 sandbox\n'
+        'String encoding, nested loadstring up to 8 layers\n'
         'Bytecode constant extraction\n'
-        'IronBrew 2/3, modern Luraph - static only\n'
+        'IronBrew 2/3, modern Luraph - static decode only\n'
         'Full custom VM - not reversible automatically'
     ), inline=False)
+    em.add_field(name='Requirements', value='lua5.1 binary must be installed on the server', inline=False)
     await ctx.send(embed=em)
 
 @bot.event
 async def on_ready():
-    print(f'Ready: {bot.user}')
+    try:
+        subprocess.run([LUA_BIN, '-v'], capture_output=True, timeout=2)
+        print(f'Ready: {bot.user} | Lua binary: {LUA_BIN} OK')
+    except FileNotFoundError:
+        print(f'Ready: {bot.user} | WARNING: {LUA_BIN} not found - install lua5.1')
 
 if __name__ == '__main__':
     bot.run(TOKEN)

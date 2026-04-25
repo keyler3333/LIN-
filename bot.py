@@ -60,12 +60,12 @@ SIGNATURES = {
     },
 }
 
-def detect_obfuscator(raw_bytes):
+def detect_obfuscator(text):
     scores = {}
     for name, patterns in SIGNATURES.items():
         total = 0
         for pat, weight in patterns.items():
-            if re.search(pat, raw_bytes, re.IGNORECASE):
+            if re.search(pat, text, re.IGNORECASE):
                 total += weight
         if total > 0:
             scores[name] = total
@@ -453,7 +453,7 @@ async def deobf(ctx):
     msg = await ctx.send(embed=embed)
     await asyncio.sleep(1)
 
-    obf_type = detect_obfuscator(raw)
+    obf_type = detect_obfuscator(text)
     embed.title = f"\U0001f513 Detected: `{obf_type}`"
     embed.description = "Executing Script In Secure VM..."
     embed.color = 0xf39c12

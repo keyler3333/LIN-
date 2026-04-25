@@ -1,8 +1,0 @@
-[build]
-  root = "."
-
-[services.backend]
-  root = "backend/"
-
-[services.bot]
-  root = "bot/"

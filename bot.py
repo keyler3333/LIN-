@@ -435,39 +435,56 @@ def deobfuscate(source, obf_type):
 
 @bot.command(name='deobf')
 async def deobf(ctx):
-    async with ctx.typing():
-        await asyncio.sleep(1)
-        
-        if not ctx.message.attachments:
-            return await ctx.send('Please attach a `.lua` file with the command: `!deobf`')
-        
-        attachment = ctx.message.attachments[0]
-        
-        if not attachment.filename.lower().endswith(('.lua', '.txt', '.luac')):
-            return await ctx.send('Please attach a `.lua` file.')
-        
-        raw = await attachment.read()
-        
+    if not ctx.message.attachments:
+        return await ctx.send('Please attach a `.lua` file with the command: `!deobf`')
+    attachment = ctx.message.attachments[0]
+    if not attachment.filename.lower().endswith(('.lua', '.txt', '.luac')):
+        return await ctx.send('Please attach a `.lua` file.')
+    raw = await attachment.read()
+    try:
+        text = raw.decode('utf-8')
+    except:
         try:
-            text = raw.decode('utf-8')
+            text = raw.decode('latin-1')
         except:
-            try:
-                text = raw.decode('latin-1')
-            except:
-                return await ctx.send('File encoding not supported.')
-        
-        await ctx.send('\U0001f50d **Analyzing obfuscation...**')
-        await asyncio.sleep(0.5)
-        obf_type = detect_obfuscator(raw)
-        
-        await ctx.send(f'\U0001f513 **Detected:** `{obf_type}` — reversing protection layers...')
-        await asyncio.sleep(0.5)
-        result = deobfuscate(text, obf_type)
-        
-        await asyncio.sleep(0.5)
-        
-        file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{attachment.filename}')
-        await ctx.send(f'\u2705 **Deobfuscated!** `{obf_type}` → clean Lua below:', file=file)
+            return await ctx.send('File encoding not supported.')
+
+    embed = discord.Embed(title="\U0001f50d Analyzing obfuscation...", color=0x3498db)
+    msg = await ctx.send(embed=embed)
+    await asyncio.sleep(1)
+
+    obf_type = detect_obfuscator(raw)
+    embed.title = f"\U0001f513 Detected: `{obf_type}`"
+    embed.description = "Executing Script In Secure VM..."
+    embed.color = 0xf39c12
+    await msg.edit(embed=embed)
+    await asyncio.sleep(1)
+
+    embed.description += "\nCollect All Runtime Things..."
+    await msg.edit(embed=embed)
+    await asyncio.sleep(0.8)
+
+    embed.description += "\nReverse Functions & Beautify All Tables..."
+    await msg.edit(embed=embed)
+    await asyncio.sleep(1)
+
+    embed.description += "\nCollect At Table..."
+    await msg.edit(embed=embed)
+    await asyncio.sleep(0.5)
+
+    result = deobfuscate(text, obf_type)
+    embed.description += "\nSend To You!"
+    embed.color = 0x2ecc71
+    await msg.edit(embed=embed)
+    await asyncio.sleep(0.5)
+
+    file = discord.File(fp=io.StringIO(result), filename=f'deobfuscated_{attachment.filename}')
+    final_embed = discord.Embed(
+        title=f"\u2705 Deobfuscated! `{obf_type}`",
+        description="The clean Lua code is attached below.",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=final_embed, file=file)
 
 @bot.event
 async def on_ready():

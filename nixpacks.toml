@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["lua5_1"]
+nixPkgs = ["lua"]

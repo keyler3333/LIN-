@@ -18,11 +18,12 @@ LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
 SANDBOX_TEMPLATE = r"""
 local __deadline = 100000000
-local __timeout  = os.time() + 7
+local __timeout  = os.time() + 8
 
 debug.sethook(function(ev)
     __deadline = __deadline - 1
     if __deadline <= 0 or os.time() > __timeout then
+        io.stderr:write("KILLED_BY_TIMEOUT\n")
         os.exit(0)
     end
 end, "", 1)
@@ -35,6 +36,7 @@ local function __hook(code, ...)
         __n = __n + 1
         local f = io.open(__outdir .. "/layer_" .. __n .. ".lua", "w")
         if f then f:write(code) f:close() end
+        io.stderr:write("HOOK_CAPTURED_LAYER_" .. __n .. "\n")
     end
     return function() end
 end
@@ -117,6 +119,8 @@ table.unpack = table.unpack or unpack
 math.pow     = math.pow     or function(a,b) return a^b end
 _G.game      = game
 _G.workspace = workspace
+
+io.stderr:write("SANDBOX_STARTED\n")
 """
 
 def run_sandbox(source, timeout=10):
@@ -135,6 +139,7 @@ def run_sandbox(source, timeout=10):
         except Exception as e:
             return None, str(e)
         stderr = proc.stderr.decode('utf-8', errors='replace').strip()
+        stdout = proc.stdout.decode('utf-8', errors='replace').strip()
         captured = []
         i = 1
         while True:
@@ -149,7 +154,11 @@ def run_sandbox(source, timeout=10):
         if captured:
             return captured, None
         else:
-            return None, f'no layers (Lua error: {stderr[:300] if stderr else "none"})'
+            diag = []
+            if stderr: diag.append(f"stderr: {stderr[:400]}")
+            if stdout: diag.append(f"stdout: {stdout[:400]}")
+            if not diag: diag.append("no output at all - script likely crashed immediately via pcall")
+            return None, ' | '.join(diag)
 
 def peel(source, max_layers=8, timeout=10):
     current, count, previews = source, 0, []

@@ -2,4 +2,4 @@
 nixPkgs = ["lua5_1"]
 
 [start]
-cmd = "python deobf-api/api.py"
+cmd = "cd deobf-api && python api.py"

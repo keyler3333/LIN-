@@ -1,12 +1,5 @@
 [phases.setup]
-nixPkgs = ["lua5_1", "nodejs", "nodePackages.npm", "git"]
-
-[phases.install]
-cmds = [
-    "pip install -r deobf-api/requirements.txt",
-    "git clone https://github.com/nicowillis/Lua-Deobfuscator /app/Lua-Deobfuscator || true",
-    "cd /app/Lua-Deobfuscator && npm install"
-]
+nixPkgs = ["lua5_1"]
 
 [start]
-cmd = "cd deobf-api && python api.py"
+cmd = "python api.py"

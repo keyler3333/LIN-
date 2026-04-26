@@ -17,17 +17,6 @@ def find_lua():
 LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
 SANDBOX_TEMPLATE = r"""
-local __deadline = 100000000
-local __timeout  = os.time() + 8
-
-debug.sethook(function(ev)
-    __deadline = __deadline - 1
-    if __deadline <= 0 or os.time() > __timeout then
-        io.stderr:write("KILLED_BY_TIMEOUT\n")
-        os.exit(0)
-    end
-end, "", 1)
-
 local __outdir = [[{OUTDIR}]]
 local __n = 0
 
@@ -95,11 +84,36 @@ clonefunction    = function(f) return f end
 tick             = function() return 0 end
 time             = function() return 0 end
 elapsedtime      = function() return 0 end
-wait             = function(n) return n or 0 end
-spawn            = function() end
-delay            = function() end
+
+local __wait_count = 0
+wait = function(n)
+    __wait_count = __wait_count + 1
+    if __wait_count > 5000 then
+        io.stderr:write("WAIT_LIMIT_EXCEEDED\n")
+        os.exit(0)
+    end
+    if coroutine.running() then
+        coroutine.yield()
+    end
+end
+
+spawn            = function(f) if f then f() end end
+delay            = function(t, f) if f then f() end end
 warn             = function() end
 error            = function(e) end
+
+local __print_count = 0
+print = function(...)
+    __print_count = __print_count + 1
+    if __print_count <= 10 then
+        local args = {...}
+        for i, v in ipairs(args) do
+            io.stderr:write(tostring(v) .. "\t")
+        end
+        io.stderr:write("\n")
+    end
+end
+
 assert           = function(v,m) if not v then error(m or "assert") end return v end
 shared           = {}
 
@@ -121,12 +135,35 @@ _G.game      = game
 _G.workspace = workspace
 
 io.stderr:write("SANDBOX_STARTED\n")
+
+local __co = coroutine.create(function()
+    {USER_CODE}
+end)
+
+local __start = os.time()
+local __steps = 0
+while coroutine.status(__co) ~= "dead" do
+    __steps = __steps + 1
+    if __steps > 100000 then
+        io.stderr:write("STEPS_LIMIT_EXCEEDED\n")
+        break
+    end
+    if os.time() - __start > 8 then
+        io.stderr:write("TIMEOUT\n")
+        break
+    end
+    local ok, err = coroutine.resume(__co)
+    if not ok then
+        io.stderr:write("LUA_ERROR: " .. tostring(err) .. "\n")
+        break
+    end
+end
 """
 
-def run_sandbox(source, timeout=10):
+def run_sandbox(source, timeout=12):
     with tempfile.TemporaryDirectory() as d:
         escaped = d.replace('\\', '\\\\').replace('"', '\\"')
-        script  = SANDBOX_TEMPLATE.replace('{OUTDIR}', escaped) + '\n' + source
+        script  = SANDBOX_TEMPLATE.replace('{OUTDIR}', escaped).replace('{USER_CODE}', source)
         spath   = os.path.join(d, 'script.lua')
         with open(spath, 'w', encoding='utf-8') as f:
             f.write(script)
@@ -155,12 +192,12 @@ def run_sandbox(source, timeout=10):
             return captured, None
         else:
             diag = []
-            if stderr: diag.append(f"stderr: {stderr[:400]}")
-            if stdout: diag.append(f"stdout: {stdout[:400]}")
-            if not diag: diag.append("no output at all - script likely crashed immediately via pcall")
+            if stderr: diag.append(stderr[:500])
+            if stdout: diag.append("stdout: " + stdout[:300])
+            if not diag: diag.append("no output")
             return None, ' | '.join(diag)
 
-def peel(source, max_layers=8, timeout=10):
+def peel(source, max_layers=8, timeout=12):
     current, count, previews = source, 0, []
     for _ in range(max_layers):
         captured, err = run_sandbox(current, timeout)

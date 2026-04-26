@@ -1,11 +1,13 @@
 import discord
+from discord import app_commands
+from discord.ext import commands
 import re
 import io
 import os
 import struct
 import base64
 import httpx
-from discord.ext import commands
+import asyncio
 
 TOKEN         = os.environ['DISCORD_BOT_TOKEN']
 ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
@@ -14,6 +16,7 @@ API_URL       = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+tree = bot.tree
 
 OBFUSCATOR_PATTERNS = {
     'luraph':     [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
@@ -21,7 +24,7 @@ OBFUSCATOR_PATTERNS = {
     'ironbrew':   [r'local\s+\w+\s*=\s*\{\s*"\\x[0-9a-fA-F]{2}', r'\bIronBrew\b', r'bit\.bxor'],
     'ironbrew2':  [r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[\w+\]'],
     'wearedevs':  [r'show_\w+\s*=\s*function', r'getfenv\s*\(\s*\)', r'string\.reverse\s*\('],
-    'prometheus': [r'Prometheus', r'number_to_bytes'],
+    'prometheus': [r'Promise', r'number_to_bytes'],
     'custom_vm':  [r'mkexec', r'constTags', r'protoFormats'],
     'synapse':    [r'syn\.\w+\s*=\s*', r'syn\.protect'],
     'luaarmor':   [r'___armor_', r'LuaArmor'],
@@ -93,12 +96,13 @@ def extract_constants(source):
     return None
 
 async def call_api(source):
-    async with httpx.AsyncClient(timeout=60) as c:
+    async with httpx.AsyncClient(timeout=90) as c:
         r = await c.post(f'{API_URL}/deobf', json={'source': source})
         return r.json()
 
 async def ai_clean(code):
-    if not ANTHROPIC_KEY: return code
+    if not ANTHROPIC_KEY:
+        return code
     prompt = (
         "You are a Lua reverse engineer. Below is deobfuscated Lua. "
         "Rename cryptic variables to meaningful names. "
@@ -119,105 +123,96 @@ async def ai_clean(code):
     except:
         return code
 
+async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
+    obf = detect_obfuscator(text)
+    if scan_only:
+        embed = discord.Embed(title=f'Scan: {obf}', color=0x2ecc71)
+        embed.add_field(name='File', value=filename, inline=True)
+        embed.add_field(name='Size', value=f'{len(text):,} chars', inline=True)
+        return {'embed': embed, 'file': None, 'result_str': None}
+    try:
+        data = await call_api(text)
+    except Exception as e:
+        embed = discord.Embed(title='API Error', description=str(e), color=0xe74c3c)
+        return {'embed': embed, 'file': None, 'result_str': None}
+    if 'error' in data:
+        embed = discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c)
+        return {'embed': embed, 'file': None, 'result_str': None}
+    result   = data['result']
+    layers   = data.get('layers', 0)
+    previews = data.get('previews', [])
+    method   = data.get('method', 'static')
+    detected = data.get('detected', obf)
+    if use_ai and ANTHROPIC_KEY:
+        result = await ai_clean(result)
+    embed = discord.Embed(title='Deobfuscation complete', color=0x2ecc71)
+    embed.add_field(name='Obfuscator', value=detected, inline=True)
+    embed.add_field(name='Method', value=method, inline=True)
+    embed.add_field(name='Layers peeled', value=str(layers), inline=True)
+    if previews:
+        preview_text = '\n'.join(f'Layer {i+1}: {p[:80]}...' for i, p in enumerate(previews[:3]))
+        embed.add_field(name='Layer previews', value=preview_text, inline=False)
+    if use_ai and ANTHROPIC_KEY:
+        embed.add_field(name='AI', value='Variables renamed + comments added', inline=False)
+    file = discord.File(fp=io.StringIO(result), filename=f'deobf_{filename}')
+    return {'embed': embed, 'file': file, 'result_str': result}
+
 @bot.command(name='deobf')
-async def deobf(ctx, flags: str = ''):
+async def prefix_deobf(ctx, flags: str = ''):
     use_ai    = '--ai'   in flags
     scan_only = '--scan' in flags
-
     if not ctx.message.attachments:
-        return await ctx.send(
-            '**Usage:**\n'
-            '`!deobf` - deobfuscate `.lua` file\n'
-            '`!deobf --ai` - deobf + AI rename variables\n'
-            '`!deobf --scan` - scan only, no execution'
-        )
-
+        return await ctx.send('**Usage:**\n`!deobf` - deobfuscate `.lua` file\n`!deobf --ai` - deobf + AI rename\n`!deobf --scan` - scan only')
     att = ctx.message.attachments[0]
     if not att.filename.lower().endswith(('.lua', '.txt', '.luac')):
         return await ctx.send('Attach a `.lua`, `.luac`, or `.txt` file.')
-
     raw = await att.read()
     try: text = raw.decode('utf-8')
     except:
         try: text = raw.decode('latin-1')
         except: return await ctx.send('Cannot decode file.')
-
-    obf = detect_obfuscator(text)
-    em  = discord.Embed(title=f'Detected: {obf}', color=0x3498db)
-    em.add_field(name='File', value=att.filename, inline=True)
-    em.add_field(name='Size', value=f'{len(text):,} chars', inline=True)
-    msg = await ctx.send(embed=em)
-
-    consts = extract_constants(text)
-    if consts:
-        preview = ', '.join(repr(s) for s in consts['strings'][:10])
-        em.add_field(name='Bytecode constants',
-                     value=f"Strings: {preview or 'none'}\nXOR key: {consts.get('xor_key','none')}",
-                     inline=False)
-        await msg.edit(embed=em)
-
-    if scan_only:
-        em.title = f'Scan done: {obf}'; em.color = 0x2ecc71
-        await msg.edit(embed=em); return
-
-    em.description = 'Sending to deobfuscation server...'
-    await msg.edit(embed=em)
-
-    try:
-        data = await call_api(text)
-    except Exception as e:
-        em.description = f'API error: {e}'; em.color = 0xe74c3c
-        await msg.edit(embed=em); return
-
-    if 'error' in data:
-        em.description = f'Server error: {data["error"]}'; em.color = 0xe74c3c
-        await msg.edit(embed=em); return
-
-    result   = data['result']
-    layers   = data['layers']
-    previews = data['previews']
-    method   = data['method']
-
-    if layers > 0:
-        em.description = f'Peeled {layers} layer(s) via sandbox.'
-        em.color = 0x2ecc71
-        if previews:
-            em.add_field(name='Layers', value='\n'.join(f'{i+1}: {p}...' for i,p in enumerate(previews))[:900], inline=False)
-    else:
-        em.description = 'Sandbox got nothing - static decode applied.'
-        em.color = 0xe67e22
-        em.add_field(name='Note', value='Script likely uses a custom VM. String decoding and formatting were applied.', inline=False)
-
-    em.add_field(name='Method', value=method, inline=True)
-
-    if use_ai and ANTHROPIC_KEY:
-        em.description += '\nAI pass running...'
-        await msg.edit(embed=em)
-        result = await ai_clean(result)
-        em.add_field(name='AI', value='Done', inline=True)
-    elif use_ai:
-        em.add_field(name='AI', value='No ANTHROPIC_API_KEY set', inline=True)
-
-    await msg.edit(embed=em)
-    await ctx.send(
-        f'Done - {layers} layer(s) | {len(result):,} chars',
-        file=discord.File(fp=io.StringIO(result), filename=f'deobf_{att.filename}')
+    dots = iter(['   ', '.  ', '.. ', '...'])
+    start_embed = discord.Embed(
+        title=f"{next(dots)} Analyzing file...",
+        description=f"Detected: **{detect_obfuscator(text)}**\nSize: {len(text):,} chars",
+        color=0x3498db
     )
+    msg = await ctx.send(embed=start_embed)
+    async def animate():
+        for _ in range(60):
+            await asyncio.sleep(0.6)
+            try:
+                start_embed.title = f"{next(dots)} Deobfuscating..."
+                await msg.edit(embed=start_embed)
+            except:
+                pass
+    anim_task = asyncio.create_task(animate())
+    try:
+        result = await run_deobf_process(text, att.filename, use_ai=use_ai, scan_only=scan_only)
+    finally:
+        anim_task.cancel()
+    await msg.delete()
+    if result['file']:
+        await ctx.send(file=result['file'], embed=result['embed'])
+    else:
+        await ctx.send(embed=result['embed'])
 
 @bot.command(name='constants')
-async def constants_cmd(ctx):
-    if not ctx.message.attachments: return await ctx.send('Attach a file.')
+async def prefix_constants(ctx):
+    if not ctx.message.attachments:
+        return await ctx.send('Attach a file.')
     raw = await ctx.message.attachments[0].read()
     text = raw.decode('latin-1', errors='replace')
     consts = extract_constants(text)
-    if not consts: return await ctx.send('No Lua 5.1 bytecode found.')
+    if not consts:
+        return await ctx.send('No Lua bytecode constants found.')
     out  = '-- Strings:\n' + ''.join(f'--   {repr(s)}\n' for s in consts['strings'])
     out += '-- Numbers:\n' + ''.join(f'--   {n}\n' for n in consts['numbers'])
     if 'xor_key' in consts: out += f'-- XOR key: {consts["xor_key"]}\n'
     await ctx.send(file=discord.File(fp=io.StringIO(out), filename='constants.lua'))
 
 @bot.command(name='apistatus')
-async def apistatus(ctx):
+async def prefix_apistatus(ctx):
     try:
         async with httpx.AsyncClient(timeout=5) as c:
             r = await c.get(f'{API_URL}/health')
@@ -225,13 +220,15 @@ async def apistatus(ctx):
         em = discord.Embed(title='API Status', color=0x2ecc71 if d.get('lua') else 0xe74c3c)
         em.add_field(name='API',     value='Online', inline=True)
         em.add_field(name='Lua 5.1', value='OK' if d.get('lua') else 'NOT FOUND', inline=True)
+        em.add_field(name='Node',    value='OK' if d.get('node') else 'NOT FOUND', inline=True)
+        em.add_field(name='JS Deobf',value='Present' if d.get('js_deobf') else 'Missing', inline=True)
     except Exception as e:
         em = discord.Embed(title='API Status', color=0xe74c3c)
         em.add_field(name='API', value=f'Offline - {e}', inline=False)
     await ctx.send(embed=em)
 
 @bot.command(name='info')
-async def info_cmd(ctx):
+async def prefix_info(ctx):
     em = discord.Embed(title='Lua Deobfuscator', color=0x3498db)
     em.add_field(name='Commands', value=(
         '`!deobf` - deobfuscate `.lua` file\n'
@@ -240,6 +237,7 @@ async def info_cmd(ctx):
         '`!constants` - dump bytecode constants\n'
         '`!apistatus` - check API server'
     ), inline=False)
+    em.add_field(name='Slash commands', value='`/deobf` `/constants` `/apistatus` `/info`', inline=False)
     em.add_field(name='Coverage', value=(
         'WeareDevs, IronBrew 1, basic Luraph\n'
         'String encoding, nested loadstring layers\n'
@@ -249,9 +247,83 @@ async def info_cmd(ctx):
     ), inline=False)
     await ctx.send(embed=em)
 
+@tree.command(name='deobf', description='Deobfuscate a Lua file')
+@app_commands.describe(
+    file='The Lua file to deobfuscate',
+    ai='Use AI to rename variables and add comments',
+    scan='Scan only (no execution)'
+)
+async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment, ai: bool = False, scan: bool = False):
+    if not file.filename.lower().endswith(('.lua', '.txt', '.luac')):
+        return await interaction.response.send_message('Only `.lua`, `.luac`, or `.txt` files are supported.', ephemeral=True)
+    await interaction.response.defer(thinking=True)
+    raw = await file.read()
+    try:
+        text = raw.decode('utf-8')
+    except:
+        try:
+            text = raw.decode('latin-1')
+        except:
+            return await interaction.followup.send('Cannot decode file.', ephemeral=True)
+    result = await run_deobf_process(text, file.filename, use_ai=ai, scan_only=scan)
+    if result['file']:
+        await interaction.followup.send(file=result['file'], embed=result['embed'])
+    else:
+        await interaction.followup.send(embed=result['embed'])
+
+@tree.command(name='constants', description='Extract bytecode constants from a Lua file')
+@app_commands.describe(file='The Lua file to analyze')
+async def slash_constants(interaction: discord.Interaction, file: discord.Attachment):
+    await interaction.response.defer(thinking=True)
+    raw = await file.read()
+    text = raw.decode('latin-1', errors='replace')
+    consts = extract_constants(text)
+    if not consts:
+        return await interaction.followup.send('No Lua bytecode constants found.', ephemeral=True)
+    out  = '-- Strings:\n' + ''.join(f'--   {repr(s)}\n' for s in consts['strings'])
+    out += '-- Numbers:\n' + ''.join(f'--   {n}\n' for n in consts['numbers'])
+    if 'xor_key' in consts: out += f'-- XOR key: {consts["xor_key"]}\n'
+    await interaction.followup.send(file=discord.File(fp=io.StringIO(out), filename='constants.lua'))
+
+@tree.command(name='apistatus', description='Check the deobfuscation API status')
+async def slash_apistatus(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f'{API_URL}/health')
+            d = r.json()
+        em = discord.Embed(title='API Status', color=0x2ecc71 if d.get('lua') else 0xe74c3c)
+        em.add_field(name='API',     value='Online', inline=True)
+        em.add_field(name='Lua 5.1', value='OK' if d.get('lua') else 'NOT FOUND', inline=True)
+        em.add_field(name='Node',    value='OK' if d.get('node') else 'NOT FOUND', inline=True)
+        em.add_field(name='JS Deobf',value='Present' if d.get('js_deobf') else 'Missing', inline=True)
+    except Exception as e:
+        em = discord.Embed(title='API Status', color=0xe74c3c)
+        em.add_field(name='API', value=f'Offline - {e}', inline=False)
+    await interaction.followup.send(embed=em)
+
+@tree.command(name='info', description='Show bot information and coverage')
+async def slash_info(interaction: discord.Interaction):
+    em = discord.Embed(title='Lua Deobfuscator', color=0x3498db)
+    em.add_field(name='Commands', value=(
+        '`/deobf` - Deobfuscate a Lua file\n'
+        '`/constants` - Extract bytecode constants\n'
+        '`/apistatus` - Check API server\n'
+        '`/info` - Show this help'
+    ), inline=False)
+    em.add_field(name='Coverage', value=(
+        'WeareDevs, IronBrew 1, basic Luraph\n'
+        'String encoding, nested loadstring layers\n'
+        'Bytecode constant extraction\n'
+        'IronBrew 2/3, modern Luraph - static only\n'
+        'Full custom VM - not reversible automatically'
+    ), inline=False)
+    await interaction.response.send_message(embed=em)
+
 @bot.event
 async def on_ready():
-    print(f'Ready: {bot.user} | API: {API_URL}')
+    await tree.sync()
+    print(f'Ready: {bot.user} | API: {API_URL} | Slash commands synced')
 
 if __name__ == '__main__':
     bot.run(TOKEN)

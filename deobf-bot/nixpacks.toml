@@ -1,2 +1,2 @@
 [start]
-cmd = "cd deobf-bot && python bot.py"
+cmd = "python bot.py"

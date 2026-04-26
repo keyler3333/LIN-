@@ -2,16 +2,20 @@ import os
 import re
 import subprocess
 import tempfile
+import shutil
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 def find_lua():
     for binary in ['lua5.1', 'lua51', 'lua']:
+        path = shutil.which(binary)
+        if path:
+            return path
+    for binary in ['lua5.1', 'lua51', 'lua']:
         try:
             r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
-            out = r.stderr.decode() + r.stdout.decode()
-            if '5.1' in out:
+            if r.returncode == 0:
                 return binary
         except:
             pass

@@ -131,13 +131,14 @@ def run_sandbox(source, timeout=8):
         with open(spath, 'w', encoding='utf-8') as f:
             f.write(script)
         try:
-            subprocess.run([LUA_BIN, spath], timeout=timeout, capture_output=True, cwd=d)
+            proc = subprocess.run([LUA_BIN, spath], timeout=timeout, capture_output=True, cwd=d)
         except subprocess.TimeoutExpired:
-            pass
+            return None, 'timeout'
         except FileNotFoundError:
             return None, f'{LUA_BIN} not found'
         except Exception as e:
-            return [], str(e)
+            return None, str(e)
+        stderr = proc.stderr.decode('utf-8', errors='replace').strip()
         captured = []
         i = 1
         while True:
@@ -149,7 +150,10 @@ def run_sandbox(source, timeout=8):
             if data.strip():
                 captured.append(data)
             i += 1
-        return captured, None
+        if captured:
+            return captured, None
+        else:
+            return None, f'no layers captured (Lua error: {stderr[:300] if stderr else "no output"})'
 
 def peel(source, max_layers=8, timeout=8):
     current, count, previews = source, 0, []
@@ -251,21 +255,27 @@ def deobf():
     if not source.strip():
         return jsonify({'error': 'no source provided'}), 400
     obf = detect_obfuscator(source)
-    peeled, layers, previews, err = peel(source)
+    result, layers, previews, err = peel(source)
     if err:
-        return jsonify({'error': err}), 500
+        return jsonify({
+            'result': static_decode(beautify(source)),
+            'layers': 0,
+            'previews': [],
+            'method': 'static',
+            'detected': obf,
+            'error': err
+        }), 200
     if layers > 0:
-        result = static_decode(peeled)
+        result = static_decode(beautify(result))
         method = 'sandbox'
     else:
-        result = static_decode(source)
+        result = static_decode(beautify(source))
         method = 'static'
-    result = beautify(result)
     return jsonify({
-        'result':   result,
-        'layers':   layers,
-        'previews': previews if layers > 0 else [],
-        'method':   method,
+        'result': result,
+        'layers': layers,
+        'previews': previews,
+        'method': method,
         'detected': obf,
     })
 

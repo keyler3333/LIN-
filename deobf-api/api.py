@@ -10,14 +10,14 @@ def find_lua():
     for binary in ['lua5.1', 'lua51', 'lua']:
         try:
             r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
-            out = (r.stderr.decode() + r.stdout.decode())
+            out = r.stderr.decode() + r.stdout.decode()
             if '5.1' in out:
                 return binary
         except:
             pass
-    return None
+    return 'lua5.1'
 
-LUA_BIN = os.environ.get('LUA_BIN') or find_lua() or 'lua5.1'
+LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
 HOOK = """
 local __outdir = {OUTDIR}
@@ -169,7 +169,7 @@ def detect_obfuscator(text):
         'moonsec':   [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
         'luraph':    [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
         'wearedevs': [r'show_\w+\s*=\s*function', r'getfenv\s*\(\s*\)'],
-        'prometheus': [r'Prometheus', r'number_to_bytes'],
+        'prometheus':[r'Prometheus', r'number_to_bytes'],
     }
     scores = {}
     for name, pats in patterns.items():
@@ -238,12 +238,7 @@ def health():
                 break
         except:
             pass
-    return jsonify({
-        'ok': True,
-        'lua': lua_ok,
-        'lua_bin': active_bin,
-        'lua_version': lua_version
-    })
+    return jsonify({'ok': True, 'lua': lua_ok, 'lua_bin': active_bin, 'lua_version': lua_version})
 
 @app.route('/deobf', methods=['POST'])
 def deobf():

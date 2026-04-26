@@ -1,16 +1,23 @@
 import os
 import re
-import struct
-import base64
 import subprocess
 import tempfile
-import shutil
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-LUA_BIN   = os.environ.get('LUA_BIN', 'lua5.1')
-NODE_BIN  = os.environ.get('NODE_BIN', 'node')
-JS_DEOBF  = os.environ.get('JS_DEOBF_PATH', '/app/Lua-Deobfuscator')
+
+def find_lua():
+    for binary in ['lua5.1', 'lua51', 'lua']:
+        try:
+            r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
+            out = (r.stderr.decode() + r.stdout.decode())
+            if '5.1' in out:
+                return binary
+        except:
+            pass
+    return None
+
+LUA_BIN = os.environ.get('LUA_BIN') or find_lua() or 'lua5.1'
 
 HOOK = """
 local __outdir = {OUTDIR}
@@ -111,39 +118,6 @@ _G.game      = game
 _G.workspace = workspace
 """
 
-
-def run_js_deobf(source, timeout=15):
-    if not os.path.exists(JS_DEOBF):
-        return None, 'JS deobfuscator not found'
-    with tempfile.TemporaryDirectory() as d:
-        input_path  = os.path.join(JS_DEOBF, 'input.lua')
-        output_path = os.path.join(JS_DEOBF, 'output.luac')
-        try:
-            with open(input_path, 'w', encoding='utf-8') as f:
-                f.write(source)
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            result = subprocess.run(
-                [NODE_BIN, 'index.js'],
-                capture_output=True,
-                timeout=timeout,
-                cwd=JS_DEOBF
-            )
-            if os.path.exists(output_path):
-                with open(output_path, 'r', encoding='utf-8', errors='replace') as f:
-                    data = f.read().strip()
-                if data:
-                    return data, None
-            stderr = result.stderr.decode('utf-8', errors='replace')
-            return None, f'JS deobf produced no output. stderr: {stderr[:200]}'
-        except subprocess.TimeoutExpired:
-            return None, 'JS deobf timeout'
-        except FileNotFoundError:
-            return None, 'node not found'
-        except Exception as e:
-            return None, str(e)
-
-
 def run_sandbox(source, timeout=8):
     with tempfile.TemporaryDirectory() as d:
         escaped = d.replace('\\', '\\\\').replace('"', '\\"')
@@ -157,7 +131,7 @@ def run_sandbox(source, timeout=8):
         except subprocess.TimeoutExpired:
             pass
         except FileNotFoundError:
-            return None, 'lua5.1 not found'
+            return None, f'{LUA_BIN} not found'
         except Exception as e:
             return [], str(e)
         captured = []
@@ -172,7 +146,6 @@ def run_sandbox(source, timeout=8):
                 captured.append(data)
             i += 1
         return captured, None
-
 
 def peel(source, max_layers=8, timeout=8):
     current, count, previews = source, 0, []
@@ -190,14 +163,13 @@ def peel(source, max_layers=8, timeout=8):
         count  += 1
     return current, count, previews, None
 
-
 def detect_obfuscator(text):
     patterns = {
         'ironbrew':  [r'bit and bit\.bxor', r'return table\.concat\(', r'return \w+\(true,\s*\{\}'],
         'moonsec':   [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
         'luraph':    [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
         'wearedevs': [r'show_\w+\s*=\s*function', r'getfenv\s*\(\s*\)'],
-        'prometheus':[r'Prometheus', r'number_to_bytes'],
+        'prometheus': [r'Prometheus', r'number_to_bytes'],
     }
     scores = {}
     for name, pats in patterns.items():
@@ -205,7 +177,6 @@ def detect_obfuscator(text):
         if s:
             scores[name] = s
     return max(scores, key=lambda k: scores[k]) if scores else 'generic'
-
 
 def static_decode(code):
     code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
@@ -220,7 +191,9 @@ def static_decode(code):
     def fold(m):
         try:
             a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
-            r = {'+': a+b, '-': a-b, '*': a*b, '/': a/b if b else None, '%': a%b if b else None}.get(op)
+            r = {'+': a+b, '-': a-b, '*': a*b,
+                 '/': a/b if b else None,
+                 '%': a%b if b else None}.get(op)
             if r is None: return m.group(0)
             return str(int(r)) if r == int(r) else str(r)
         except:
@@ -233,7 +206,6 @@ def static_decode(code):
     code = re.sub(r'if\s+false\s+then.*?end', '', code, flags=re.DOTALL)
     code = re.sub(r'while\s+false\s+do.*?end', '', code, flags=re.DOTALL)
     return code
-
 
 def beautify(code):
     out, indent = [], 0
@@ -250,23 +222,28 @@ def beautify(code):
             indent += 1
     return '\n'.join(out)
 
-
 @app.route('/health', methods=['GET'])
 def health():
-    lua_ok, node_ok, js_ok = False, False, False
-    try:
-        subprocess.run([LUA_BIN, '-v'], capture_output=True, timeout=2)
-        lua_ok = True
-    except:
-        pass
-    try:
-        subprocess.run([NODE_BIN, '-v'], capture_output=True, timeout=2)
-        node_ok = True
-    except:
-        pass
-    js_ok = os.path.exists(JS_DEOBF) and os.path.exists(os.path.join(JS_DEOBF, 'index.js'))
-    return jsonify({'ok': True, 'lua': lua_ok, 'node': node_ok, 'js_deobf': js_ok})
-
+    lua_ok = False
+    lua_version = ''
+    active_bin = LUA_BIN
+    for binary in [LUA_BIN, 'lua5.1', 'lua51', 'lua']:
+        try:
+            r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
+            out = (r.stderr.decode() + r.stdout.decode()).strip()
+            if '5.1' in out:
+                lua_ok = True
+                lua_version = out
+                active_bin = binary
+                break
+        except:
+            pass
+    return jsonify({
+        'ok': True,
+        'lua': lua_ok,
+        'lua_bin': active_bin,
+        'lua_version': lua_version
+    })
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
@@ -274,46 +251,24 @@ def deobf():
     source = data.get('source', '')
     if not source.strip():
         return jsonify({'error': 'no source provided'}), 400
-
-    obf    = detect_obfuscator(source)
-    result = None
-    method = 'static'
-
-    if obf in ('ironbrew', 'moonsec'):
-        js_result, js_err = run_js_deobf(source)
-        if js_result:
-            result = js_result
-            method = f'js_devirtualize ({obf})'
-
-    if not result:
-        peeled, layers, previews, err = peel(source)
-        if err:
-            return jsonify({'error': err}), 500
-        if layers > 0:
-            result = peeled
-            method = 'sandbox'
-        else:
-            result = source
-            method = 'static'
-        result = static_decode(result)
-        result = beautify(result)
-        return jsonify({
-            'result':   result,
-            'layers':   layers,
-            'previews': previews if layers > 0 else [],
-            'method':   method,
-            'detected': obf,
-        })
-
+    obf = detect_obfuscator(source)
+    peeled, layers, previews, err = peel(source)
+    if err:
+        return jsonify({'error': err}), 500
+    if layers > 0:
+        result = static_decode(peeled)
+        method = 'sandbox'
+    else:
+        result = static_decode(source)
+        method = 'static'
     result = beautify(result)
     return jsonify({
         'result':   result,
-        'layers':   1,
-        'previews': [result[:120].replace('\n', ' ')],
+        'layers':   layers,
+        'previews': previews if layers > 0 else [],
         'method':   method,
         'detected': obf,
     })
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

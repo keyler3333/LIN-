@@ -97,7 +97,7 @@ def extract_constants(source):
     return None
 
 async def call_api(source):
-    async with httpx.AsyncClient(timeout=30) as c:
+    async with httpx.AsyncClient(timeout=90) as c:
         r = await c.post(f'{API_URL}/deobf', json={'source': source})
         return r.json()
 
@@ -124,21 +124,60 @@ async def ai_clean(code):
     except:
         return code
 
+async def ai_diagnose_error(error_text, code_sample, profile):
+    if not ANTHROPIC_KEY:
+        return None
+    prompt = (
+        "You are an expert Lua reverse engineer debugging a deobfuscation sandbox.\n"
+        "The sandbox failed to deobfuscate a Lua script. Below are:\n"
+        "1. The sandbox error output\n"
+        "2. The obfuscator profile detected\n"
+        "3. The first 2000 characters of the obfuscated script\n\n"
+        "Explain exactly why the sandbox failed. Identify what the script was trying to do "
+        "(e.g. call a missing function, infinite loop, VM dispatch, timeout, etc). "
+        "Suggest specific fixes to the sandbox stubs or environment.\n\n"
+        f"ERROR OUTPUT:\n{error_text[:1500]}\n\n"
+        f"PROFILE:\n{profile}\n\n"
+        f"SCRIPT:\n{code_sample[:2000]}\n\n"
+        "Diagnosis:"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(
+                'https://api.anthropic.com/v1/messages',
+                headers={
+                    'x-api-key': ANTHROPIC_KEY,
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json'
+                },
+                json={
+                    'model': 'claude-sonnet-4-20250514',
+                    'max_tokens': 1024,
+                    'messages': [{'role': 'user', 'content': prompt}]
+                }
+            )
+            return r.json()['content'][0]['text']
+    except:
+        return None
+
 async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
     obf = detect_obfuscator(text)
     if scan_only:
         embed = discord.Embed(title=f'Scan: {obf}', color=0x2ecc71)
         embed.add_field(name='File', value=filename, inline=True)
         embed.add_field(name='Size', value=f'{len(text):,} chars', inline=True)
-        return {'embed': embed, 'file': None}
+        return {'embed': embed, 'file': None, 'result_str': None}
     try:
         data = await call_api(text)
     except Exception as e:
         embed = discord.Embed(title='API Error', description=str(e), color=0xe74c3c)
-        return {'embed': embed, 'file': None}
+        return {'embed': embed, 'file': None, 'result_str': None}
     if 'error' in data:
         embed = discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c)
-        return {'embed': embed, 'file': None}
+        diag = await ai_diagnose_error(data['error'], text[:2000], data.get('profile', {}))
+        if diag:
+            embed.add_field(name='AI Diagnosis', value=diag[:1000], inline=False)
+        return {'embed': embed, 'file': None, 'result_str': None}
     result   = data['result']
     layers   = data.get('layers', 0)
     previews = data.get('previews', [])
@@ -159,7 +198,7 @@ async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
     if use_ai and ANTHROPIC_KEY:
         embed.add_field(name='AI', value='Variables renamed + comments added', inline=False)
     file = discord.File(fp=io.StringIO(result), filename=f'deobf_{filename}')
-    return {'embed': embed, 'file': file}
+    return {'embed': embed, 'file': file, 'result_str': result}
 
 @bot.command(name='deobf')
 async def prefix_deobf(ctx, flags: str = ''):

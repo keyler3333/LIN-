@@ -17,10 +17,14 @@ def find_lua():
 LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
 SANDBOX_TEMPLATE = r"""
-local __deadline = 2000000
+local __deadline = 100000000
+local __timeout  = os.time() + 7
+
 debug.sethook(function(ev)
     __deadline = __deadline - 1
-    if __deadline <= 0 then os.exit(0) end
+    if __deadline <= 0 or os.time() > __timeout then
+        os.exit(0)
+    end
 end, "", 1)
 
 local __outdir = [[{OUTDIR}]]
@@ -115,7 +119,7 @@ _G.game      = game
 _G.workspace = workspace
 """
 
-def run_sandbox(source, timeout=8):
+def run_sandbox(source, timeout=10):
     with tempfile.TemporaryDirectory() as d:
         escaped = d.replace('\\', '\\\\').replace('"', '\\"')
         script  = SANDBOX_TEMPLATE.replace('{OUTDIR}', escaped) + '\n' + source
@@ -147,7 +151,7 @@ def run_sandbox(source, timeout=8):
         else:
             return None, f'no layers (Lua error: {stderr[:300] if stderr else "none"})'
 
-def peel(source, max_layers=8, timeout=8):
+def peel(source, max_layers=8, timeout=10):
     current, count, previews = source, 0, []
     for _ in range(max_layers):
         captured, err = run_sandbox(current, timeout)
@@ -244,7 +248,6 @@ def deobf():
         return jsonify({'error': 'no source'}), 400
     profile = detect_profile(source)
     obf     = profile['obfuscator']
-    vm_likely = profile['vm_likely']
     peeled, layers, previews, err = peel(source)
     if err:
         result = static_decode(beautify(source))

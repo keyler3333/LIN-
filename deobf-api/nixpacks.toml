@@ -1,0 +1,5 @@
+[phases.setup]
+nixPkgs = ["lua5_1"]
+
+[start]
+cmd = "python api.py"

@@ -11,7 +11,7 @@ import httpx
 import asyncio
 
 TOKEN         = os.environ['DISCORD_BOT_TOKEN']
-ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+GROQ_API_KEY  = os.environ.get('GROQ_API_KEY', '')
 API_URL       = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
 
 intents = discord.Intents.default()
@@ -102,7 +102,7 @@ async def call_api(source):
         return r.json()
 
 async def ai_clean(code):
-    if not ANTHROPIC_KEY:
+    if not GROQ_API_KEY:
         return code
     prompt = (
         "You are a Lua reverse engineer. Below is deobfuscated Lua. "
@@ -114,18 +114,25 @@ async def ai_clean(code):
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
-                'https://api.anthropic.com/v1/messages',
-                headers={'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-                json={'model': 'claude-sonnet-4-20250514', 'max_tokens': 2048, 'messages': [{'role': 'user', 'content': prompt}]}
+                'https://api.groq.com/openai/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {GROQ_API_KEY}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'llama-3.3-70b-versatile',
+                    'max_tokens': 2048,
+                    'messages': [{'role': 'user', 'content': prompt}]
+                }
             )
-            result = r.json()['content'][0]['text']
+            result = r.json()['choices'][0]['message']['content']
             if len(code) > 3500: result += '\n\n' + code[3500:]
             return result
     except:
         return code
 
 async def ai_diagnose_error(error_text, code_sample, profile):
-    if not ANTHROPIC_KEY:
+    if not GROQ_API_KEY:
         return None
     prompt = (
         "You are an expert Lua reverse engineer debugging a deobfuscation sandbox.\n"
@@ -144,19 +151,18 @@ async def ai_diagnose_error(error_text, code_sample, profile):
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
-                'https://api.anthropic.com/v1/messages',
+                'https://api.groq.com/openai/v1/chat/completions',
                 headers={
-                    'x-api-key': ANTHROPIC_KEY,
-                    'anthropic-version': '2023-06-01',
-                    'content-type': 'application/json'
+                    'Authorization': f'Bearer {GROQ_API_KEY}',
+                    'Content-Type': 'application/json'
                 },
                 json={
-                    'model': 'claude-sonnet-4-20250514',
+                    'model': 'llama-3.3-70b-versatile',
                     'max_tokens': 1024,
                     'messages': [{'role': 'user', 'content': prompt}]
                 }
             )
-            return r.json()['content'][0]['text']
+            return r.json()['choices'][0]['message']['content']
     except:
         return None
 
@@ -183,7 +189,7 @@ async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
     previews = data.get('previews', [])
     method   = data.get('method', 'static')
     detected = data.get('detected', obf)
-    if use_ai and ANTHROPIC_KEY:
+    if use_ai and GROQ_API_KEY:
         result = await ai_clean(result)
     embed = discord.Embed(title='Deobfuscation complete', color=0x2ecc71 if layers > 0 else 0xe67e22)
     embed.add_field(name='Obfuscator',   value=detected, inline=True)
@@ -195,7 +201,7 @@ async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
             value='\n'.join(f'Layer {i+1}: {p[:80]}...' for i, p in enumerate(previews[:3])),
             inline=False
         )
-    if use_ai and ANTHROPIC_KEY:
+    if use_ai and GROQ_API_KEY:
         embed.add_field(name='AI', value='Variables renamed + comments added', inline=False)
     file = discord.File(fp=io.StringIO(result), filename=f'deobf_{filename}')
     return {'embed': embed, 'file': file, 'result_str': result}

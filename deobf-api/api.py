@@ -1,8 +1,4 @@
-import os
-import re
-import subprocess
-import tempfile
-import shutil
+import os, re, subprocess, tempfile, shutil
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -10,21 +6,24 @@ app = Flask(__name__)
 def find_lua():
     for binary in ['lua5.1', 'lua51', 'lua']:
         path = shutil.which(binary)
-        if path:
-            return path
+        if path: return path
     for binary in ['lua5.1', 'lua51', 'lua']:
         try:
-            r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
-            if r.returncode == 0:
+            if subprocess.run([binary, '-v'], capture_output=True, timeout=2).returncode == 0:
                 return binary
-        except:
-            pass
+        except: pass
     return 'lua5.1'
 
 LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
-HOOK = """
-local __outdir = {OUTDIR}
+SANDBOX_TEMPLATE = r"""
+local __deadline = 2000000
+debug.sethook(function(ev)
+    __deadline = __deadline - 1
+    if __deadline <= 0 then os.exit(0) end
+end, "", 1)
+
+local __outdir = [[{OUTDIR}]]
 local __n = 0
 
 local function __hook(code, ...)
@@ -39,26 +38,24 @@ end
 loadstring = __hook
 load       = __hook
 
-local function __getfenv(n)
-    return {
-        string=string, math=math, table=table, bit=bit or {},
-        pairs=pairs, ipairs=ipairs, select=select, next=next,
-        tostring=tostring, tonumber=tonumber, type=type,
-        rawget=rawget, rawset=rawset,
-        setmetatable=setmetatable, getmetatable=getmetatable,
-        unpack=unpack or table.unpack,
-        loadstring=loadstring, load=load,
-        pcall=pcall, xpcall=xpcall,
-        error=error, assert=assert, print=print
-    }
-end
-getfenv = __getfenv
-setfenv = function(n, t) return t end
+getfenv = function() return {
+    string=string, math=math, table=table, bit=bit or {},
+    pairs=pairs, ipairs=ipairs, select=select, next=next,
+    tostring=tostring, tonumber=tonumber, type=type,
+    rawget=rawget, rawset=rawset, rawequal=rawequal,
+    setmetatable=setmetatable, getmetatable=getmetatable,
+    unpack=table.unpack or unpack,
+    loadstring=loadstring, load=load,
+    pcall=pcall, xpcall=xpcall, error=error, assert=assert,
+    print=print, warn=warn, game=game, workspace=workspace,
+    script=script, coroutine=coroutine, shared=shared
+} end
+setfenv = function() end
 
 game             = setmetatable({}, {__index=function() return function() end end})
 workspace        = game
-script           = {}
-Players          = {LocalPlayer={Name="Player",UserId=1}}
+script           = setmetatable({}, {__index=function() return "" end})
+Players          = {LocalPlayer={Name="Player",UserId=1,Character={}}}
 RunService       = {Heartbeat={Connect=function()end},RenderStepped={Connect=function()end}}
 UserInputService = setmetatable({},{__index=function() return function() end end})
 HttpService      = {JSONDecode=function() return {} end,JSONEncode=function() return "{}" end}
@@ -72,7 +69,8 @@ UDim2            = {new=function(...) return {} end}
 Enum             = setmetatable({},{__index=function() return setmetatable({},{__index=function() return 0 end}) end})
 Drawing          = setmetatable({},{__index=function() return function() end end})
 debug            = {traceback=function() return "" end,getinfo=function() return {} end}
-syn              = {protect_gui=function()end,queue_on_teleport=function()end}
+syn              = {protect_gui=function()end,queue_on_teleport=function()end,request=function() return {Body="",StatusCode=200} end}
+rconsole         = {print=function()end,clear=function()end,settitle=function()end}
 writefile        = function() end
 readfile         = function() return "" end
 isfile           = function() return false end
@@ -90,33 +88,28 @@ newcclosure      = function(f) return f end
 clonefunction    = function(f) return f end
 tick             = function() return 0 end
 time             = function() return 0 end
+elapsedtime      = function() return 0 end
 wait             = function(n) return n or 0 end
 spawn            = function() end
 delay            = function() end
 warn             = function() end
-print            = function() end
 error            = function(e) end
 assert           = function(v,m) if not v then error(m or "assert") end return v end
 shared           = {}
-rconsole         = {print=function()end,clear=function()end}
 
-if not bit then
-    bit = {}
-    bit.bxor=function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
-    bit.band=function(a,b) local r,p=0,1 while a>0 and b>0 do if a%2==1 and b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
-    bit.bor =function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2==1 or b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
-    bit.bnot=function(a) return -a-1 end
-    bit.rshift=function(a,b) return math.floor(a/(2^b)) end
-    bit.lshift=function(a,b) return math.floor(a*(2^b)) end
-    bit.arshift=function(a,b) return math.floor(a/(2^b)) end
-    bit.btest=function(a,b) return bit.band(a,b)~=0 end
-    bit.tobit=function(a) return a end
-    bit32 = bit
-end
+bit = bit or {}
+bit.bxor=function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+bit.band=function(a,b) local r,p=0,1 while a>0 and b>0 do if a%2==1 and b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+bit.bor =function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2==1 or b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+bit.bnot=function(a) return -a-1 end
+bit.rshift=function(a,b) return math.floor(a/(2^b)) end
+bit.lshift=function(a,b) return math.floor(a*(2^b)) end
+bit32 = bit
 
+coroutine.wrap   = coroutine.wrap   or function(f) return f end
+coroutine.create = coroutine.create or function(f) return f end
 table.pack   = table.pack   or function(...) return {n=select('#',...), ...} end
 table.unpack = table.unpack or unpack
-table.move   = table.move   or function(a,f,e,t,b) b=b or a for i=f,e do b[t+(i-f)]=a[i] end return b end
 math.pow     = math.pow     or function(a,b) return a^b end
 _G.game      = game
 _G.workspace = workspace
@@ -125,8 +118,7 @@ _G.workspace = workspace
 def run_sandbox(source, timeout=8):
     with tempfile.TemporaryDirectory() as d:
         escaped = d.replace('\\', '\\\\').replace('"', '\\"')
-        hook    = HOOK.replace('{OUTDIR}', f'"{escaped}"')
-        script  = hook + '\n' + source
+        script  = SANDBOX_TEMPLATE.replace('{OUTDIR}', escaped) + '\n' + source
         spath   = os.path.join(d, 'script.lua')
         with open(spath, 'w', encoding='utf-8') as f:
             f.write(script)
@@ -153,7 +145,7 @@ def run_sandbox(source, timeout=8):
         if captured:
             return captured, None
         else:
-            return None, f'no layers captured (Lua error: {stderr[:300] if stderr else "no output"})'
+            return None, f'no layers (Lua error: {stderr[:300] if stderr else "none"})'
 
 def peel(source, max_layers=8, timeout=8):
     current, count, previews = source, 0, []
@@ -171,7 +163,7 @@ def peel(source, max_layers=8, timeout=8):
         count  += 1
     return current, count, previews, None
 
-def detect_obfuscator(text):
+def detect_profile(text):
     patterns = {
         'ironbrew':  [r'bit and bit\.bxor', r'return table\.concat\(', r'return \w+\(true,\s*\{\}'],
         'moonsec':   [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
@@ -182,35 +174,40 @@ def detect_obfuscator(text):
     scores = {}
     for name, pats in patterns.items():
         s = sum(1 for p in pats if re.search(p, text, re.IGNORECASE))
-        if s:
-            scores[name] = s
-    return max(scores, key=lambda k: scores[k]) if scores else 'generic'
+        if s: scores[name] = s
+    vm_score = 0
+    if re.search(r'loadstring\s*\(\s*\w+\s*\)\s*\(\s*\)', text): vm_score += 1
+    if re.search(r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[', text): vm_score += 2
+    if len(re.findall(r'\\x[0-9a-fA-F]{2}', text)) > 50: vm_score += 1
+    ent = len(set(text)) / max(1, len(text))
+    if ent > 0.6: vm_score += 1
+    best_name = max(scores, key=lambda k: scores[k]) if scores else 'generic'
+    confidence = min(1.0, (scores.get(best_name, 0) / 4) + (vm_score / 10))
+    vm = vm_score >= 3
+    return {
+        'obfuscator': best_name,
+        'confidence': round(confidence, 2),
+        'vm_likely': vm,
+        'vm_score': vm_score,
+        'patterns': scores,
+    }
 
 def static_decode(code):
     code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
     code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
     def sc(m):
         nums = re.findall(r'\d+', m.group(1))
-        try:
-            return '"' + ''.join(chr(int(n)) for n in nums if int(n) < 256) + '"'
-        except:
-            return m.group(0)
+        try: return '"' + ''.join(chr(int(n)) for n in nums if int(n) < 256) + '"'
+        except: return m.group(0)
     code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', sc, code)
     def fold(m):
         try:
             a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
-            r = {'+': a+b, '-': a-b, '*': a*b,
-                 '/': a/b if b else None,
-                 '%': a%b if b else None}.get(op)
-            if r is None: return m.group(0)
-            return str(int(r)) if r == int(r) else str(r)
-        except:
-            return m.group(0)
+            r = {'+': a+b, '-': a-b, '*': a*b, '/': a/b if b else None, '%': a%b if b else None}.get(op)
+            return str(int(r)) if r is not None else m.group(0)
+        except: return m.group(0)
     parts = re.split(r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', code)
-    code  = ''.join(
-        re.sub(r'\b(\d+(?:\.\d+)?)\s*([+\-*/%])\s*(\d+(?:\.\d+)?)\b', fold, p) if i % 2 == 0 else p
-        for i, p in enumerate(parts)
-    )
+    code  = ''.join(re.sub(r'\b(\d+(?:\.\d+)?)\s*([+\-*/%])\s*(\d+(?:\.\d+)?)\b', fold, p) if i%2==0 else p for i,p in enumerate(parts))
     code = re.sub(r'if\s+false\s+then.*?end', '', code, flags=re.DOTALL)
     code = re.sub(r'while\s+false\s+do.*?end', '', code, flags=re.DOTALL)
     return code
@@ -219,54 +216,48 @@ def beautify(code):
     out, indent = [], 0
     for line in code.split('\n'):
         s = line.strip()
-        if not s:
-            out.append(''); continue
-        if re.match(r'^(end\b|else\b|elseif\b|until\b)', s):
-            indent = max(0, indent - 1)
-        out.append('    ' * indent + s)
-        if re.match(r'^(if\b|for\b|while\b|repeat\b|do\b)', s) and not s.endswith('end'):
-            indent += 1
-        if re.match(r'^(function\b|local\s+function\b)', s):
-            indent += 1
+        if not s: out.append(''); continue
+        if re.match(r'^(end|else|elseif|until)\b', s): indent = max(0, indent-1)
+        out.append('    '*indent + s)
+        if re.match(r'^(if|for|while|repeat|do)\b', s) and not s.endswith('end'): indent += 1
+        if re.match(r'^(function|local\s+function)\b', s): indent += 1
     return '\n'.join(out)
 
-@app.route('/health', methods=['GET'])
+@app.route('/health')
 def health():
     lua_ok = False
-    lua_version = ''
     active_bin = LUA_BIN
     for binary in [LUA_BIN, 'lua5.1', 'lua51', 'lua']:
         try:
             r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
             out = (r.stderr.decode() + r.stdout.decode()).strip()
             if '5.1' in out:
-                lua_ok = True
-                lua_version = out
-                active_bin = binary
-                break
-        except:
-            pass
-    return jsonify({'ok': True, 'lua': lua_ok, 'lua_bin': active_bin, 'lua_version': lua_version})
+                lua_ok = True; active_bin = binary; break
+        except: pass
+    return jsonify({'ok': True, 'lua': lua_ok, 'lua_bin': active_bin})
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
     data   = request.get_json(force=True)
     source = data.get('source', '')
     if not source.strip():
-        return jsonify({'error': 'no source provided'}), 400
-    obf = detect_obfuscator(source)
-    result, layers, previews, err = peel(source)
+        return jsonify({'error': 'no source'}), 400
+    profile = detect_profile(source)
+    obf     = profile['obfuscator']
+    vm_likely = profile['vm_likely']
+    peeled, layers, previews, err = peel(source)
     if err:
+        result = static_decode(beautify(source))
         return jsonify({
-            'result': static_decode(beautify(source)),
+            'result': result,
             'layers': 0,
-            'previews': [],
             'method': 'static',
             'detected': obf,
+            'profile': profile,
             'error': err
-        }), 200
+        })
     if layers > 0:
-        result = static_decode(beautify(result))
+        result = static_decode(beautify(peeled))
         method = 'sandbox'
     else:
         result = static_decode(beautify(source))
@@ -274,9 +265,10 @@ def deobf():
     return jsonify({
         'result': result,
         'layers': layers,
-        'previews': previews,
+        'previews': previews if layers else [],
         'method': method,
         'detected': obf,
+        'profile': profile,
     })
 
 if __name__ == '__main__':

@@ -10,9 +10,9 @@ import base64
 import httpx
 import asyncio
 
-TOKEN         = os.environ['DISCORD_BOT_TOKEN']
-GROQ_API_KEY  = os.environ.get('GROQ_API_KEY', '')
-API_URL       = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
+TOKEN      = os.environ['DISCORD_BOT_TOKEN']
+GROQ_KEY   = os.environ.get('GROQ_API_KEY', '')
+API_URL    = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -102,10 +102,8 @@ async def call_api(source):
         return r.json()
 
 async def ai_clean(code):
-    if not GROQ_API_KEY:
-        return code
+    if not GROQ_KEY: return code
     prompt = (
-        "You are a Lua reverse engineer. Below is deobfuscated Lua. "
         "Rename cryptic variables to meaningful names. "
         "Add brief comments explaining each section. "
         "Preserve all logic exactly. Return ONLY Lua code, no markdown.\n\n"
@@ -115,56 +113,33 @@ async def ai_clean(code):
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 'https://api.groq.com/openai/v1/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {GROQ_API_KEY}',
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'model': 'llama-3.3-70b-versatile',
-                    'max_tokens': 2048,
-                    'messages': [{'role': 'user', 'content': prompt}]
-                }
+                headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
+                json={'model': 'llama-3.3-70b-versatile', 'max_tokens': 2048, 'messages': [{'role': 'user', 'content': prompt}]}
             )
             result = r.json()['choices'][0]['message']['content']
             if len(code) > 3500: result += '\n\n' + code[3500:]
             return result
-    except:
-        return code
+    except: return code
 
 async def ai_diagnose_error(error_text, code_sample, profile):
-    if not GROQ_API_KEY:
-        return None
+    if not GROQ_KEY: return None
     prompt = (
         "You are an expert Lua reverse engineer debugging a deobfuscation sandbox.\n"
-        "The sandbox failed to deobfuscate a Lua script. Below are:\n"
-        "1. The sandbox error output\n"
-        "2. The obfuscator profile detected\n"
-        "3. The first 2000 characters of the obfuscated script\n\n"
-        "Explain exactly why the sandbox failed. Identify what the script was trying to do "
-        "(e.g. call a missing function, infinite loop, VM dispatch, timeout, etc). "
-        "Suggest specific fixes to the sandbox stubs or environment.\n\n"
-        f"ERROR OUTPUT:\n{error_text[:1500]}\n\n"
-        f"PROFILE:\n{profile}\n\n"
-        f"SCRIPT:\n{code_sample[:2000]}\n\n"
+        "The sandbox failed. Explain why and suggest fixes.\n\n"
+        f"ERROR: {error_text[:1500]}\n\n"
+        f"PROFILE: {profile}\n\n"
+        f"SCRIPT: {code_sample[:2000]}\n\n"
         "Diagnosis:"
     )
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 'https://api.groq.com/openai/v1/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {GROQ_API_KEY}',
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'model': 'llama-3.3-70b-versatile',
-                    'max_tokens': 1024,
-                    'messages': [{'role': 'user', 'content': prompt}]
-                }
+                headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
+                json={'model': 'llama-3.3-70b-versatile', 'max_tokens': 1024, 'messages': [{'role': 'user', 'content': prompt}]}
             )
             return r.json()['choices'][0]['message']['content']
-    except:
-        return None
+    except: return None
 
 async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
     obf = detect_obfuscator(text)
@@ -181,27 +156,19 @@ async def run_deobf_process(text, filename, use_ai=False, scan_only=False):
     if 'error' in data:
         embed = discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c)
         diag = await ai_diagnose_error(data['error'], text[:2000], data.get('profile', {}))
-        if diag:
-            embed.add_field(name='AI Diagnosis', value=diag[:1000], inline=False)
+        if diag: embed.add_field(name='AI Diagnosis', value=diag[:1000], inline=False)
         return {'embed': embed, 'file': None, 'result_str': None}
-    result   = data['result']
-    layers   = data.get('layers', 0)
-    previews = data.get('previews', [])
-    method   = data.get('method', 'static')
-    detected = data.get('detected', obf)
-    if use_ai and GROQ_API_KEY:
+    result = data['result']
+    layers = data.get('layers', 0)
+    method = data.get('method', 'static')
+    profile = data.get('profile', obf)
+    if use_ai and GROQ_KEY:
         result = await ai_clean(result)
     embed = discord.Embed(title='Deobfuscation complete', color=0x2ecc71 if layers > 0 else 0xe67e22)
-    embed.add_field(name='Obfuscator',   value=detected, inline=True)
-    embed.add_field(name='Method',       value=method,   inline=True)
-    embed.add_field(name='Layers peeled',value=str(layers), inline=True)
-    if previews:
-        embed.add_field(
-            name='Layer previews',
-            value='\n'.join(f'Layer {i+1}: {p[:80]}...' for i, p in enumerate(previews[:3])),
-            inline=False
-        )
-    if use_ai and GROQ_API_KEY:
+    embed.add_field(name='Obfuscator', value=profile, inline=True)
+    embed.add_field(name='Method', value=method, inline=True)
+    embed.add_field(name='Layers peeled', value=str(layers), inline=True)
+    if use_ai and GROQ_KEY:
         embed.add_field(name='AI', value='Variables renamed + comments added', inline=False)
     file = discord.File(fp=io.StringIO(result), filename=f'deobf_{filename}')
     return {'embed': embed, 'file': file, 'result_str': result}
@@ -233,8 +200,7 @@ async def prefix_deobf(ctx, flags: str = ''):
             try:
                 start_embed.title = f'{frame} Deobfuscating...'
                 await msg.edit(embed=start_embed)
-            except:
-                break
+            except: break
     anim_task = asyncio.create_task(animate())
     try:
         result = await run_deobf_process(text, att.filename, use_ai=use_ai, scan_only=scan_only)
@@ -248,13 +214,11 @@ async def prefix_deobf(ctx, flags: str = ''):
 
 @bot.command(name='constants')
 async def prefix_constants(ctx):
-    if not ctx.message.attachments:
-        return await ctx.send('Attach a file.')
+    if not ctx.message.attachments: return await ctx.send('Attach a file.')
     raw = await ctx.message.attachments[0].read()
     text = raw.decode('latin-1', errors='replace')
     consts = extract_constants(text)
-    if not consts:
-        return await ctx.send('No Lua bytecode constants found.')
+    if not consts: return await ctx.send('No Lua bytecode constants found.')
     out  = '-- Strings:\n' + ''.join(f'--   {repr(s)}\n' for s in consts['strings'])
     out += '-- Numbers:\n' + ''.join(f'--   {n}\n' for n in consts['numbers'])
     if 'xor_key' in consts: out += f'-- XOR key: {consts["xor_key"]}\n'
@@ -268,10 +232,8 @@ async def prefix_apistatus(ctx):
             d = r.json()
         lua_ok = d.get('lua', False)
         em = discord.Embed(title='API Status', color=0x2ecc71 if lua_ok else 0xe74c3c)
-        em.add_field(name='API',         value='Online', inline=True)
-        em.add_field(name='Lua 5.1',     value='OK' if lua_ok else 'NOT FOUND', inline=True)
-        em.add_field(name='Lua binary',  value=d.get('lua_bin', '?'), inline=True)
-        em.add_field(name='Lua version', value=d.get('lua_version', '?'), inline=False)
+        em.add_field(name='API', value='Online', inline=True)
+        em.add_field(name='Lua 5.1', value='OK' if lua_ok else 'NOT FOUND', inline=True)
     except Exception as e:
         em = discord.Embed(title='API Status', color=0xe74c3c)
         em.add_field(name='API', value=f'Offline - {e}', inline=False)
@@ -314,8 +276,7 @@ async def slash_constants(interaction: discord.Interaction, file: discord.Attach
     raw = await file.read()
     text = raw.decode('latin-1', errors='replace')
     consts = extract_constants(text)
-    if not consts:
-        return await interaction.followup.send('No Lua bytecode constants found.', ephemeral=True)
+    if not consts: return await interaction.followup.send('No Lua bytecode constants found.', ephemeral=True)
     out  = '-- Strings:\n' + ''.join(f'--   {repr(s)}\n' for s in consts['strings'])
     out += '-- Numbers:\n' + ''.join(f'--   {n}\n' for n in consts['numbers'])
     if 'xor_key' in consts: out += f'-- XOR key: {consts["xor_key"]}\n'
@@ -330,10 +291,8 @@ async def slash_apistatus(interaction: discord.Interaction):
             d = r.json()
         lua_ok = d.get('lua', False)
         em = discord.Embed(title='API Status', color=0x2ecc71 if lua_ok else 0xe74c3c)
-        em.add_field(name='API',         value='Online', inline=True)
-        em.add_field(name='Lua 5.1',     value='OK' if lua_ok else 'NOT FOUND', inline=True)
-        em.add_field(name='Lua binary',  value=d.get('lua_bin', '?'), inline=True)
-        em.add_field(name='Lua version', value=d.get('lua_version', '?'), inline=False)
+        em.add_field(name='API', value='Online', inline=True)
+        em.add_field(name='Lua 5.1', value='OK' if lua_ok else 'NOT FOUND', inline=True)
     except Exception as e:
         em = discord.Embed(title='API Status', color=0xe74c3c)
         em.add_field(name='API', value=f'Offline - {e}', inline=False)
@@ -342,12 +301,7 @@ async def slash_apistatus(interaction: discord.Interaction):
 @tree.command(name='info', description='Show bot info')
 async def slash_info(interaction: discord.Interaction):
     em = discord.Embed(title='Lua Deobfuscator', color=0x3498db)
-    em.add_field(name='Commands', value=(
-        '`/deobf` - Deobfuscate a Lua file\n'
-        '`/constants` - Extract bytecode constants\n'
-        '`/apistatus` - Check API server\n'
-        '`/info` - Show this help'
-    ), inline=False)
+    em.add_field(name='Commands', value='`/deobf` `/constants` `/apistatus` `/info`', inline=False)
     await interaction.response.send_message(embed=em)
 
 @bot.event

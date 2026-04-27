@@ -109,12 +109,6 @@ class Return(IRNode):
 class Break(IRNode):
     pass
 
-_op_map = {
-    nodes.Add: '+', nodes.Sub: '-', nodes.Mul: '*',
-    nodes.Div: '/', nodes.Mod: '%', nodes.Pow: '^',
-    nodes.Concat: '..'
-}
-
 def _to_ir(node):
     if isinstance(node, nodes.Number):
         return Number(node.n)
@@ -130,14 +124,12 @@ def _to_ir(node):
         return Name(node.id)
     if isinstance(node, nodes.UnaryOp):
         operand = _to_ir(node.operand)
-        op = node.operator if hasattr(node, 'operator') else {
-            nodes.UMinus: '-', nodes.BNot: '~', nodes.Not: 'not', nodes.Length: '#'
-        }.get(type(node), '?')
+        op = node.operator if hasattr(node, 'operator') else '?'
         return UnaryOp(op, operand)
     if isinstance(node, nodes.BinOp):
         left = _to_ir(node.left)
         right = _to_ir(node.right)
-        op = node.operator if hasattr(node, 'operator') else _op_map.get(type(node), '?')
+        op = node.operator if hasattr(node, 'operator') else '?'
         return BinOp(left, op, right)
     if isinstance(node, nodes.Call):
         func = _to_ir(node.func)

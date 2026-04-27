@@ -124,8 +124,8 @@ class ForNumeric(IRNode):
         return f"ForNumeric({self.var})"
 
 class ForGeneric(IRNode):
-    def __init__(self, vars, iterators, body):
-        self.vars = vars
+    def __init__(self, vars_list, iterators, body):
+        self.vars = vars_list
         self.iterators = iterators
         self.body = body
     def __repr__(self):
@@ -150,12 +150,6 @@ class Break(IRNode):
     def __repr__(self):
         return "Break"
 
-_OP_MAP = {
-    nodes.Add: '+', nodes.Sub: '-', nodes.Mul: '*',
-    nodes.Div: '/', nodes.Mod: '%', nodes.Pow: '^',
-    nodes.Concat: '..',
-}
-
 def _to_ir(node):
     if isinstance(node, nodes.Number):
         return Number(node.n)
@@ -171,12 +165,18 @@ def _to_ir(node):
         return Name(node.id)
     if isinstance(node, nodes.UnaryOp):
         operand = _to_ir(node.operand)
-        op = {nodes.UMinus: '-', nodes.BNot: '~', nodes.Not: 'not', nodes.Length: '#'}.get(type(node), '?')
+        op = node.operator if hasattr(node, 'operator') else {
+            nodes.UMinus: '-', nodes.BNot: '~', nodes.Not: 'not', nodes.Length: '#'
+        }.get(type(node), '?')
         return UnaryOp(op, operand)
     if isinstance(node, nodes.BinOp):
         left = _to_ir(node.left)
         right = _to_ir(node.right)
-        op = _OP_MAP.get(type(node), '?')
+        op = node.operator if hasattr(node, 'operator') else {
+            nodes.Add: '+', nodes.Sub: '-', nodes.Mul: '*',
+            nodes.Div: '/', nodes.Mod: '%', nodes.Pow: '^',
+            nodes.Concat: '..'
+        }.get(type(node), '?')
         return BinOp(left, op, right)
     if isinstance(node, nodes.Call):
         func = _to_ir(node.func)
@@ -228,10 +228,10 @@ def _to_ir(node):
         body = _to_ir(node.body)
         return ForNumeric(var, start, end, step, body)
     if isinstance(node, nodes.Forin):
-        vars = [_to_ir(n) for n in node.targets]
+        vars_list = [_to_ir(n) for n in node.targets]
         iterators = [_to_ir(i) for i in node.iterators]
         body = _to_ir(node.body)
-        return ForGeneric(vars, iterators, body)
+        return ForGeneric(vars_list, iterators, body)
     if isinstance(node, nodes.Function):
         name = node.name.id if node.name else None
         params = [Name(p.id) if isinstance(p, nodes.Name) else Vararg() for p in node.args]

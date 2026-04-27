@@ -1,104 +1,167 @@
-from ir_builder import *
+import copy
+from ir_builder import (Number, String, Boolean, Nil, BinOp, UnaryOp, Name,
+                         LocalDecl, Assignment, Block, If, While, Repeat,
+                         ForNumeric, ForGeneric, FunctionDef, Return, FunctionCall,
+                         TableConstructor, Index)
 
-def _is_constant(ir):
-    return isinstance(ir, (Number, String, Boolean, Nil))
+def _is_constant(node):
+    return isinstance(node, (Number, String, Boolean, Nil))
 
 def _eval_binop(left, op, right):
-    try:
+    if not _is_constant(left) or not _is_constant(right):
+        return None
+    if isinstance(left, Number) and isinstance(right, Number):
         if op == '+': return Number(left.value + right.value)
         if op == '-': return Number(left.value - right.value)
         if op == '*': return Number(left.value * right.value)
-        if op == '/': return Number(left.value / right.value) if right.value != 0 else None
-        if op == '%': return Number(left.value % right.value) if right.value != 0 else None
-        if op == '..': return String(str(left.value) + str(right.value))
-    except:
-        pass
+        if op == '/' and right.value != 0:
+            return Number(left.value / right.value)
+        if op == '%' and right.value != 0:
+            return Number(left.value % right.value)
+        if op == '^': return Number(left.value ** right.value)
+    if isinstance(left, String) and isinstance(right, String) and op == '..':
+        return String(left.value + right.value)
     return None
 
 def _eval_unary(op, operand):
-    if op == '-': return Number(-operand.value)
-    if op == 'not': return Boolean(not operand.value)
-    if op == '#': return Number(len(operand.value)) if isinstance(operand, String) else None
+    if not _is_constant(operand):
+        return None
+    if isinstance(operand, Number) and op == '-':
+        return Number(-operand.value)
+    if isinstance(operand, Boolean) and op == 'not':
+        return Boolean(not operand.value)
     return None
+
+def _clone(node):
+    return copy.deepcopy(node)
 
 def propagate(node, env=None):
     if env is None:
         env = {}
-    if isinstance(node, Number) or isinstance(node, String) or isinstance(node, Boolean) or isinstance(node, Nil):
-        return node
+
+    if isinstance(node, (Number, String, Boolean, Nil)):
+        return _clone(node)
+
     if isinstance(node, Name):
-        if node.name in env and _is_constant(env[node.name]):
-            return env[node.name]
-        return node
+        val = env.get(node.name)
+        return _clone(val) if val is not None else _clone(node)
+
     if isinstance(node, BinOp):
-        left = propagate(node.left, env)
+        left  = propagate(node.left,  env)
         right = propagate(node.right, env)
-        node.left, node.right = left, right
-        if _is_constant(left) and _is_constant(right):
-            evaluated = _eval_binop(left, node.op, right)
-            if evaluated:
-                return evaluated
-        return node
+        result = _eval_binop(left, node.op, right)
+        if result:
+            return result
+        n = _clone(node)
+        n.left  = left
+        n.right = right
+        return n
+
     if isinstance(node, UnaryOp):
         operand = propagate(node.operand, env)
-        node.operand = operand
-        if _is_constant(operand):
-            evaluated = _eval_unary(node.op, operand)
-            if evaluated:
-                return evaluated
-        return node
+        result  = _eval_unary(node.op, operand)
+        if result:
+            return result
+        n = _clone(node)
+        n.operand = operand
+        return n
+
     if isinstance(node, LocalDecl):
-        new_env = env.copy()
+        new_env  = dict(env)
+        new_vals = []
         for i, name in enumerate(node.names):
             if i < len(node.values):
-                node.values[i] = propagate(node.values[i], env)
-                val = node.values[i]
-                if _is_constant(val):
-                    new_env[name.name] = val
+                v = propagate(node.values[i], env)
+                new_vals.append(v)
+                if _is_constant(v):
+                    new_env[name.name] = v
             else:
+                new_vals.append(Nil())
                 new_env[name.name] = Nil()
-        return LocalDecl(node.names, node.values)
+        env.update(new_env)
+        n = _clone(node)
+        n.values = new_vals
+        return n
+
     if isinstance(node, Assignment):
+        new_vals = [propagate(v, env) for v in node.values]
         for i, target in enumerate(node.targets):
-            if i < len(node.values):
-                node.values[i] = propagate(node.values[i], env)
-        return node
+            if isinstance(target, Name) and i < len(new_vals):
+                if _is_constant(new_vals[i]):
+                    env[target.name] = new_vals[i]
+                else:
+                    env.pop(target.name, None)
+        n = _clone(node)
+        n.values = new_vals
+        return n
+
     if isinstance(node, Block):
-        new_env = env.copy()
-        for i, stmt in enumerate(node.statements):
-            node.statements[i] = propagate(stmt, new_env)
-            if isinstance(stmt, LocalDecl):
-                for j, name in enumerate(stmt.names):
-                    if j < len(stmt.values) and _is_constant(stmt.values[j]):
-                        new_env[name.name] = stmt.values[j]
-                    else:
-                        new_env.pop(name.name, None)
-        return node
+        new_env   = dict(env)
+        new_stmts = []
+        for stmt in node.statements:
+            new_stmts.append(propagate(stmt, new_env))
+        n = _clone(node)
+        n.statements = new_stmts
+        return n
+
     if isinstance(node, If):
-        node.test = propagate(node.test, env)
-        node.body = propagate(node.body, env)
-        if node.orelse:
-            node.orelse = propagate(node.orelse, env)
-        return node
+        test = propagate(node.test, env)
+        body = propagate(node.body, dict(env))
+        orelse = propagate(node.orelse, dict(env)) if node.orelse else None
+        # Eliminate dead branches
+        if isinstance(test, Boolean):
+            return body if test.value else (orelse if orelse else Block([]))
+        n = _clone(node)
+        n.test   = test
+        n.body   = body
+        n.orelse = orelse
+        return n
+
     if isinstance(node, While):
-        node.test = propagate(node.test, env)
-        node.body = propagate(node.body, env)
-        return node
+        n = _clone(node)
+        n.test = propagate(node.test, env)
+        n.body = propagate(node.body, dict(env))
+        return n
+
     if isinstance(node, Repeat):
-        node.body = propagate(node.body, env)
-        node.test = propagate(node.test, env)
-        return node
+        n = _clone(node)
+        n.body = propagate(node.body, dict(env))
+        n.test = propagate(node.test, env)
+        return n
+
     if isinstance(node, ForNumeric):
-        node.start = propagate(node.start, env)
-        node.end = propagate(node.end, env)
-        if node.step:
-            node.step = propagate(node.step, env)
-        node.body = propagate(node.body, env)
-        return node
+        n = _clone(node)
+        n.start = propagate(node.start, env)
+        n.end   = propagate(node.end,   env)
+        n.step  = propagate(node.step,  env) if node.step else None
+        n.body  = propagate(node.body,  dict(env))
+        return n
+
+    if isinstance(node, ForGeneric):
+        n = _clone(node)
+        n.iterators = [propagate(i, env) for i in node.iterators]
+        n.body      = propagate(node.body, dict(env))
+        return n
+
     if isinstance(node, FunctionDef):
-        node.body = propagate(node.body, env)
-        return node
+        n = _clone(node)
+        n.body = propagate(node.body, {})  # function has its own scope
+        return n
+
     if isinstance(node, Return):
-        node.values = [propagate(v, env) for v in node.values]
-        return node
-    return node
+        n = _clone(node)
+        n.values = [propagate(v, env) for v in node.values]
+        return n
+
+    if isinstance(node, FunctionCall):
+        n = _clone(node)
+        n.args = [propagate(a, env) for a in node.args]
+        return n
+
+    if isinstance(node, Index):
+        n = _clone(node)
+        n.table = propagate(node.table, env)
+        n.key   = propagate(node.key,   env)
+        return n
+
+    return _clone(node)

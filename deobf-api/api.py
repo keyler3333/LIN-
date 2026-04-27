@@ -17,165 +17,61 @@ def find_lua():
 LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
 SANDBOX_TEMPLATE = r"""
-local __outdir = [[{OUTDIR}]]
-local __n = 0
+local hooks = require("hooks")
+hooks.init("{OUTDIR}")
 
-local __orig_loadstring = loadstring
-local __orig_load       = load
+local __proxy_mt = {
+    __index = function(t, k)
+        local v = rawget(t, k)
+        if v ~= nil then return v end
+        local p = setmetatable({}, __proxy_mt)
+        rawset(t, k, p)
+        return p
+    end,
+    __call = function(...) return select(1, ...) end,
+    __newindex = function(t, k, v) rawset(t, k, v) end,
+}
 
-local function __hook(code, ...)
-    if type(code) == "string" and #code > 5 then
-        __n = __n + 1
-        local f = io.open(__outdir .. "/layer_" .. __n .. ".lua", "w")
-        if f then f:write(code) f:close() end
-        io.stderr:write("HOOK_CAPTURED_LAYER_" .. __n .. "\n")
-    end
-    return function() end
+_G = setmetatable({}, __proxy_mt)
+_ENV = _G
+
+for _, k in ipairs({
+    "print", "warn", "error", "assert", "tick", "time", "elapsedtime", "wait",
+    "spawn", "delay", "pcall", "xpcall", "select", "ipairs", "pairs", "next",
+    "tostring", "tonumber", "type", "rawget", "rawset", "rawequal", "rawlen",
+    "setmetatable", "getmetatable", "unpack", "coroutine",
+    "math", "string", "table", "bit", "bit32", "getfenv", "setfenv",
+    "debug", "syn", "rconsole", "writefile", "readfile", "isfile", "isfolder",
+    "makefolder", "listfiles", "request", "http", "identifyexecutor",
+    "getexecutorname", "checkcaller", "isrbxactive", "hookfunction",
+    "newcclosure", "clonefunction", "Drawing", "game", "workspace", "script",
+    "Players", "RunService", "UserInputService", "HttpService", "TweenService",
+    "Instance", "Vector3", "Vector2", "CFrame", "Color3", "UDim2", "UDim",
+    "Enum", "shared", "task", "os", "io", "collectgarbage", "package",
+    "dofile", "loadfile", "require", "module", "newproxy"
+}) do
+    _G[k] = setmetatable({}, __proxy_mt)
 end
 
-loadstring = __hook
-load       = __hook
+loadstring = require("hooks").init and function() end or loadstring
 
-local function __proxy(extra)
-    return setmetatable(extra or {}, {
-        __index = function(t, k)
-            if rawget(t, k) ~= nil then return rawget(t, k) end
-            return function() end
-        end,
-        __newindex = function(t, k, v) rawset(t, k, v) end
-    })
-end
-
-getfenv = function() return __proxy({
-    string=string, math=math, table=table, bit=bit or {},
-    pairs=pairs, ipairs=ipairs, select=select, next=next,
-    tostring=tostring, tonumber=tonumber, type=type,
-    rawget=rawget, rawset=rawset, rawequal=rawequal,
-    setmetatable=setmetatable, getmetatable=getmetatable,
-    unpack=table.unpack or unpack,
-    loadstring=loadstring, load=load,
-    pcall=pcall, xpcall=xpcall, error=error, assert=assert,
-    print=print, warn=warn, game=game, workspace=workspace,
-    script=script, coroutine=coroutine, shared=shared
-}) end
-
-game             = __proxy()
-workspace        = __proxy()
-script           = __proxy()
-Players          = __proxy({LocalPlayer=__proxy({Name="Player",UserId=1,Character=__proxy()})})
-RunService       = __proxy({Heartbeat=__proxy({Connect=function()end}),RenderStepped=__proxy({Connect=function()end})})
-UserInputService = __proxy()
-HttpService      = __proxy({JSONDecode=function() return {} end,JSONEncode=function() return "{}" end})
-TweenService     = __proxy()
-Instance         = {new=function() return __proxy() end}
-Vector3          = {new=function(...) return __proxy() end}
-Vector2          = {new=function(...) return __proxy() end}
-CFrame           = {new=function(...) return __proxy() end,Angles=function(...) return __proxy() end}
-Color3           = {new=function(...) return __proxy() end,fromRGB=function(...) return __proxy() end}
-UDim2            = {new=function(...) return __proxy() end}
-Enum             = __proxy()
-Drawing          = __proxy()
-debug            = {traceback=function() return "" end,getinfo=function() return {} end}
-syn              = __proxy({protect_gui=function()end,queue_on_teleport=function()end,request=function() return __proxy({Body="",StatusCode=200}) end})
-rconsole         = __proxy({print=function()end,clear=function()end,settitle=function()end})
-writefile        = function() end
-readfile         = function() return "" end
-isfile           = function() return false end
-isfolder         = function() return false end
-makefolder       = function() end
-listfiles        = function() return {} end
-request          = function() return __proxy({Body="",StatusCode=200,Success=true}) end
-http             = {request=function() return __proxy({Body="",StatusCode=200}) end}
-identifyexecutor = function() return "synapse","2.0" end
-getexecutorname  = function() return "synapse" end
-checkcaller      = function() return true end
-isrbxactive      = function() return true end
-hookfunction     = function(a,b) return a end
-newcclosure      = function(f) return f end
-clonefunction    = function(f) return f end
-tick             = function() return 0 end
-time             = function() return 0 end
-elapsedtime      = function() return 0 end
-
-local __wait_count = 0
-wait = function(n)
-    __wait_count = __wait_count + 1
-    if __wait_count > 5000 then
-        io.stderr:write("WAIT_LIMIT_EXCEEDED\n")
-        os.exit(0)
-    end
-    if coroutine.running() then
-        coroutine.yield()
-    end
-end
-
-spawn            = function(f) if f then pcall(f) end end
-delay            = function(t, f) if f then pcall(f) end end
-warn             = function() end
-
-local __print_count = 0
-print = function(...)
-    __print_count = __print_count + 1
-    if __print_count <= 10 then
-        local args = {...}
-        for i, v in ipairs(args) do
-            io.stderr:write(tostring(v) .. "\t")
-        end
-        io.stderr:write("\n")
-    end
-end
-
-error            = function(e) io.stderr:write("ERROR: " .. tostring(e) .. "\n") end
-assert           = function(v,m) if not v then error(m or "assert") end return v end
-shared           = __proxy()
-
-bit = bit or {}
-bit.bxor=function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
-bit.band=function(a,b) local r,p=0,1 while a>0 and b>0 do if a%2==1 and b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
-bit.bor =function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2==1 or b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
-bit.bnot=function(a) return -a-1 end
-bit.rshift=function(a,b) return math.floor(a/(2^b)) end
-bit.lshift=function(a,b) return math.floor(a*(2^b)) end
-bit32 = bit
-
-coroutine.wrap   = coroutine.wrap   or function(f) return f end
-coroutine.create = coroutine.create or function(f) return f end
-table.pack   = table.pack   or function(...) return {n=select('#',...), ...} end
-table.unpack = table.unpack or unpack
-math.pow     = math.pow     or function(a,b) return a^b end
-_G.game      = game
-_G.workspace = workspace
-
-io.stderr:write("SANDBOX_STARTED\n")
-
-local __chunk, __load_err = __orig_loadstring("return function(...) " .. [[{USER_CODE}]] .. " end")
-if not __chunk then
-    io.stderr:write("LOAD_ERROR: " .. tostring(__load_err) .. "\n")
+local chunk, err = loadstring("return function(...) " .. [[{USER_CODE}]] .. " end")
+if not chunk then
+    io.stderr:write("LOAD_ERROR: " .. tostring(err) .. "\n")
     os.exit(1)
 end
 
-local __func = __chunk()
-local __co = coroutine.create(function()
-    __func()
-end)
+local func = chunk()
+local co = coroutine.create(function() func() end)
 
-local __start = os.time()
-local __steps = 0
-while coroutine.status(__co) ~= "dead" do
-    __steps = __steps + 1
-    if __steps > 100000 then
-        io.stderr:write("STEPS_LIMIT_EXCEEDED\n")
-        break
-    end
-    if os.time() - __start > 8 then
-        io.stderr:write("TIMEOUT\n")
-        break
-    end
-    local ok, err = coroutine.resume(__co)
-    if not ok then
-        io.stderr:write("LUA_ERROR: " .. tostring(err) .. "\n")
-        break
-    end
+local steps = 0
+local start = os.time()
+while coroutine.status(co) ~= "dead" do
+    steps = steps + 1
+    if steps > 50000 then io.stderr:write("STEPS\n"); break end
+    if os.time() - start > 8 then io.stderr:write("TIMEOUT\n"); break end
+    local ok, e = coroutine.resume(co)
+    if not ok then io.stderr:write("ERROR: "..tostring(e).."\n"); break end
 end
 """
 
@@ -186,8 +82,10 @@ def run_sandbox(source, timeout=12):
         spath = os.path.join(d, 'script.lua')
         with open(spath, 'w', encoding='utf-8') as f:
             f.write(script)
+        env = os.environ.copy()
+        env['LUA_CPATH'] = '/app/?.so'
         try:
-            proc = subprocess.run([LUA_BIN, spath], timeout=timeout, capture_output=True, cwd=d)
+            proc = subprocess.run([LUA_BIN, spath], timeout=timeout, capture_output=True, cwd=d, env=env)
         except subprocess.TimeoutExpired:
             return None, 'timeout'
         except FileNotFoundError:
@@ -195,41 +93,32 @@ def run_sandbox(source, timeout=12):
         except Exception as e:
             return None, str(e)
         stderr = proc.stderr.decode('utf-8', errors='replace').strip()
-        stdout = proc.stdout.decode('utf-8', errors='replace').strip()
         captured = []
         i = 1
         while True:
             p = os.path.join(d, f'layer_{i}.lua')
-            if not os.path.exists(p):
-                break
+            if not os.path.exists(p): break
             with open(p, 'r', encoding='utf-8', errors='replace') as f:
                 data = f.read()
-            if data.strip():
-                captured.append(data)
+            if data.strip(): captured.append(data)
             i += 1
-        if captured:
-            return captured, None
-        else:
-            diag = []
-            if stderr: diag.append(stderr[:500])
-            if stdout: diag.append("stdout: " + stdout[:300])
-            if not diag: diag.append("no output")
-            return None, ' | '.join(diag)
+        if captured: return captured, None
+        diag = []
+        if stderr: diag.append(stderr[:500])
+        if not diag: diag.append("no output")
+        return None, ' | '.join(diag)
 
 def peel(source, max_layers=8, timeout=12):
     current, count, previews = source, 0, []
     for _ in range(max_layers):
         captured, err = run_sandbox(current, timeout)
-        if captured is None:
-            return current, count, previews, err
-        if not captured:
-            break
+        if captured is None: return current, count, previews, err
+        if not captured: break
         best = max(captured, key=len)
-        if len(best.strip()) < 10 or best == current:
-            break
+        if len(best.strip()) < 10 or best == current: break
         previews.append(best[:120].replace('\n', ' '))
         current = best
-        count  += 1
+        count += 1
     return current, count, previews, None
 
 def detect_profile(text):
@@ -307,37 +196,22 @@ def health():
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
-    data   = request.get_json(force=True)
+    data = request.get_json(force=True)
     source = data.get('source', '')
-    if not source.strip():
-        return jsonify({'error': 'no source'}), 400
+    if not source.strip(): return jsonify({'error': 'no source'}), 400
     profile = detect_profile(source)
-    obf     = profile['obfuscator']
+    obf = profile['obfuscator']
     peeled, layers, previews, err = peel(source)
     if err:
         result = static_decode(beautify(source))
-        return jsonify({
-            'result': result,
-            'layers': 0,
-            'method': 'static',
-            'detected': obf,
-            'profile': profile,
-            'error': err
-        })
+        return jsonify({'result': result, 'layers': 0, 'method': 'static', 'detected': obf, 'profile': profile, 'error': err})
     if layers > 0:
         result = static_decode(beautify(peeled))
         method = 'sandbox'
     else:
         result = static_decode(beautify(source))
         method = 'static'
-    return jsonify({
-        'result': result,
-        'layers': layers,
-        'previews': previews if layers else [],
-        'method': method,
-        'detected': obf,
-        'profile': profile,
-    })
+    return jsonify({'result': result, 'layers': layers, 'previews': previews if layers else [], 'method': method, 'detected': obf, 'profile': profile})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

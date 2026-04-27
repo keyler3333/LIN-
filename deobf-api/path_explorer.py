@@ -1,63 +1,63 @@
-import copy
-from symbolic_exec import SymConst, SymVar, SymBinOp, simplify
+from copy import deepcopy
 from symbolic_engine import SymState, SymStore, execute_symbolic
 from z3_solver import expr_to_z3, solve_condition
-from cfg import BasicBlock
 
 class PathState:
-    def __init__(self, block, sym_state=None, path_cond=None):
+    def __init__(self, block, state=None, path_cond=None):
         self.block = block
-        self.sym_state = sym_state or SymState(SymStore())
-        self.path_cond = path_cond or SymConst(True)
-        self.pc = 0
+        self.state = state or SymState(SymStore())
+        self.path_cond = path_cond
 
-    def fork(self):
-        return copy.deepcopy(self)
+def _is_feasible(cond, path_cond):
+    z3_cond = expr_to_z3(cond)
+    z3_path = expr_to_z3(path_cond)
 
-def _evaluate_condition(cond, state):
-    if isinstance(cond, SymConst):
-        return cond.value
-    z3_expr = expr_to_z3(cond)
-    if z3_expr is not None:
-        return solve_condition(z3_expr)
-    return None
+    if z3_cond is None:
+        return True
 
-def explore_paths(blocks):
-    if not blocks:
-        return []
-    initial = PathState(blocks[0])
+    
+    return solve_condition(z3_path) if z3_path else True
+
+def explore(entry_block):
+    initial = PathState(entry_block, SymState(SymStore()), True)
     worklist = [initial]
-    resolved = []
+    final_states = []
+
     while worklist:
-        state = worklist.pop()
-        current_block = state.block
-        for instr in current_block.instructions:
-            execute_symbolic(instr, state.sym_state)
-        if current_block.true_branch:
-            cond = state.sym_state.store.get('__if_cond__')
-            if cond:
-                feasible = _evaluate_condition(cond, state.sym_state)
-                if feasible is True or feasible is None:
-                    true_state = state.fork()
-                    true_state.block = current_block.true_branch
-                    true_state.path_cond = SymBinOp(state.path_cond, 'and', cond)
-                    true_state.sym_state.path_condition = true_state.path_cond
-                    worklist.append(true_state)
-                neg_cond = SymBinOp(cond, '==', SymConst(False))
-                feasible_neg = _evaluate_condition(neg_cond, state.sym_state)
-                if feasible_neg is True or feasible_neg is None:
-                    false_state = state.fork()
-                    false_state.block = current_block.false_branch if current_block.false_branch else None
-                    false_state.path_cond = SymBinOp(state.path_cond, 'and', neg_cond)
-                    false_state.sym_state.path_condition = false_state.path_cond
-                    if false_state.block:
-                        worklist.append(false_state)
+        ps = worklist.pop()
+        block = ps.block
+
+
+        for instr in block.instructions:
+            execute_symbolic(instr, ps.state)
+
+
+        if block.condition and block.true_branch:
+
+            cond = block.condition
+            true_state = deepcopy(ps)
+            false_state = deepcopy(ps)
+
+            true_state.path_cond = ("and", ps.path_cond, cond)
+            false_state.path_cond = ("and", ps.path_cond, ("not", cond))
+
+            if _is_feasible(cond, ps.path_cond):
+                true_state.block = block.true_branch
+                worklist.append(true_state)
+
+            if _is_feasible(("not", cond), ps.path_cond):
+                false_state.block = block.false_branch
+                worklist.append(false_state)
+
             continue
-        if current_block.successors:
-            for succ in current_block.successors:
-                next_state = state.fork()
-                next_state.block = succ
-                worklist.append(next_state)
+
+
+        if block.successors:
+            for nxt in block.successors:
+                nxt_state = deepcopy(ps)
+                nxt_state.block = nxt
+                worklist.append(nxt_state)
         else:
-            resolved.append(state)
-    return resolved
+            final_states.append(ps)
+
+    return final_states

@@ -1,49 +1,40 @@
 from copy import deepcopy
-from symbolic_engine import SymState, SymStore, execute_symbolic, SSAInstruction
-from z3_solver import expr_to_z3, solve_condition
+from expr import Const, And, Not
+from z3_solver import solve
 
 class PathState:
-    def __init__(self, block, state=None, path_cond=None):
+    def __init__(self, block, store, cond):
         self.block = block
-        self.state = state or SymState(SymStore())
-        self.path_cond = path_cond
+        self.store = store
+        self.cond = cond
 
-def _is_feasible(cond, path_cond):
-    z3_cond = expr_to_z3(cond)
-    z3_path = expr_to_z3(path_cond) if path_cond else None
-    if z3_cond is None:
-        return True
-    if z3_path is not None:
-        return solve_condition(z3.Simplify(z3.And(z3_cond, z3_path)))
-    return solve_condition(z3_cond)
+def explore(entry):
+    work = [PathState(entry, {}, Const(True))]
+    out = []
 
-def explore(entry_block):
-    initial = PathState(entry_block, SymState(SymStore()), True)
-    worklist = [initial]
-    final_states = []
-    while worklist:
-        ps = worklist.pop()
-        block = ps.block
-        for instr in block.instructions:
-            execute_symbolic(instr, ps.state)
-        if block.condition and block.true_branch:
-            cond = block.condition
-            true_state = deepcopy(ps)
-            false_state = deepcopy(ps)
-            true_state.path_cond = ("and", ps.path_cond, cond)
-            false_state.path_cond = ("and", ps.path_cond, ("not", cond))
-            if _is_feasible(cond, ps.path_cond):
-                true_state.block = block.true_branch
-                worklist.append(true_state)
-            if _is_feasible(("not", cond), ps.path_cond):
-                false_state.block = block.false_branch
-                worklist.append(false_state)
-            continue
-        if block.successors:
-            for nxt in block.successors:
-                nxt_state = deepcopy(ps)
-                nxt_state.block = nxt
-                worklist.append(nxt_state)
+    while work:
+        st = work.pop()
+        blk = st.block
+
+        for instr in blk.instructions:
+            if hasattr(instr, "eval"):
+                instr.eval(st.store)
+
+        if blk.condition:
+            c = blk.condition
+
+            true_state = PathState(blk.true_branch, dict(st.store), And(st.cond, c))
+            false_state = PathState(blk.false_branch, dict(st.store), And(st.cond, Not(c)))
+
+            if solve(true_state.cond):
+                work.append(true_state)
+            if solve(false_state.cond):
+                work.append(false_state)
         else:
-            final_states.append(ps)
-    return final_states
+            if blk.successors:
+                for s in blk.successors:
+                    work.append(PathState(s, dict(st.store), st.cond))
+            else:
+                out.append(st)
+
+    return out

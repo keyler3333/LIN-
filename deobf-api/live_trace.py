@@ -4,8 +4,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-# Load the mock environment from a file (once)
 _mock_env_cache = None
+
 def _load_mock_env():
     global _mock_env_cache
     if _mock_env_cache is not None:
@@ -14,20 +14,12 @@ def _load_mock_env():
         _mock_env_cache = f.read()
     return _mock_env_cache
 
-def _run_trace(source: str, lua_bin: str = "lua5.1", timeout: int = 20) -> str:
-    """
-    Build a Lua script that runs the obfuscated source in the mock environment,
-    captures trace and constants via print(), and returns combined stdout.
-    """
+def _run_trace(source, lua_bin="lua5.1", timeout=20):
     mock_env = _load_mock_env()
-
-    # Write the user source to a temp file so Lua can load it
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         src_file = tmp / "input.lua"
         src_file.write_text(source, encoding='utf-8')
-
-        # The driver script: mock env + loading + dumper injection + run
         driver = (
             mock_env +
             "\n" +
@@ -40,11 +32,8 @@ def _run_trace(source: str, lua_bin: str = "lua5.1", timeout: int = 20) -> str:
                 end
                 local code = f:read("*a")
                 f:close()
-
-                -- 1. Find the string table variable name (common WeAreDevs pattern)
                 local var_match = code:match("local ([a-zA-Z0-9_]+)={%s*\"")
                 if var_match then
-                    -- Inject constant dumper right after the definition
                     local dumped = false
                     code = code:gsub("(local " .. var_match .. "%s*=%s*{[^}]*})", function(match)
                         dumped = true
@@ -68,15 +57,11 @@ def _run_trace(source: str, lua_bin: str = "lua5.1", timeout: int = 20) -> str:
                         ]]
                     end, 1)
                 end
-
-                -- 2. Replace getfenv with MockEnv
                 if code:find("getfenv and getfenv%(%)or _ENV") then
                     code = code:gsub("getfenv and getfenv%(%)or _ENV", "MockEnv")
                 else
                     code = code:gsub("getfenv%s*%(%s*%)", "MockEnv")
                 end
-
-                -- 3. Wrap in pcall for safety
                 local chunk, err = loadstring(code)
                 if not chunk then
                     io.stderr:write("COMPILE_ERROR: " .. tostring(err) .. "\n")
@@ -88,37 +73,23 @@ def _run_trace(source: str, lua_bin: str = "lua5.1", timeout: int = 20) -> str:
                     io.stderr:write("RUNTIME_ERROR: " .. tostring(err) .. "\n")
                 end
             end
-
             deobfuscate_script()
             """
         )
-
         driver_path = tmp / "driver.lua"
         driver_path.write_text(driver, encoding='utf-8')
-
-        # Execute with Lua 5.1
         cmd = [lua_bin, str(driver_path)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=tmpdir)
         except subprocess.TimeoutExpired:
             raise RuntimeError("Trace execution timed out")
-
         stderr = proc.stderr.strip()
         if stderr and ("CANNOT_OPEN" in stderr or "COMPILE_ERROR" in stderr or "RUNTIME_ERROR" in stderr):
             raise RuntimeError(f"Lua error: {stderr[:500]}")
-
-        # Return combined stdout + stderr (trace goes to stdout)
         return proc.stdout
 
-
-def trace_deobfuscate(source: str, lua_bin: str = "lua5.1") -> str:
-    """
-    Run the trace-based deobfuscation and return cleaned Lua code.
-    Falls back to static decode on failure.
-    """
+def trace_deobfuscate(source, lua_bin="lua5.1"):
     stdout = _run_trace(source, lua_bin)
-
-    # Extract trace lines and constants
     trace_lines = []
     constants_str = ""
     in_constants = False
@@ -136,11 +107,8 @@ def trace_deobfuscate(source: str, lua_bin: str = "lua5.1") -> str:
                                               "SET GLOBAL", "UNPACK CALLED",
                                               "LOADSTRING", "TRACE_PRINT", "CAPTURED")):
             trace_lines.append(ln)
-
-    # Build a temporary report file and call trace_to_lua
     report_text = "--- DEOBFUSCATION REPORT ---\n"
     report_text += "--- TRACE ---\n" + "\n".join(trace_lines) + "\n"
     report_text += "\n--- CONSTANTS ---\n" + constants_str
-
     import trace_to_lua
     return trace_to_lua.parse_trace_string(report_text)

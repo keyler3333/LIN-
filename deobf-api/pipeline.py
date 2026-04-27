@@ -29,7 +29,8 @@ strategies = [
 ]
 
 def entropy(s):
-    if not s: return 0
+    if not s:
+        return 0
     c = Counter(s)
     ln = len(s)
     return -sum((v/ln)*math.log2(v/ln) for v in c.values())
@@ -39,8 +40,10 @@ def static_decode(code):
     code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
     def sc(m):
         nums = re.findall(r'\d+', m.group(1))
-        try: return '"' + ''.join(chr(int(n)) for n in nums if int(n) < 256) + '"'
-        except: return m.group(0)
+        try:
+            return '"' + ''.join(chr(int(n)) for n in nums if int(n) < 256) + '"'
+        except:
+            return m.group(0)
     code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', sc, code)
     return code
 
@@ -72,9 +75,10 @@ def deep_deobfuscate(source, skip_strategies=False):
         else:
             handlers = extract_handlers(decoded)
             if handlers:
-                decoded = '-- VM handlers:\n' + json.dumps(handlers, indent=2)
+                decoded = 'VM handlers:\n' + json.dumps(handlers, indent=2)
     ir = build_ir(decoded)
-    blocks, entry = build_cfg(ir)
+    blocks = build_cfg(ir)
+    entry = blocks[0]
     paths = explore(entry)
     best_code = None
     best_score = -1
@@ -84,7 +88,7 @@ def deep_deobfuscate(source, skip_strategies=False):
             optimized = remove_dead_code(optimized)
             optimized = remove_unused_assignments(optimized)
             code = ir_to_lua(optimized)
-            score = len(code) + len(str(p.state.store.data))
+            score = len(code) + len(p.sym)
             if score > best_score:
                 best_score = score
                 best_code = code

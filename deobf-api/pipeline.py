@@ -7,12 +7,16 @@ from vm_detector import detect_vm, extract_vm_info
 from vm_lifter import lift_vm_from_source
 from symbolic_exec import resolve_condition
 from symbolic_engine import SymState, execute_symbolic, SymStore
-from ssa import convert_to_ssa, SSAInstruction
+from ssa import convert_to_ssa
 from cfg import build_cfg
 from optimizer_passes import remove_dead_code, remove_unused_assignments
 from beautifier import ir_to_lua
 from worker_pool import run_parallel
 from knowledge_base import KnowledgeBase, hash_source
+from learning_engine import LearningEngine
+from path_explorer import explore_paths
+from vm_handler_extractor import detect_dispatch_loop, extract_handlers
+from anti_analysis import apply_anti_analysis
 from strategies.wearedevs import WeAreDevsStrategy
 from strategies.ironbrew import IronBrewStrategy
 from strategies.luraph import LuraphStrategy
@@ -20,6 +24,7 @@ from strategies.luraph import LuraphStrategy
 LUA_BIN = os.environ.get('LUA_BIN', 'lua5.1')
 
 kb = KnowledgeBase(os.path.join(os.path.dirname(__file__), 'sig_db.json'))
+learn = LearningEngine(os.path.join(os.path.dirname(__file__), 'learn_db.json'))
 
 strategies = [
     WeAreDevsStrategy(),
@@ -47,28 +52,42 @@ def deep_deobfuscate(source, skip_strategies=False):
     ch = hash_source(source)
     cached = kb.get_result(ch)
     if cached:
+        learn.record_result(ch, 'cache', True)
         return cached['result']
     if not skip_strategies:
+        best_strat = learn.best_strategy(ch)
+        if best_strat:
+            for strat in strategies:
+                if strat.name == best_strat and strat.detect(source):
+                    return strat.deobfuscate(source, None)
         for strat in strategies:
             if strat.detect(source):
-                return strat.deobfuscate(source, None)
+                result = strat.deobfuscate(source, None)
+                learn.record_result(ch, strat.name, True)
+                return result
     decoded = static_decode(source)
-    best, traces = run_parallel(decoded, timeouts=[5,8,12], env_patches=['', 'os.execute = function() end', 'debug.sethook = function() end'])
+    best, traces = run_parallel(decoded, timeouts=[5,8,12], env_patches=['', apply_anti_analysis('')])
     if best:
         decoded = best
     if detect_vm(decoded):
         lifted = lift_vm_from_source(decoded)
         if lifted:
             decoded = lifted
+        else:
+            handlers = extract_handlers(decoded)
+            if handlers:
+                decoded = '-- VM handlers:\n' + json.dumps(handlers, indent=2)
     try:
         ir = build_ir(decoded)
     except:
         return decoded
     ssa_instrs, _ = convert_to_ssa(ir)
     cfg_blocks = build_cfg(ssa_instrs)
-    state = SymState(SymStore())
+    paths = explore_paths(ssa_instrs)
+    final_states = [p.sym_state for p in paths]
     for instr in ssa_instrs:
-        execute_symbolic(instr, state)
+        for state in final_states:
+            execute_symbolic(instr, state)
     ir = propagate(ir)
     ir = remove_dead_code(ir)
     ir = remove_unused_assignments(ir)
@@ -76,5 +95,6 @@ def deep_deobfuscate(source, skip_strategies=False):
     code = ir_to_lua(ir)
     code = re.sub(r'^\s*if\s+false\s+then.*?end', '', code, flags=re.DOTALL|re.MULTILINE)
     code = re.sub(r'^\s*while\s+false\s+do.*?end', '', code, flags=re.DOTALL|re.MULTILINE)
+    learn.record_result(ch, 'full_pipeline', True)
     kb.add_result(ch, code, 'full_pipeline')
     return code

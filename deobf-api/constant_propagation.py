@@ -38,14 +38,11 @@ def _clone(node):
 def propagate(node, env=None):
     if env is None:
         env = {}
-
     if isinstance(node, (Number, String, Boolean, Nil)):
         return _clone(node)
-
     if isinstance(node, Name):
         val = env.get(node.name)
         return _clone(val) if val is not None else _clone(node)
-
     if isinstance(node, BinOp):
         left  = propagate(node.left,  env)
         right = propagate(node.right, env)
@@ -56,7 +53,6 @@ def propagate(node, env=None):
         n.left  = left
         n.right = right
         return n
-
     if isinstance(node, UnaryOp):
         operand = propagate(node.operand, env)
         result  = _eval_unary(node.op, operand)
@@ -65,7 +61,6 @@ def propagate(node, env=None):
         n = _clone(node)
         n.operand = operand
         return n
-
     if isinstance(node, LocalDecl):
         new_env  = dict(env)
         new_vals = []
@@ -82,7 +77,6 @@ def propagate(node, env=None):
         n = _clone(node)
         n.values = new_vals
         return n
-
     if isinstance(node, Assignment):
         new_vals = [propagate(v, env) for v in node.values]
         for i, target in enumerate(node.targets):
@@ -94,7 +88,6 @@ def propagate(node, env=None):
         n = _clone(node)
         n.values = new_vals
         return n
-
     if isinstance(node, Block):
         new_env   = dict(env)
         new_stmts = []
@@ -103,12 +96,10 @@ def propagate(node, env=None):
         n = _clone(node)
         n.statements = new_stmts
         return n
-
     if isinstance(node, If):
         test = propagate(node.test, env)
         body = propagate(node.body, dict(env))
         orelse = propagate(node.orelse, dict(env)) if node.orelse else None
-        # Eliminate dead branches
         if isinstance(test, Boolean):
             return body if test.value else (orelse if orelse else Block([]))
         n = _clone(node)
@@ -116,19 +107,16 @@ def propagate(node, env=None):
         n.body   = body
         n.orelse = orelse
         return n
-
     if isinstance(node, While):
         n = _clone(node)
         n.test = propagate(node.test, env)
         n.body = propagate(node.body, dict(env))
         return n
-
     if isinstance(node, Repeat):
         n = _clone(node)
         n.body = propagate(node.body, dict(env))
         n.test = propagate(node.test, env)
         return n
-
     if isinstance(node, ForNumeric):
         n = _clone(node)
         n.start = propagate(node.start, env)
@@ -136,32 +124,26 @@ def propagate(node, env=None):
         n.step  = propagate(node.step,  env) if node.step else None
         n.body  = propagate(node.body,  dict(env))
         return n
-
     if isinstance(node, ForGeneric):
         n = _clone(node)
         n.iterators = [propagate(i, env) for i in node.iterators]
         n.body      = propagate(node.body, dict(env))
         return n
-
     if isinstance(node, FunctionDef):
         n = _clone(node)
-        n.body = propagate(node.body, {})  # function has its own scope
+        n.body = propagate(node.body, {})
         return n
-
     if isinstance(node, Return):
         n = _clone(node)
         n.values = [propagate(v, env) for v in node.values]
         return n
-
     if isinstance(node, FunctionCall):
         n = _clone(node)
         n.args = [propagate(a, env) for a in node.args]
         return n
-
     if isinstance(node, Index):
         n = _clone(node)
         n.table = propagate(node.table, env)
         n.key   = propagate(node.key,   env)
         return n
-
     return _clone(node)

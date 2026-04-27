@@ -23,7 +23,6 @@ class SSAPhi:
         self.dest = dest
         self.incoming = incoming
 
-# These were missing — symbolic_engine.py needs them
 class SSAOperand:
     def __init__(self, var):
         self.var = var
@@ -38,7 +37,6 @@ class SSAInstruction:
 class SSAState:
     def __init__(self):
         self.versions = {}
-
     def new(self, name):
         v = self.versions.get(name, 0) + 1
         self.versions[name] = v

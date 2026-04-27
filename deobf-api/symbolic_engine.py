@@ -13,13 +13,13 @@ class SymStore:
 
     def copy(self):
         s = SymStore()
-        s.data = self.data.copy()
+        s.data = dict(self.data)
         return s
 
 class SymState:
     def __init__(self, store=None):
-        self.store = store or SymStore()
-        self.path_condition = SymConst(True)
+        self.store           = store or SymStore()
+        self.path_condition  = SymConst(True)
 
     def copy(self):
         s = SymState(self.store.copy())
@@ -27,17 +27,30 @@ class SymState:
         return s
 
 def execute_symbolic(instr, state):
+    if not isinstance(instr, SSAInstruction):
+        return True
+
     if instr.opcode == 'load_const':
-        if instr.left:
+        if instr.dest and instr.left is not None:
             state.store.set(instr.dest.name, instr.left)
+
     elif instr.opcode in ('+', '-', '*', '/'):
-        left_val = instr.left if not isinstance(instr.left, SSAOperand) else state.store.get(instr.left.var.name)
-        right_val = instr.right if not isinstance(instr.right, SSAOperand) else state.store.get(instr.right.var.name)
-        result = SymBinOp(left_val, instr.opcode, right_val)
-        state.store.set(instr.dest.name, simplify(result))
+        def resolve(operand):
+            if isinstance(operand, SSAOperand):
+                val = state.store.get(operand.var.name)
+                return val if val is not None else SymVar(operand.var.name)
+            return operand
+
+        left_val  = resolve(instr.left)  if instr.left  else SymConst(0)
+        right_val = resolve(instr.right) if instr.right else SymConst(0)
+        result    = simplify(SymBinOp(left_val, instr.opcode, right_val))
+        if instr.dest:
+            state.store.set(instr.dest.name, result)
+
     elif instr.opcode == 'if':
         cond = state.store.get(instr.dest.name) if instr.dest else None
         if isinstance(cond, SymConst):
-            return cond.value
+            return bool(cond.value)
         return None
+
     return True

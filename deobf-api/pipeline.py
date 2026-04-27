@@ -1,8 +1,8 @@
 import os, subprocess, tempfile, re, math, json, hashlib
 from collections import Counter
-from ir_builder import build_ir
+from ir_builder import build_ir, If, While, Block
 from constant_propagation import propagate
-from control_flow import reconstruct_control_flow, detect_state_machine
+from control_flow import reconstruct_control_flow
 from vm_detector import detect_vm, extract_vm_info
 from vm_lifter import lift_vm_from_source
 from symbolic_exec import resolve_condition
@@ -17,6 +17,7 @@ from learning_engine import LearningEngine
 from path_explorer import explore_paths
 from vm_handler_extractor import detect_dispatch_loop, extract_handlers
 from anti_analysis import apply_anti_analysis
+from z3_solver import expr_to_z3, solve_condition
 from strategies.wearedevs import WeAreDevsStrategy
 from strategies.ironbrew import IronBrewStrategy
 from strategies.luraph import LuraphStrategy
@@ -81,13 +82,14 @@ def deep_deobfuscate(source, skip_strategies=False):
         ir = build_ir(decoded)
     except:
         return decoded
+    blocks = build_cfg(ir)
+    paths = explore_paths(blocks)
+    viable_states = [p.sym_state for p in paths]
+    for state in viable_states:
+        for block in blocks:
+            for instr in block.instructions:
+                execute_symbolic(instr, state)
     ssa_instrs, _ = convert_to_ssa(ir)
-    cfg_blocks = build_cfg(ssa_instrs)
-    paths = explore_paths(ssa_instrs)
-    final_states = [p.sym_state for p in paths]
-    for instr in ssa_instrs:
-        for state in final_states:
-            execute_symbolic(instr, state)
     ir = propagate(ir)
     ir = remove_dead_code(ir)
     ir = remove_unused_assignments(ir)

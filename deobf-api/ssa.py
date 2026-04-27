@@ -4,7 +4,6 @@ class SSAVar:
     def __init__(self, name, version):
         self.name = name
         self.version = version
-
     def __repr__(self):
         return f"{self.name}_{self.version}"
 
@@ -24,6 +23,18 @@ class SSAPhi:
         self.dest = dest
         self.incoming = incoming
 
+# These were missing — symbolic_engine.py needs them
+class SSAOperand:
+    def __init__(self, var):
+        self.var = var
+
+class SSAInstruction:
+    def __init__(self, opcode, dest=None, left=None, right=None):
+        self.opcode = opcode
+        self.dest   = dest
+        self.left   = left
+        self.right  = right
+
 class SSAState:
     def __init__(self):
         self.versions = {}
@@ -35,15 +46,15 @@ class SSAState:
 
 def to_ssa(blocks):
     state = SSAState()
-    out = []
+    out   = []
     for b in blocks:
         for i in b.instructions:
-            if hasattr(i, "target") and hasattr(i, "value"):
+            if hasattr(i, 'target') and hasattr(i, 'value'):
                 dest = state.new(i.target)
-                out.append(SSAOp("mov", dest, i.value))
-            elif hasattr(i, "op"):
-                a = i.left
-                b_ = i.right
-                dest = state.new("tmp")
+                out.append(SSAOp('mov', dest, i.value))
+            elif hasattr(i, 'op'):
+                a   = i.left
+                b_  = i.right
+                dest = state.new('tmp')
                 out.append(SSAOp(i.op, dest, a, b_))
     return out, state

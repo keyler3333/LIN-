@@ -7,111 +7,79 @@ class IRNode:
 class Number(IRNode):
     def __init__(self, value):
         self.value = value
-    def __repr__(self):
-        return f"Number({self.value})"
 
 class String(IRNode):
     def __init__(self, value):
         self.value = value
-    def __repr__(self):
-        return f"String('{self.value}')"
 
 class Boolean(IRNode):
     def __init__(self, value):
         self.value = value
-    def __repr__(self):
-        return f"Boolean({self.value})"
 
 class Nil(IRNode):
-    def __repr__(self):
-        return "Nil"
+    pass
 
 class Vararg(IRNode):
-    def __repr__(self):
-        return "Vararg"
+    pass
 
 class Name(IRNode):
     def __init__(self, name):
         self.name = name
-    def __repr__(self):
-        return f"Name({self.name})"
 
 class BinOp(IRNode):
     def __init__(self, left, op, right):
         self.left = left
         self.op = op
         self.right = right
-    def __repr__(self):
-        return f"BinOp({self.left} {self.op} {self.right})"
 
 class UnaryOp(IRNode):
     def __init__(self, op, operand):
         self.op = op
         self.operand = operand
-    def __repr__(self):
-        return f"UnaryOp({self.op} {self.operand})"
 
 class FunctionCall(IRNode):
     def __init__(self, func, args):
         self.func = func
         self.args = args
-    def __repr__(self):
-        return f"Call({self.func}({self.args}))"
 
 class TableConstructor(IRNode):
     def __init__(self, fields):
         self.fields = fields
-    def __repr__(self):
-        return f"Table({self.fields})"
 
 class Index(IRNode):
     def __init__(self, table, key):
         self.table = table
         self.key = key
-    def __repr__(self):
-        return f"Index({self.table}[{self.key}])"
 
 class Assignment(IRNode):
     def __init__(self, targets, values):
         self.targets = targets
         self.values = values
-    def __repr__(self):
-        return f"Assign({self.targets} = {self.values})"
 
 class LocalDecl(IRNode):
     def __init__(self, names, values):
         self.names = names
         self.values = values
-    def __repr__(self):
-        return f"Local({self.names} = {self.values})"
 
 class Block(IRNode):
     def __init__(self, statements):
         self.statements = statements
-    def __repr__(self):
-        return f"Block({len(self.statements)} stmts)"
 
 class If(IRNode):
     def __init__(self, test, body, orelse):
         self.test = test
         self.body = body
         self.orelse = orelse
-    def __repr__(self):
-        return f"If({self.test})"
 
 class While(IRNode):
     def __init__(self, test, body):
         self.test = test
         self.body = body
-    def __repr__(self):
-        return f"While({self.test})"
 
 class Repeat(IRNode):
     def __init__(self, body, test):
         self.body = body
         self.test = test
-    def __repr__(self):
-        return f"Repeat({self.test})"
 
 class ForNumeric(IRNode):
     def __init__(self, var, start, end, step, body):
@@ -120,16 +88,12 @@ class ForNumeric(IRNode):
         self.end = end
         self.step = step
         self.body = body
-    def __repr__(self):
-        return f"ForNumeric({self.var})"
 
 class ForGeneric(IRNode):
     def __init__(self, vars_list, iterators, body):
         self.vars = vars_list
         self.iterators = iterators
         self.body = body
-    def __repr__(self):
-        return f"ForGeneric({self.vars})"
 
 class FunctionDef(IRNode):
     def __init__(self, name, params, body, is_local):
@@ -137,18 +101,19 @@ class FunctionDef(IRNode):
         self.params = params
         self.body = body
         self.is_local = is_local
-    def __repr__(self):
-        return f"Function({self.name})"
 
 class Return(IRNode):
     def __init__(self, values):
         self.values = values
-    def __repr__(self):
-        return f"Return({self.values})"
 
 class Break(IRNode):
-    def __repr__(self):
-        return "Break"
+    pass
+
+_op_map = {
+    nodes.Add: '+', nodes.Sub: '-', nodes.Mul: '*',
+    nodes.Div: '/', nodes.Mod: '%', nodes.Pow: '^',
+    nodes.Concat: '..'
+}
 
 def _to_ir(node):
     if isinstance(node, nodes.Number):
@@ -172,11 +137,7 @@ def _to_ir(node):
     if isinstance(node, nodes.BinOp):
         left = _to_ir(node.left)
         right = _to_ir(node.right)
-        op = node.operator if hasattr(node, 'operator') else {
-            nodes.Add: '+', nodes.Sub: '-', nodes.Mul: '*',
-            nodes.Div: '/', nodes.Mod: '%', nodes.Pow: '^',
-            nodes.Concat: '..'
-        }.get(type(node), '?')
+        op = node.operator if hasattr(node, 'operator') else _op_map.get(type(node), '?')
         return BinOp(left, op, right)
     if isinstance(node, nodes.Call):
         func = _to_ir(node.func)
@@ -203,9 +164,7 @@ def _to_ir(node):
         values = [_to_ir(v) for v in node.values] if node.values else []
         return LocalDecl(names, values)
     if isinstance(node, nodes.Block):
-        stmts = []
-        for child in node.body:
-            stmts.append(_to_ir(child))
+        stmts = [_to_ir(c) for c in node.body]
         return Block(stmts)
     if isinstance(node, nodes.If):
         test = _to_ir(node.test)

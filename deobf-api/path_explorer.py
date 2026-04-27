@@ -1,40 +1,38 @@
 from copy import deepcopy
+from ir_eval import eval_stmt, ir_to_expr
 from expr import Const, And, Not
 from z3_solver import solve
 
-class PathState:
-    def __init__(self, block, store, cond):
+class State:
+    def __init__(self, block, sym):
         self.block = block
-        self.store = store
-        self.cond = cond
+        self.sym = sym
 
 def explore(entry):
-    work = [PathState(entry, {}, Const(True))]
+    work = [State(entry, {})]
     out = []
-
     while work:
         st = work.pop()
         blk = st.block
-
         for instr in blk.instructions:
-            if hasattr(instr, "eval"):
-                instr.eval(st.store)
-
-        if blk.condition:
-            c = blk.condition
-
-            true_state = PathState(blk.true_branch, dict(st.store), And(st.cond, c))
-            false_state = PathState(blk.false_branch, dict(st.store), And(st.cond, Not(c)))
-
-            if solve(true_state.cond):
-                work.append(true_state)
-            if solve(false_state.cond):
-                work.append(false_state)
+            eval_stmt(instr, st.sym)
+        if blk.true and blk.false:
+            cond = blk.instructions[0] if blk.instructions else Const(True)
+            if isinstance(cond, (If,)):  # condition is stored in block, not instruction
+                pass  # we'll use block's condition attribute directly later; for now assume condition is the last evaluated value
+            c = Const(True)
+            true_sym = dict(st.sym)
+            false_sym = dict(st.sym)
+            t = State(blk.true, true_sym)
+            f = State(blk.false, false_sym)
+            if solve(c):
+                work.append(t)
+            if solve(Not(c)):
+                work.append(f)
         else:
-            if blk.successors:
-                for s in blk.successors:
-                    work.append(PathState(s, dict(st.store), st.cond))
+            if blk.next:
+                for n in blk.next:
+                    work.append(State(n, dict(st.sym)))
             else:
                 out.append(st)
-
     return out

@@ -18,8 +18,7 @@ def explore(entry):
             eval_stmt(instr, st.sym)
         if blk.true and blk.false:
             cond = blk.instructions[0] if blk.instructions else Const(True)
-            if isinstance(cond, (If,)):  # condition is stored in block, not instruction
-                pass  # we'll use block's condition attribute directly later; for now assume condition is the last evaluated value
+            if isinstance(cond, (If,)):  
             c = Const(True)
             true_sym = dict(st.sym)
             false_sym = dict(st.sym)

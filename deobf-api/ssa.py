@@ -1,3 +1,4 @@
+from ir_builder import If, While, Repeat, ForNumeric, ForGeneric, FunctionDef, Return, Break, Block, LocalDecl, Assignment, Number, String, Boolean, BinOp, UnaryOp, Name, Vararg
 class SSABlock:
     def __init__(self):
         self.instructions = []

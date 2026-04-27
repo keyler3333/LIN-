@@ -109,91 +109,118 @@ class Return(IRNode):
 class Break(IRNode):
     pass
 
+def _has_attr(obj, name):
+    return hasattr(obj, name)
+
 def _to_ir(node):
-    if isinstance(node, nodes.Number):
+    if node is None:
+        return None
+
+    if hasattr(node, 'n') and type(node.n) in (int, float):
         return Number(node.n)
-    if isinstance(node, nodes.String):
+
+    if hasattr(node, 's') and isinstance(node.s, str):
         return String(node.s)
-    if isinstance(node, nodes.Boolean):
+
+    if hasattr(node, 'b') and isinstance(node.b, bool):
         return Boolean(node.b)
-    if isinstance(node, nodes.Nil):
+
+    if type(node).__name__ == 'Nil':
         return Nil()
-    if isinstance(node, nodes.Vararg):
+
+    if type(node).__name__ == 'Vararg':
         return Vararg()
-    if isinstance(node, nodes.Name):
+
+    if hasattr(node, 'id') and isinstance(node.id, str) and type(node).__name__ == 'Name':
         return Name(node.id)
-    if isinstance(node, nodes.UnaryOp):
+
+    if type(node).__name__ == 'UnaryOp':
         operand = _to_ir(node.operand)
         op = node.operator if hasattr(node, 'operator') else '?'
         return UnaryOp(op, operand)
-    if isinstance(node, nodes.BinOp):
+
+    if type(node).__name__ == 'BinOp':
         left = _to_ir(node.left)
         right = _to_ir(node.right)
         op = node.operator if hasattr(node, 'operator') else '?'
         return BinOp(left, op, right)
-    if isinstance(node, nodes.Call):
+
+    if type(node).__name__ == 'Call':
         func = _to_ir(node.func)
-        args = [_to_ir(a) for a in node.args]
+        args = [_to_ir(a) for a in node.args] if hasattr(node, 'args') else []
         return FunctionCall(func, args)
-    if isinstance(node, nodes.Table):
+
+    if type(node).__name__ == 'Table':
         fields = []
-        for field in node.fields:
-            if isinstance(field, nodes.Field):
-                key = _to_ir(field.key) if field.key else None
-                value = _to_ir(field.value)
-                fields.append((key, value))
+        for field in node.fields if hasattr(node, 'fields') else []:
+            key = _to_ir(field.key) if hasattr(field, 'key') and field.key else None
+            value = _to_ir(field.value)
+            fields.append((key, value))
         return TableConstructor(fields)
-    if isinstance(node, nodes.Index):
+
+    if type(node).__name__ == 'Index':
         table = _to_ir(node.value)
         key = _to_ir(node.idx)
         return Index(table, key)
-    if isinstance(node, nodes.Assign):
+
+    if type(node).__name__ == 'Assign':
         targets = [_to_ir(t) for t in node.targets]
         values = [_to_ir(v) for v in node.values]
         return Assignment(targets, values)
-    if isinstance(node, nodes.LocalAssign):
+
+    if type(node).__name__ == 'LocalAssign':
         names = [Name(n.id) for n in node.targets]
-        values = [_to_ir(v) for v in node.values] if node.values else []
+        values = [_to_ir(v) for v in node.values] if hasattr(node, 'values') and node.values else []
         return LocalDecl(names, values)
-    if isinstance(node, nodes.Block):
+
+    if type(node).__name__ == 'Block':
         stmts = [_to_ir(c) for c in node.body]
         return Block(stmts)
-    if isinstance(node, nodes.If):
+
+    if type(node).__name__ == 'If':
         test = _to_ir(node.test)
         body = _to_ir(node.body)
         orelse = _to_ir(node.orelse) if node.orelse else None
         return If(test, body, orelse)
-    if isinstance(node, nodes.While):
+
+    if type(node).__name__ == 'While':
         test = _to_ir(node.test)
         body = _to_ir(node.body)
         return While(test, body)
-    if isinstance(node, nodes.Repeat):
+
+    if type(node).__name__ == 'Repeat':
         body = _to_ir(node.body)
         test = _to_ir(node.test)
         return Repeat(body, test)
-    if isinstance(node, nodes.Fornum):
+
+    if type(node).__name__ == 'Fornum':
         var = Name(node.target.id)
         start = _to_ir(node.start)
         end = _to_ir(node.end)
         step = _to_ir(node.step) if node.step else Number(1)
         body = _to_ir(node.body)
         return ForNumeric(var, start, end, step, body)
-    if isinstance(node, nodes.Forin):
+
+    if type(node).__name__ == 'Forin':
         vars_list = [_to_ir(n) for n in node.targets]
         iterators = [_to_ir(i) for i in node.iterators]
         body = _to_ir(node.body)
         return ForGeneric(vars_list, iterators, body)
-    if isinstance(node, nodes.Function):
+
+    if type(node).__name__ == 'Function':
         name = node.name.id if node.name else None
-        params = [Name(p.id) if isinstance(p, nodes.Name) else Vararg() for p in node.args]
+        params = [Name(p.id) if type(p).__name__ == 'Name' else Vararg() for p in node.args]
         body = _to_ir(node.body)
         is_local = not node.name
         return FunctionDef(name, params, body, is_local)
-    if isinstance(node, nodes.Return):
+
+    if type(node).__name__ == 'Return':
         values = [_to_ir(v) for v in node.values] if node.values else []
         return Return(values)
-    if isinstance(node, nodes.Break):
+
+    if type(node).__name__ == 'Break':
         return Break()
+
     return None
 
 def build_ir(source):

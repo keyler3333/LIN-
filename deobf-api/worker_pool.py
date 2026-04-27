@@ -1,4 +1,4 @@
-import os, subprocess, tempfile, concurrent.futures
+import os, subprocess, tempfile, concurrent.futures, hashlib, time
 from collections import Counter
 import math
 
@@ -11,19 +11,23 @@ def _entropy(s):
     return -sum((v/ln)*math.log2(v/ln) for v in c.values())
 
 def _score_layer(code, trace_text=''):
-    return (
+    score = (
         code.count('function'),
         code.count('local'),
         code.count('end'),
         -_entropy(code),
         len(code),
-        bool(trace_text and ('loadstring' in trace_text or 'decode' in trace_text))
     )
+    if trace_text and ('loadstring' in trace_text or 'decode' in trace_text):
+        return (score[0]+10, score[1], score[2], score[3], score[4])
+    return score
 
-def _run_single(source, timeout):
+def _run_single(source, timeout, env_patch=''):
     sandbox_path = os.path.join(os.path.dirname(__file__), 'sandbox', 'runtime.lua')
     with open(sandbox_path) as f:
         sandbox = f.read()
+    if env_patch:
+        sandbox = sandbox + '\n' + env_patch
     with tempfile.TemporaryDirectory() as d:
         in_path = os.path.join(d, 'input.lua')
         with open(in_path, 'w') as f:
@@ -65,10 +69,12 @@ def _run_single(source, timeout):
                 trace_text = f.read()
         return layers, trace_text
 
-def run_parallel(source, timeouts=[5, 7, 10]):
+def run_parallel(source, timeouts=[5,7,10], env_patches=None):
+    if env_patches is None:
+        env_patches = [''] * len(timeouts)
     results = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=len(timeouts)) as executor:
-        futures = [executor.submit(_run_single, source, t) for t in timeouts]
+        futures = [executor.submit(_run_single, source, t, e) for t, e in zip(timeouts, env_patches)]
         for future in concurrent.futures.as_completed(futures):
             try:
                 results.append(future.result())
@@ -80,7 +86,14 @@ def run_parallel(source, timeouts=[5, 7, 10]):
         all_layers.extend(layers)
         if trace:
             all_traces.append(trace)
-    if all_layers:
-        best = max(all_layers, key=lambda l: _score_layer(l, all_traces[0] if all_traces else ''))
+    seen = set()
+    unique = []
+    for l in all_layers:
+        h = hashlib.md5(l.encode()).hexdigest()
+        if h not in seen:
+            seen.add(h)
+            unique.append(l)
+    if unique:
+        best = max(unique, key=lambda x: _score_layer(x, all_traces[0] if all_traces else ''))
         return best, all_traces
     return None, []

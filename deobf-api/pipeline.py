@@ -1,15 +1,15 @@
-import os
-import subprocess
-import tempfile
+import os, subprocess, tempfile, re, math
+from collections import Counter
 from ir_builder import build_ir
 from constant_propagation import propagate
 from control_flow import reconstruct_control_flow, detect_state_machine
 from vm_detector import detect_vm, extract_vm_info
-from vm_lifter import lift_vm
+from vm_lifter import lift_vm_from_source
+from symbolic_exec import resolve_condition
+from optimizer_passes import remove_unused_locals, remove_dead_branches, collapse_redundant_expressions
 from beautifier import ir_to_lua
-from collections import Counter
-import re
-import math
+
+LUA_BIN = os.environ.get('LUA_BIN', 'lua5.1')
 
 def entropy(s):
     if not s: return 0
@@ -33,8 +33,10 @@ def static_decode(code):
                   lambda m: '"' + ''.join(chr(int(n)) for n in re.findall(r'\d+', m.group(1)) if int(n) < 256) + '"', code)
     return code
 
-def run_sandbox(source, lua_bin='lua5.1', timeout=8):
-    sandbox_script = open(os.path.join(os.path.dirname(__file__), 'sandbox', 'runtime.lua')).read()
+def run_sandbox(source, timeout=8):
+    sandbox_path = os.path.join(os.path.dirname(__file__), 'sandbox', 'runtime.lua')
+    with open(sandbox_path) as f:
+        sandbox_script = f.read()
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, 'input.lua'), 'w') as f:
             f.write(source)
@@ -54,7 +56,7 @@ def run_sandbox(source, lua_bin='lua5.1', timeout=8):
         with open(driver_path, 'w') as f:
             f.write(driver)
         try:
-            subprocess.run([lua_bin, driver_path], timeout=timeout, cwd=d)
+            subprocess.run([LUA_BIN, driver_path], timeout=timeout, cwd=d)
         except:
             pass
         layers = []
@@ -68,20 +70,25 @@ def run_sandbox(source, lua_bin='lua5.1', timeout=8):
             i += 1
         return layers
 
-def deep_deobfuscate(source, lua_bin='lua5.1'):
+def deep_deobfuscate(source):
     source = static_decode(source)
-    layers = run_sandbox(source, lua_bin)
-    if layers:
-        source = max(layers, key=score_layer)
-    if detect_vm(source):
-        info = extract_vm_info(source)
-        lifted = lift_vm(source)
-        if lifted:
-            return lifted
+    for _ in range(5):
+        layers = run_sandbox(source)
+        if layers:
+            source = max(layers, key=score_layer)
+        if detect_vm(source):
+            lifted = lift_vm_from_source(source)
+            if lifted:
+                source = lifted
+                break
     try:
         ir = build_ir(source)
     except:
         return source
     ir = propagate(ir)
     ir = reconstruct_control_flow(ir)
-    return ir_to_lua(ir)
+    code = ir_to_lua(ir)
+    code = remove_unused_locals(code)
+    code = remove_dead_branches(code)
+    code = collapse_redundant_expressions(code)
+    return code

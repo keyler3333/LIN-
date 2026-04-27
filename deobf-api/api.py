@@ -20,6 +20,9 @@ SANDBOX_TEMPLATE = r"""
 local __outdir = [[{OUTDIR}]]
 local __n = 0
 
+local __orig_loadstring = loadstring
+local __orig_load       = load
+
 local function __hook(code, ...)
     if type(code) == "string" and #code > 5 then
         __n = __n + 1
@@ -33,7 +36,17 @@ end
 loadstring = __hook
 load       = __hook
 
-getfenv = function() return {
+local function __proxy(extra)
+    return setmetatable(extra or {}, {
+        __index = function(t, k)
+            if rawget(t, k) ~= nil then return rawget(t, k) end
+            return function() end
+        end,
+        __newindex = function(t, k, v) rawset(t, k, v) end
+    })
+end
+
+getfenv = function() return __proxy({
     string=string, math=math, table=table, bit=bit or {},
     pairs=pairs, ipairs=ipairs, select=select, next=next,
     tostring=tostring, tonumber=tonumber, type=type,
@@ -44,36 +57,35 @@ getfenv = function() return {
     pcall=pcall, xpcall=xpcall, error=error, assert=assert,
     print=print, warn=warn, game=game, workspace=workspace,
     script=script, coroutine=coroutine, shared=shared
-} end
-setfenv = function() end
+}) end
 
-game             = setmetatable({}, {__index=function() return function() end end})
-workspace        = game
-script           = setmetatable({}, {__index=function() return "" end})
-Players          = {LocalPlayer={Name="Player",UserId=1,Character={}}}
-RunService       = {Heartbeat={Connect=function()end},RenderStepped={Connect=function()end}}
-UserInputService = setmetatable({},{__index=function() return function() end end})
-HttpService      = {JSONDecode=function() return {} end,JSONEncode=function() return "{}" end}
-TweenService     = setmetatable({},{__index=function() return function() end end})
-Instance         = {new=function() return setmetatable({},{__index=function()return function()end end}) end}
-Vector3          = {new=function(...) return {} end}
-Vector2          = {new=function(...) return {} end}
-CFrame           = {new=function(...) return {} end,Angles=function(...) return {} end}
-Color3           = {new=function(...) return {} end,fromRGB=function(...) return {} end}
-UDim2            = {new=function(...) return {} end}
-Enum             = setmetatable({},{__index=function() return setmetatable({},{__index=function() return 0 end}) end})
-Drawing          = setmetatable({},{__index=function() return function() end end})
+game             = __proxy()
+workspace        = __proxy()
+script           = __proxy()
+Players          = __proxy({LocalPlayer=__proxy({Name="Player",UserId=1,Character=__proxy()})})
+RunService       = __proxy({Heartbeat=__proxy({Connect=function()end}),RenderStepped=__proxy({Connect=function()end})})
+UserInputService = __proxy()
+HttpService      = __proxy({JSONDecode=function() return {} end,JSONEncode=function() return "{}" end})
+TweenService     = __proxy()
+Instance         = {new=function() return __proxy() end}
+Vector3          = {new=function(...) return __proxy() end}
+Vector2          = {new=function(...) return __proxy() end}
+CFrame           = {new=function(...) return __proxy() end,Angles=function(...) return __proxy() end}
+Color3           = {new=function(...) return __proxy() end,fromRGB=function(...) return __proxy() end}
+UDim2            = {new=function(...) return __proxy() end}
+Enum             = __proxy()
+Drawing          = __proxy()
 debug            = {traceback=function() return "" end,getinfo=function() return {} end}
-syn              = {protect_gui=function()end,queue_on_teleport=function()end,request=function() return {Body="",StatusCode=200} end}
-rconsole         = {print=function()end,clear=function()end,settitle=function()end}
+syn              = __proxy({protect_gui=function()end,queue_on_teleport=function()end,request=function() return __proxy({Body="",StatusCode=200}) end})
+rconsole         = __proxy({print=function()end,clear=function()end,settitle=function()end})
 writefile        = function() end
 readfile         = function() return "" end
 isfile           = function() return false end
 isfolder         = function() return false end
 makefolder       = function() end
 listfiles        = function() return {} end
-request          = function() return {Body="",StatusCode=200,Success=true} end
-http             = {request=function() return {Body="",StatusCode=200} end}
+request          = function() return __proxy({Body="",StatusCode=200,Success=true}) end
+http             = {request=function() return __proxy({Body="",StatusCode=200}) end}
 identifyexecutor = function() return "synapse","2.0" end
 getexecutorname  = function() return "synapse" end
 checkcaller      = function() return true end
@@ -97,10 +109,9 @@ wait = function(n)
     end
 end
 
-spawn            = function(f) if f then f() end end
-delay            = function(t, f) if f then f() end end
+spawn            = function(f) if f then pcall(f) end end
+delay            = function(t, f) if f then pcall(f) end end
 warn             = function() end
-error            = function(e) end
 
 local __print_count = 0
 print = function(...)
@@ -114,8 +125,9 @@ print = function(...)
     end
 end
 
+error            = function(e) io.stderr:write("ERROR: " .. tostring(e) .. "\n") end
 assert           = function(v,m) if not v then error(m or "assert") end return v end
-shared           = {}
+shared           = __proxy()
 
 bit = bit or {}
 bit.bxor=function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
@@ -136,8 +148,15 @@ _G.workspace = workspace
 
 io.stderr:write("SANDBOX_STARTED\n")
 
+local __chunk, __load_err = __orig_loadstring("return function(...) " .. [[{USER_CODE}]] .. " end")
+if not __chunk then
+    io.stderr:write("LOAD_ERROR: " .. tostring(__load_err) .. "\n")
+    os.exit(1)
+end
+
+local __func = __chunk()
 local __co = coroutine.create(function()
-    {USER_CODE}
+    __func()
 end)
 
 local __start = os.time()
@@ -163,8 +182,8 @@ end
 def run_sandbox(source, timeout=12):
     with tempfile.TemporaryDirectory() as d:
         escaped = d.replace('\\', '\\\\').replace('"', '\\"')
-        script  = SANDBOX_TEMPLATE.replace('{OUTDIR}', escaped).replace('{USER_CODE}', source)
-        spath   = os.path.join(d, 'script.lua')
+        script = SANDBOX_TEMPLATE.replace('{OUTDIR}', escaped).replace('{USER_CODE}', source)
+        spath = os.path.join(d, 'script.lua')
         with open(spath, 'w', encoding='utf-8') as f:
             f.write(script)
         try:

@@ -15,21 +15,22 @@ local _orig_xpcall     = xpcall
 local _orig_select     = select
 local _orig_unpack     = unpack or table.unpack
 
-local _layer       = 0
-local _MAX_LAYERS  = 8
-local _line_count  = 0
-local _MAX_LINES   = 200000
-local _running     = false
-local _start_time  = os.time()
-local _TIME_LIMIT  = 5
-local _outdir      = os.getenv("OUTDIR") or "."
+local _outdir           = os.getenv("OUTDIR") or "/tmp"
+local _layer            = 0
+local _MAX_LAYERS       = 8
+local _line_count       = 0
+local _MAX_LINES        = 200000
+local _running          = false
+local _start_time       = os.time()
+local _TIME_LIMIT       = 8
 local _captured_strings = {}
-local _string_bytes = 0
-local _MAX_STRING_BYTES = 1000000
-local _char_buffer = ""
-local _seen_layers = {}
-local _table_growth = 0
-local _MAX_TABLE_GROWTH = 5000
+local _string_bytes     = 0
+local _MAX_STRING_BYTES = 500000
+local _char_buffer      = ""
+local _seen_layers      = {}
+local _table_growth     = 0
+local _MAX_TABLE_GROWTH = 10000
+local _trace            = {}
 
 debug.sethook(function(event, line)
     if _running then
@@ -44,7 +45,10 @@ debug.sethook(function(event, line)
 end, "l")
 
 local function capture_string(s)
-    if _orig_type(s) == "string" and #s > 4 and #s < 100000 and _string_bytes < _MAX_STRING_BYTES then
+    if _orig_type(s) == "string"
+    and #s > 4
+    and #s < 100000
+    and _string_bytes < _MAX_STRING_BYTES then
         _captured_strings[#_captured_strings + 1] = s
         _string_bytes = _string_bytes + #s
     end
@@ -56,16 +60,15 @@ local function hook_load(code, chunkname, ...)
     end
     if _orig_type(code) == "function" then
         local chunks = {}
-        local reader = code
         while true do
-            local part = reader()
+            local part = code()
             if not part then break end
             if _orig_type(part) == "string" then
                 chunks[#chunks + 1] = part
             end
             if #chunks > 1000 then break end
         end
-        code = table.concat(chunks)
+        code = _orig_concat(chunks)
     end
     if _orig_type(code) ~= "string" or #code < 5 then
         return function() end
@@ -94,8 +97,6 @@ string.char = function(...)
     if #_char_buffer >= 16 then
         capture_string(_char_buffer)
         _char_buffer = ""
-    elseif #result <= 4 then
-        capture_string(result)
     end
     return result
 end
@@ -106,13 +107,13 @@ table.concat = function(t, sep, i, j)
     return result
 end
 
-local orig_table_insert = table.insert
+local _orig_insert = table.insert
 table.insert = function(t, ...)
     _table_growth = _table_growth + 1
     if _table_growth > _MAX_TABLE_GROWTH then
         error("__TABLE_LIMIT__", 2)
     end
-    return orig_table_insert(t, ...)
+    return _orig_insert(t, ...)
 end
 
 if not bit then
@@ -141,13 +142,13 @@ if not bit then
         end
         return r
     end
-    bit.bnot   = function(a) return -a-1 end
-    bit.rshift = function(a,b) return math.floor(a/(2^b)) end
-    bit.lshift = function(a,b) return math.floor(a*(2^b)) end
-    bit.arshift= function(a,b) return math.floor(a/(2^b)) end
-    bit.btest  = function(a,b) return bit.band(a,b)~=0 end
-    bit.tobit  = function(a) return a end
-    bit.tohex  = function(a) return string.format("%x",a) end
+    bit.bnot    = function(a) return -a-1 end
+    bit.rshift  = function(a,b) return math.floor(a/(2^b)) end
+    bit.lshift  = function(a,b) return math.floor(a*(2^b)) end
+    bit.arshift = function(a,b) return math.floor(a/(2^b)) end
+    bit.btest   = function(a,b) return bit.band(a,b)~=0 end
+    bit.tobit   = function(a) return a end
+    bit.tohex   = function(a) return string.format("%x",a) end
     bit32 = bit
 end
 
@@ -180,7 +181,9 @@ local function create_dummy(name)
         __len       = function(a)   return 0 end,
         __lt        = function(a,b) return false end,
         __le        = function(a,b) return true end,
-        __eq        = function(a,b) return _orig_tostring(a) == _orig_tostring(b) end,
+        __eq        = function(a,b)
+            return _orig_tostring(a) == _orig_tostring(b)
+        end,
     })
     return d
 end
@@ -212,15 +215,23 @@ local _safe = {
         running=function() return nil end,
     },
     debug={
-        traceback     = function() return "" end,
-        getinfo       = function() return {short_src="script.lua", currentline=0, what="Lua"} end,
-        sethook       = function() end,
-        getupvalue    = function() return nil end,
-        setupvalue    = function() end,
-        getmetatable  = _orig_getmt,
-        getregistry   = function() return {} end,
-        getlocal      = function() return nil, 0 end,
-        setlocal      = function() end,
+        traceback    = function() return "" end,
+        getinfo      = function()
+            return {short_src="script.lua", currentline=0, what="Lua"}
+        end,
+        sethook      = function() end,
+        getupvalue   = function() return nil end,
+        setupvalue   = function() end,
+        getmetatable = _orig_getmt,
+        getregistry  = function() return {} end,
+        getlocal     = function() return nil, 0 end,
+        setlocal     = function() end,
+    },
+    os = {
+        clock  = function() return 0 end,
+        time   = function() return 1000000 end,
+        date   = function() return "2024-01-01" end,
+        difftime = function(a,b) return 0 end,
     },
     game             = create_dummy("game"),
     workspace        = create_dummy("workspace"),
@@ -258,18 +269,24 @@ local _safe = {
     time             = function() return 0 end,
     elapsedtime      = function() return 0 end,
     wait             = function(n) return n or 0 end,
-    spawn            = function(f) if _orig_type(f)=="function" then _orig_pcall(f) end end,
-    delay            = function(t,f) if _orig_type(f)=="function" then _orig_pcall(f) end end,
+    spawn            = function(f)
+        if _orig_type(f) == "function" then _orig_pcall(f) end
+    end,
+    delay            = function(t,f)
+        if _orig_type(f) == "function" then _orig_pcall(f) end
+    end,
     shared           = {},
     _VERSION         = "Lua 5.1",
     table = {
-        insert  = table.insert,
-        remove  = table.remove,
-        sort    = table.sort,
-        concat  = table.concat,
-        unpack  = _orig_unpack,
-        pack    = table.pack or function(...) return {n=_orig_select('#',...), ...} end,
-        move    = table.move or function(a,f,e,t,b)
+        insert   = table.insert,
+        remove   = table.remove,
+        sort     = table.sort,
+        concat   = table.concat,
+        unpack   = _orig_unpack,
+        pack     = table.pack or function(...)
+            return {n=_orig_select('#',...), ...}
+        end,
+        move     = table.move or function(a,f,e,t,b)
             b=b or a
             for i=f,e do b[t+(i-f)]=a[i] end
             return b
@@ -299,7 +316,9 @@ _orig_setmt(_env, {
             end
         end
         if k == "_G" or k == "_ENV" or k == "shared" then return _env end
-        if k == "getgenv" or k == "getrenv" then return function() return _env end end
+        if k == "getgenv" or k == "getrenv" then
+            return function() return _env end
+        end
         return create_dummy(k)
     end,
     __newindex = function(_, k, v)
@@ -315,4 +334,46 @@ _safe["setfenv"] = function(n, t)
         for k,v in _orig_pairs(t) do _env[k] = v end
     end
     return t
+end
+
+local function _dump_strings()
+    local f = io.open(_outdir .. "/captured_strings.txt", "w")
+    if not f then return end
+    for _, s in _orig_ipairs(_captured_strings) do
+        if #s > 4 and #s < 100000 then
+            f:write(s .. "\n---STRSEP---\n")
+        end
+    end
+    f:close()
+end
+
+function _dump_trace()
+    _dump_strings()
+    local f = io.open(_outdir .. "/trace.json", "w")
+    if not f then return end
+    f:write("[\n")
+    for i, entry in _orig_ipairs(_trace) do
+        f:write("  {")
+        local first = true
+        for k, v in _orig_pairs(entry) do
+            if not first then f:write(", ") end
+            local vstr
+            if _orig_type(v) == "string" then
+                vstr = '"' .. v:gsub('"', '\\"'):gsub('\n', '\\n') .. '"'
+            elseif _orig_type(v) == "number" then
+                vstr = _orig_tostring(v)
+            elseif _orig_type(v) == "boolean" then
+                vstr = _orig_tostring(v)
+            else
+                vstr = '"' .. _orig_tostring(v) .. '"'
+            end
+            f:write('"' .. _orig_tostring(k) .. '": ' .. vstr)
+            first = false
+        end
+        f:write("}")
+        if i < #_trace then f:write(",") end
+        f:write("\n")
+    end
+    f:write("]\n")
+    f:close()
 end

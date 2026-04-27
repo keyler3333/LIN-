@@ -52,11 +52,10 @@ def to_z3(e, env=None):
 
 def solve(expr):
     if not Z3_AVAILABLE:
-        # Fall back: unknown conditions are treated as satisfiable
         return True
     z = to_z3(expr)
     if z is None:
-        return True  # unknown — assume satisfiable
+        return True
     try:
         s = z3.Solver()
         s.add(z)

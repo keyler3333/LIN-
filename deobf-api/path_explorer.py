@@ -17,8 +17,6 @@ def explore(entry):
         for instr in blk.instructions:
             eval_stmt(instr, st.sym)
         if blk.true and blk.false:
-            cond = blk.instructions[0] if blk.instructions else Const(True)
-            if isinstance(cond, (If,)):  
             c = Const(True)
             true_sym = dict(st.sym)
             false_sym = dict(st.sym)

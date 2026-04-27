@@ -1,14 +1,15 @@
-import os, subprocess, tempfile, concurrent.futures, hashlib, time
+import os, subprocess, tempfile, concurrent.futures, hashlib
 from collections import Counter
 import math
 
-LUA_BIN = os.environ.get('LUA_BIN', 'lua5.1')
+LUA_BIN      = os.environ.get('LUA_BIN', 'lua5.1')
+RUNTIME_PATH = os.path.join(os.path.dirname(__file__), 'sandbox', 'runtime.lua')
 
 def _entropy(s):
     if not s: return 0
-    c = Counter(s)
+    c  = Counter(s)
     ln = len(s)
-    return -sum((v/ln)*math.log2(v/ln) for v in c.values())
+    return -sum((v/ln) * math.log2(v/ln) for v in c.values())
 
 def _score_layer(code, trace_text=''):
     score = (
@@ -19,39 +20,52 @@ def _score_layer(code, trace_text=''):
         len(code),
     )
     if trace_text and ('loadstring' in trace_text or 'decode' in trace_text):
-        return (score[0]+10, score[1], score[2], score[3], score[4])
+        return (score[0] + 10,) + score[1:]
     return score
 
 def _run_single(source, timeout, env_patch=''):
-    sandbox_path = os.path.join(os.path.dirname(__file__), 'sandbox', 'runtime.lua')
-    with open(sandbox_path) as f:
-        sandbox = f.read()
+    try:
+        with open(RUNTIME_PATH, encoding='utf-8') as f:
+            sandbox = f.read()
+    except Exception:
+        return [], ''
     if env_patch:
         sandbox = sandbox + '\n' + env_patch
     with tempfile.TemporaryDirectory() as d:
         in_path = os.path.join(d, 'input.lua')
-        with open(in_path, 'w') as f:
+        with open(in_path, 'w', encoding='utf-8') as f:
             f.write(source)
-        escaped = d.replace('\\', '\\\\')
-        driver = sandbox + '\nlocal _outdir = "' + escaped + '"\n' + f'''
-        local f = io.open("{escaped}\\input.lua", "r")
-        local code = f:read("*a")
-        f:close()
-        local chunk, err = loadstring(code)
-        if chunk then
-            setfenv(chunk, _env)
-            _running = true
-            pcall(chunk)
-            _running = false
-        end
-        _dump_trace()
-        '''
+        esc_dir    = d.replace('\\', '\\\\').replace('"', '\\"')
+        esc_input  = in_path.replace('\\', '\\\\').replace('"', '\\"')
+        driver = sandbox + f'\nlocal _outdir = "{esc_dir}"\n' + f"""
+local _f = io.open("{esc_input}", "r")
+if not _f then return end
+local _code = _f:read("*a")
+_f:close()
+local _chunk, _err = _orig_loadstring(_code)
+if _chunk then
+    setfenv(_chunk, _env)
+    _running = true
+    pcall(_chunk)
+    _running = false
+end
+if _char_buffer and #_char_buffer > 0 then
+    capture_string(_char_buffer)
+    _char_buffer = ""
+end
+_dump_trace()
+"""
         drv_path = os.path.join(d, 'driver.lua')
-        with open(drv_path, 'w') as f:
+        with open(drv_path, 'w', encoding='utf-8') as f:
             f.write(driver)
         try:
-            subprocess.run([LUA_BIN, drv_path], timeout=timeout, cwd=d)
-        except:
+            subprocess.run(
+                [LUA_BIN, drv_path],
+                timeout=timeout,
+                capture_output=True,
+                cwd=d
+            )
+        except (subprocess.TimeoutExpired, Exception):
             pass
         layers = []
         i = 1
@@ -59,26 +73,35 @@ def _run_single(source, timeout, env_patch=''):
             p = os.path.join(d, f'layer_{i}.lua')
             if not os.path.exists(p):
                 break
-            with open(p) as f:
+            with open(p, encoding='utf-8', errors='replace') as f:
                 layers.append(f.read())
             i += 1
         trace_text = ''
         trace_path = os.path.join(d, 'trace.json')
         if os.path.exists(trace_path):
-            with open(trace_path) as f:
+            with open(trace_path, encoding='utf-8', errors='replace') as f:
                 trace_text = f.read()
         return layers, trace_text
 
-def run_parallel(source, timeouts=[5,7,10], env_patches=None):
+def run_parallel(source, timeouts=None, env_patches=None):
+    if timeouts is None:
+        timeouts = [5, 8, 12]
     if env_patches is None:
         env_patches = [''] * len(timeouts)
+    n           = min(len(timeouts), len(env_patches))
+    timeouts    = timeouts[:n]
+    env_patches = env_patches[:n]
     results = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=len(timeouts)) as executor:
-        futures = [executor.submit(_run_single, source, t, e) for t, e in zip(timeouts, env_patches)]
-        for future in concurrent.futures.as_completed(futures):
+    max_timeout = max(timeouts) + 3
+    with concurrent.futures.ProcessPoolExecutor(max_workers=n) as executor:
+        futures = {
+            executor.submit(_run_single, source, t, e): t
+            for t, e in zip(timeouts, env_patches)
+        }
+        for future in concurrent.futures.as_completed(futures, timeout=max_timeout):
             try:
                 results.append(future.result())
-            except:
+            except Exception:
                 pass
     all_layers = []
     all_traces = []
@@ -86,14 +109,15 @@ def run_parallel(source, timeouts=[5,7,10], env_patches=None):
         all_layers.extend(layers)
         if trace:
             all_traces.append(trace)
-    seen = set()
+    seen   = set()
     unique = []
     for l in all_layers:
-        h = hashlib.md5(l.encode()).hexdigest()
+        h = hashlib.md5(l.encode(errors='replace')).hexdigest()
         if h not in seen:
             seen.add(h)
             unique.append(l)
     if unique:
-        best = max(unique, key=lambda x: _score_layer(x, all_traces[0] if all_traces else ''))
+        combined_trace = all_traces[0] if all_traces else ''
+        best = max(unique, key=lambda x: _score_layer(x, combined_trace))
         return best, all_traces
     return None, []

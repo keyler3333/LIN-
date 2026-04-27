@@ -1,64 +1,82 @@
-from ir_builder import *
+from ir_builder import Block, If, While
 
 class BasicBlock:
     def __init__(self, id):
         self.id = id
         self.instructions = []
-        self.successors = []
-        self.predecessors = []
         self.true_branch = None
         self.false_branch = None
-        self.dominators = set()
+        self.successors = []
+        self.predecessors = []
+        self.condition = None
 
-def _flatten(ir_node):
-    if isinstance(ir_node, Block):
-        stmts = []
-        for s in ir_node.statements:
-            stmts += _flatten(s)
-        return stmts
-    else:
-        return [ir_node]
+def _flatten(node):
+    if isinstance(node, Block):
+        out = []
+        for s in node.statements:
+            out.extend(_flatten(s))
+        return out
+    return [node]
 
-def build_cfg(ir_node):
-    stmts = _flatten(ir_node)
-    blocks = []
-    current = BasicBlock(0)
-    blocks.append(current)
-    label_to_block = {}
+def build_cfg(ir):
+    stmts = _flatten(ir)
+
+    entry = BasicBlock(0)
+    blocks = [entry]
+    current = entry
+    bid = 1
+
     i = 0
     while i < len(stmts):
         stmt = stmts[i]
+
         if isinstance(stmt, If):
-            current.successors = []
-            true_block = BasicBlock(len(blocks))
-            blocks.append(true_block)
-            current.true_branch = true_block
-            true_block.predecessors.append(current)
-            true_block.instructions = _flatten(stmt.body.statements) if isinstance(stmt.body, Block) else [stmt.body]
-            if stmt.orelse:
-                false_block = BasicBlock(len(blocks))
-                blocks.append(false_block)
-                current.false_branch = false_block
-                false_block.predecessors.append(current)
-                false_block.instructions = _flatten(stmt.orelse.statements) if isinstance(stmt.orelse, Block) else [stmt.orelse]
-            current = BasicBlock(len(blocks))
-            blocks.append(current)
+            cond_block = current
+            true_block = BasicBlock(bid); bid += 1
+            false_block = BasicBlock(bid); bid += 1
+            join_block = BasicBlock(bid); bid += 1
+
+            blocks += [true_block, false_block, join_block]
+
+            cond_block.condition = stmt.test
+            cond_block.true_branch = true_block
+            cond_block.false_branch = false_block
+
+            cond_block.successors = [true_block, false_block]
+            true_block.predecessors.append(cond_block)
+            false_block.predecessors.append(cond_block)
+
+            true_block.successors.append(join_block)
+            false_block.successors.append(join_block)
+
+            join_block.predecessors += [true_block, false_block]
+
+            current = join_block
             i += 1
             continue
-        elif isinstance(stmt, While):
-            body_block = BasicBlock(len(blocks))
-            blocks.append(body_block)
-            current.successors.append(body_block)
-            body_block.predecessors.append(current)
-            body_block.instructions = _flatten(stmt.body.statements) if isinstance(stmt.body, Block) else [stmt.body]
-            after = BasicBlock(len(blocks))
-            blocks.append(after)
-            body_block.successors.append(after)
-            body_block.successors.append(current)  # back edge
-            current = after
+
+        if isinstance(stmt, While):
+            head = current
+            body = BasicBlock(bid); bid += 1
+            exitb = BasicBlock(bid); bid += 1
+
+            blocks += [body, exitb]
+
+            head.condition = stmt.test
+            head.true_branch = body
+            head.false_branch = exitb
+
+            head.successors = [body, exitb]
+            body.successors = [head]
+
+            body.predecessors.append(head)
+            head.predecessors.append(body)
+
+            current = exitb
             i += 1
             continue
-        else:
-            current.instructions.append(stmt)
+
+        current.instructions.append(stmt)
         i += 1
-    return blocks
+
+    return blocks, entry

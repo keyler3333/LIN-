@@ -1,65 +1,40 @@
-from ir_builder import Block, If, While, ForNumeric, ForGeneric, Repeat, FunctionDef, Return, Break, LocalDecl, Assignment
+from ir_builder import If, While, Block
 
-class BasicBlock:
+class BlockNode:
     def __init__(self, id):
         self.id = id
         self.instructions = []
-        self.true_branch = None
-        self.false_branch = None
-        self.successors = []
-        self.predecessors = []
-        self.condition = None
-
-def _flatten(node):
-    if isinstance(node, Block):
-        out = []
-        for s in node.statements:
-            out.extend(_flatten(s))
-        return out
-    return [node]
+        self.true = None
+        self.false = None
+        self.next = []
 
 def build_cfg(ir):
-    stmts = _flatten(ir)
-    entry = BasicBlock(0)
-    blocks = [entry]
-    current = entry
+    stmts = ir.statements
+    blocks = []
+    current = BlockNode(0)
+    blocks.append(current)
     bid = 1
-    i = 0
-    while i < len(stmts):
-        stmt = stmts[i]
-        if isinstance(stmt, If):
-            cond_block = current
-            true_block = BasicBlock(bid); bid += 1
-            false_block = BasicBlock(bid); bid += 1
-            join_block = BasicBlock(bid); bid += 1
-            blocks += [true_block, false_block, join_block]
-            cond_block.condition = stmt.test
-            cond_block.true_branch = true_block
-            cond_block.false_branch = false_block
-            cond_block.successors = [true_block, false_block]
-            true_block.predecessors.append(cond_block)
-            false_block.predecessors.append(cond_block)
-            true_block.successors.append(join_block)
-            false_block.successors.append(join_block)
-            join_block.predecessors += [true_block, false_block]
-            current = join_block
-            i += 1
-            continue
-        if isinstance(stmt, While):
+    for s in stmts:
+        if isinstance(s, If):
+            t = BlockNode(bid); bid += 1
+            f = BlockNode(bid); bid += 1
+            j = BlockNode(bid); bid += 1
+            current.true = t
+            current.false = f
+            t.next.append(j)
+            f.next.append(j)
+            blocks += [t, f, j]
+            current = j
+        elif isinstance(s, While):
             head = current
-            body = BasicBlock(bid); bid += 1
-            exitb = BasicBlock(bid); bid += 1
-            blocks += [body, exitb]
-            head.condition = stmt.test
-            head.true_branch = body
-            head.false_branch = exitb
-            head.successors = [body, exitb]
-            body.successors = [head]
-            body.predecessors.append(head)
-            head.predecessors.append(body)
-            current = exitb
-            i += 1
-            continue
-        current.instructions.append(stmt)
-        i += 1
-    return blocks, entry
+            body = BlockNode(bid); bid += 1
+            exit_block = BlockNode(bid); bid += 1
+            head.true = body
+            head.false = exit_block
+            body.next.append(head)
+            head.next.append(exit_block)
+            blocks += [body, exit_block]
+            current = exit_block
+        else:
+            current.instructions.append(s)
+    return blocks

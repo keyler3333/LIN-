@@ -1,0 +1,50 @@
+import os, subprocess, tempfile
+
+EMULATOR_BIN = os.environ.get('LUNE_BIN', 'lune')
+ROBLOX_ENV_PATH = os.path.join(os.path.dirname(__file__), 'roblox_env.lua')
+
+def run_emulator(source, timeout=30):
+    with tempfile.TemporaryDirectory() as d:
+        in_path = os.path.join(d, 'input.lua')
+        with open(in_path, 'w', encoding='utf-8') as f:
+            f.write(source)
+
+        driver = f'''
+        local env = require("{ROBLOX_ENV_PATH.replace(chr(92), '/')}")
+        local f = io.open("{in_path.replace(chr(92), '/')}", "r")
+        local code = f:read("*a")
+        f:close()
+        env._run(code)
+        '''
+
+        drv_path = os.path.join(d, 'driver.lua')
+        with open(drv_path, 'w', encoding='utf-8') as f:
+            f.write(driver)
+
+        try:
+            proc = subprocess.run(
+                [EMULATOR_BIN, 'run', drv_path],
+                capture_output=True, text=True, timeout=timeout, cwd=d
+            )
+            stdout = proc.stdout.strip()
+            stderr = proc.stderr.strip()
+        except subprocess.TimeoutExpired:
+            return [], 'timeout', '', ''
+        except FileNotFoundError:
+            return [], 'Lune not installed', '', ''
+        except Exception as e:
+            return [], str(e), '', ''
+
+        layers = []
+        i = 1
+        while True:
+            p = os.path.join(d, f'layer_{i}.lua')
+            if not os.path.exists(p):
+                break
+            with open(p, encoding='utf-8', errors='replace') as f:
+                data = f.read()
+            if data.strip():
+                layers.append(data)
+            i += 1
+
+        return layers, '', stdout, stderr

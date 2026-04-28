@@ -313,11 +313,7 @@ __run()
 
 sandbox_template = SandboxTemplate()
 
-def force_execute_patch(code):
-    code = re.sub(r'\bif\s+(.+?)\s+then', 'if true then', code)
-    return code
-
-def run_sandbox(source, mode='normal', timeout=25):
+def run_sandbox(source, timeout=25):
     with tempfile.TemporaryDirectory() as d:
         in_path = os.path.join(d, 'input.lua')
         with open(in_path, 'w', encoding='utf-8') as f:
@@ -325,7 +321,6 @@ def run_sandbox(source, mode='normal', timeout=25):
 
         esc_dir    = d.replace('\\', '\\\\').replace('"', '\\"')
         esc_input  = in_path.replace('\\', '\\\\').replace('"', '\\"')
-
         driver = sandbox_template.render(esc_dir, esc_input)
 
         drv_path = os.path.join(d, 'driver.lua')
@@ -333,10 +328,7 @@ def run_sandbox(source, mode='normal', timeout=25):
             f.write(driver)
 
         try:
-            proc = subprocess.run(
-                [LUA_BIN, drv_path], capture_output=True, text=True,
-                timeout=timeout, cwd=d
-            )
+            proc = subprocess.run([LUA_BIN, drv_path], capture_output=True, text=True, timeout=timeout, cwd=d)
         except subprocess.TimeoutExpired:
             proc = None
         except Exception:
@@ -376,7 +368,6 @@ def run_sandbox(source, mode='normal', timeout=25):
 def detect_obfuscator(text):
     patterns = {
         'ironbrew':  [r'bit and bit\.bxor', r'return table\.concat\(', r'return \w+\(true,\s*\{\}'],
-        'ironbrew2': [r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[\w+\]', r'local\s+\w+,\s*\w+,\s*\w+\s*=\s*\w+\s*&'],
         'moonsec':   [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
         'luraph':    [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
         'wearedevs': [r'show_\w+\s*=\s*function', r'getfenv\s*\(\s*\)', r'string\.reverse'],
@@ -402,19 +393,6 @@ def static_decode(code):
     code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', sc, code)
     return code
 
-def extract_best_payload(layers, captured_strs_pairs):
-    if layers:
-        return max(layers, key=len), 'layer'
-    candidates = []
-    for raw in captured_strs_pairs:
-        for part in raw.split('---SEP---'):
-            part = part.strip().replace('\\n','\n')
-            if part and len(part) > 50:
-                candidates.append(part)
-    if candidates:
-        return max(candidates, key=len), 'captured_string'
-    return None, None
-
 @app.route('/health')
 def health():
     lua_ok = False
@@ -437,38 +415,38 @@ def deobf():
 
     obf_type = detect_obfuscator(source)
 
-    modes = [
-        ('normal', source, 25),
-        ('normal', static_decode(source), 25),
-        ('forced', force_execute_patch(source), 30),
-    ]
+    layers, stdout, stderr, cap_strings, layer_count = run_sandbox(source)
 
-    all_layers = []
-    all_captured = []
-    diag = []
-
-    for mode_name, src, timeout in modes:
-        layers, stdout, stderr, cap_strings, count = run_sandbox(src, mode=mode_name, timeout=timeout)
-        all_layers.extend(layers)
-        all_captured.append(cap_strings)
-        diag.append(f"--- Mode: {mode_name} ---\n{stdout[:800]}\n{stderr[:800]}\nLayers: {count}\n")
-
-    best_payload, source_type = extract_best_payload(all_layers, all_captured)
-
-    if best_payload:
-        result = best_payload
-        method = source_type
-        layers_found = len(all_layers)
+    if layer_count > 0:
+        result = max(layers, key=len)
+        method = 'sandbox_layer'
+        note = ''
     else:
-        result = static_decode(source)
-        method = 'static'
-        layers_found = 0
+        candidates = []
+        if cap_strings:
+            for part in cap_strings.split('---SEP---'):
+                part = part.strip().replace('\\n', '\n')
+                if len(part) > 50:
+                    candidates.append(part)
+        if candidates:
+            result = max(candidates, key=len)
+            method = 'captured_string'
+            note = 'No loadstring call detected. Best captured string returned.'
+        else:
+            result = static_decode(source)
+            method = 'static'
+            note = 'No payload found. The script may be a wrapper or already clean.'
 
-    diagnostic = '\n'.join(diag)
+    diagnostic = ''
+    if stdout:
+        diagnostic += stdout[:1000] + '\n'
+    if stderr:
+        diagnostic += stderr[:1000] + '\n'
+    diagnostic += note
 
     return jsonify({
         'result': result,
-        'layers': layers_found,
+        'layers': layer_count,
         'method': method,
         'detected': obf_type,
         'diagnostic': diagnostic[:2000],

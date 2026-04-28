@@ -49,7 +49,6 @@ local _sl = select
 local _nx = next
 local _er = error
 local _as = assert
-local _pr = print
 
 debug.sethook(function(ev)
     _step_cnt = _step_cnt + 1
@@ -125,7 +124,11 @@ end
 local function _dummy(name)
     local d = {}
     _sm(d, {
-        __index    = function(_, k) return _dummy(name .. "." .. _ts(k)) end,
+        __index    = function(_, k)
+            local child = _dummy(name .. "." .. _ts(k))
+            _rs(d, k, child)
+            return child
+        end,
         __newindex = function(_, k, v) _rs(d, k, v) end,
         __call     = function(_, ...)
             local args = {...}
@@ -227,7 +230,9 @@ _sm(_env, {
         end
         if k=="_G" or k=="_ENV" or k=="shared" then return _env end
         if k=="getgenv" or k=="getrenv" then return function() return _env end end
-        return _dummy(k)
+        local child = _dummy(k)
+        _rs(_env, k, child)
+        return child
     end,
     __newindex = function(_, k, v) _rs(_env, k, v) end,
 })

@@ -4,12 +4,13 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 def find_lua():
-    for b in ['lua5.1', 'lua51', 'lua']:
+    for b in ['luajit', 'lua5.1', 'lua51', 'lua']:
         path = shutil.which(b)
         if path:
             try:
                 r = subprocess.run([path, '-v'], capture_output=True, timeout=2)
-                if '5.1' in (r.stderr.decode() + r.stdout.decode()):
+                out = (r.stderr + r.stdout).decode(errors='replace')
+                if '5.1' in out or 'LuaJIT' in out:
                     return path
             except:
                 pass
@@ -17,47 +18,51 @@ def find_lua():
 
 LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
-# The sandbox is a plain file — no Python string substitution inside Lua code.
-# Only OUTDIR and INPATH are substituted, and only in safe string positions.
-SANDBOX = '''\
-local _outdir  = "PLACEHOLDER_OUTDIR"
-local _inpath  = "PLACEHOLDER_INPATH"
-local _layer   = 0
-local _seen    = {}
-local _cap     = {}
+SANDBOX = r'''
+local _out = "OUTDIR_PLACEHOLDER"
+local _inp = "INPATH_PLACEHOLDER"
+local _lyr = 0
+local _seen = {}
+local _cap  = {}
+local _log  = {}
+local _wait_cnt = 0
+local _step_cnt = 0
+local _max_steps = 5000000
 
-local _ls  = loadstring
-local _lo  = load
-local _pc  = pcall
-local _ty  = type
-local _ts  = tostring
-local _pa  = pairs
-local _ip  = ipairs
-local _sm  = setmetatable
-local _gm  = getmetatable
-local _rg  = rawget
-local _rs  = rawset
-local _sc  = string.char
-local _tc  = table.concat
-local _pr  = print
-local _er  = error
-local _sel = select
-local _un  = unpack or table.unpack
+local function _L(s) _log[#_log+1] = s end
+
+local _ls = loadstring
+local _lo = load
+local _pc = pcall
+local _ty = type
+local _ts = tostring
+local _pa = pairs
+local _ip = ipairs
+local _sm = setmetatable
+local _gm = getmetatable
+local _rg = rawget
+local _rs = rawset
+local _sc = string.char
+local _tc = table.concat
+local _un = unpack or table.unpack
+local _sl = select
+local _nx = next
+local _er = error
+local _as = assert
+local _pr = print
+
+debug.sethook(function(ev)
+    _step_cnt = _step_cnt + 1
+    if _step_cnt > _max_steps then
+        _L("INSTRUCTION_LIMIT (" .. _max_steps .. ")")
+        _er("__INSTRUCTION_LIMIT__")
+    end
+end, "", 1)
 
 local function _capture(v)
     if _ty(v) == "string" and #v > 10 then
-        _cap[#_cap + 1] = v
+        _cap[#_cap+1] = v
     end
-end
-
-local function _save_layer(code)
-    if _ty(code) ~= "string" or #code < 5 then return end
-    if _seen[code] then return end
-    _seen[code] = true
-    _layer = _layer + 1
-    local f = io.open(_outdir .. "/layer_" .. _layer .. ".lua", "w")
-    if f then f:write(code) f:close() end
-    _capture(code)
 end
 
 local function _hook_ls(code, name)
@@ -72,9 +77,19 @@ local function _hook_ls(code, name)
         code = _tc(parts)
     end
     if _ty(code) ~= "string" or #code < 5 then return function() end end
-    _save_layer(code)
+    _capture(code)
+    if not _seen[code] then
+        _seen[code] = true
+        _lyr = _lyr + 1
+        _L("LAYER " .. _lyr .. " (" .. #code .. " bytes)")
+        local f = io.open(_out .. "/layer_" .. _lyr .. ".lua", "w")
+        if f then f:write(code) f:close() end
+    end
     local fn, err = _ls(code, name)
-    if not fn then return function() end end
+    if not fn then
+        _L("COMPILE_ERR: " .. _ts(err))
+        return function() end
+    end
     return fn
 end
 
@@ -95,30 +110,9 @@ end
 
 if not bit then
     bit = {}
-    bit.bxor = function(a,b)
-        local r,p = 0,1
-        while a>0 or b>0 do
-            if a%2~=b%2 then r=r+p end
-            a=math.floor(a/2); b=math.floor(b/2); p=p*2
-        end
-        return r
-    end
-    bit.band = function(a,b)
-        local r,p = 0,1
-        while a>0 and b>0 do
-            if a%2==1 and b%2==1 then r=r+p end
-            a=math.floor(a/2); b=math.floor(b/2); p=p*2
-        end
-        return r
-    end
-    bit.bor = function(a,b)
-        local r,p = 0,1
-        while a>0 or b>0 do
-            if a%2==1 or b%2==1 then r=r+p end
-            a=math.floor(a/2); b=math.floor(b/2); p=p*2
-        end
-        return r
-    end
+    bit.bxor = function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+    bit.band = function(a,b) local r,p=0,1 while a>0 and b>0 do if a%2==1 and b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
+    bit.bor  = function(a,b) local r,p=0,1 while a>0 or b>0 do if a%2==1 or b%2==1 then r=r+p end a=math.floor(a/2) b=math.floor(b/2) p=p*2 end return r end
     bit.bnot    = function(a) return -a-1 end
     bit.rshift  = function(a,b) return math.floor(a/(2^b)) end
     bit.lshift  = function(a,b) return math.floor(a*(2^b)) end
@@ -131,9 +125,9 @@ end
 local function _dummy(name)
     local d = {}
     _sm(d, {
-        __index     = function(_, k) return _dummy(name .. "." .. _ts(k)) end,
-        __newindex  = function(_, k, v) _rs(d, k, v) end,
-        __call      = function(_, ...)
+        __index    = function(_, k) return _dummy(name .. "." .. _ts(k)) end,
+        __newindex = function(_, k, v) _rs(d, k, v) end,
+        __call     = function(_, ...)
             local args = {...}
             for _, v in _ip(args) do
                 if _ty(v) == "function" then _pc(v, _dummy("a"), _dummy("b")) end
@@ -141,37 +135,34 @@ local function _dummy(name)
             end
             return _dummy(name .. "()")
         end,
-        __tostring  = function() return name end,
-        __concat    = function(a,b) return _ts(a).._ts(b) end,
-        __add       = function(a,b) return _dummy(name.."+") end,
-        __sub       = function(a,b) return _dummy(name.."-") end,
-        __mul       = function(a,b) return _dummy(name.."*") end,
-        __div       = function(a,b) return _dummy(name.."/") end,
-        __mod       = function(a,b) return _dummy(name.."%") end,
-        __pow       = function(a,b) return _dummy(name.."^") end,
-        __unm       = function(a)   return _dummy("-"..name) end,
-        __len       = function()    return 0 end,
-        __lt        = function(a,b) return false end,
-        __le        = function(a,b) return true end,
-        __eq        = function(a,b) return _ts(a)==_ts(b) end,
+        __tostring = function() return name end,
+        __concat   = function(a,b) return _ts(a).._ts(b) end,
+        __add      = function(a,b) return _dummy(name.."+") end,
+        __sub      = function(a,b) return _dummy(name.."-") end,
+        __mul      = function(a,b) return _dummy(name.."*") end,
+        __div      = function(a,b) return _dummy(name.."/") end,
+        __mod      = function(a,b) return _dummy(name.."%") end,
+        __pow      = function(a,b) return _dummy(name.."^") end,
+        __unm      = function(a)   return _dummy("-"..name) end,
+        __len      = function()    return 1 end,
+        __lt       = function(a,b) return false end,
+        __le       = function(a,b) return true end,
+        __eq       = function(a,b) return false end,
     })
     return d
 end
 
-local _env = {}
+_env = {}
 local _safe = {
-    string=string, math=math, table=table,
-    bit=bit, bit32=bit32,
-    pairs=_pa, ipairs=_ip, select=_sel, next=next,
-    tostring=_ts, tonumber=tonumber, type=_ty, typeof=_ty,
-    rawget=_rg, rawset=_rs, rawequal=rawequal, rawlen=rawlen,
-    setmetatable=_sm, getmetatable=_gm,
-    unpack=_un,
-    pcall=_pc, xpcall=xpcall, error=_er, assert=assert,
-    print=function() end, warn=function() end,
-    loadstring=_hook_ls, load=_hook_ls,
-    coroutine=coroutine,
-    debug={
+    string   = string, math = math, table = table, bit = bit, bit32 = bit,
+    pairs    = _pa, ipairs = _ip, select = _sl, next = _nx,
+    tostring = _ts, tonumber = tonumber, type = _ty, typeof = _ty,
+    rawget   = _rg, rawset = _rs, rawequal = rawequal, rawlen = rawlen,
+    setmetatable = _sm, getmetatable = _gm, unpack = _un,
+    pcall    = _pc, xpcall = xpcall, error = _er, assert = _as,
+    print    = function() end, warn = function() end,
+    loadstring = _hook_ls, load = _hook_ls, coroutine = coroutine,
+    debug    = {
         traceback    = function() return "" end,
         getinfo      = function() return {short_src="script.lua",currentline=0,what="Lua"} end,
         sethook      = function() end,
@@ -179,63 +170,57 @@ local _safe = {
         setupvalue   = function() end,
         getmetatable = _gm,
     },
-    os={
-        clock=function() return 0 end,
-        time=function() return 1000000 end,
-        date=function() return "2024-01-01" end,
-        difftime=function() return 0 end,
+    os       = {
+        clock    = function() return 0 end,
+        time     = function() return 1000000 end,
+        date     = function() return "2024-01-01" end,
+        difftime = function() return 0 end,
     },
-    tick=function() return 0 end,
-    time=function() return 0 end,
-    elapsedtime=function() return 0 end,
-    wait=function(n) return n or 0 end,
-    spawn=function(f) if _ty(f)=="function" then _pc(f) end end,
-    delay=function(t,f) if _ty(f)=="function" then _pc(f) end end,
-    shared={},
-    _VERSION="Lua 5.1",
-    game=_dummy("game"),
-    workspace=_dummy("workspace"),
-    script=_dummy("script"),
-    Players=_dummy("Players"),
-    RunService=_dummy("RunService"),
-    UserInputService=_dummy("UserInputService"),
-    TweenService=_dummy("TweenService"),
-    HttpService=_dummy("HttpService"),
-    Instance={new=function(n) return _dummy("Instance:"..n) end},
-    Vector3={new=function(...) return _dummy("Vector3") end},
-    Vector2={new=function(...) return _dummy("Vector2") end},
-    CFrame={new=function(...) return _dummy("CFrame") end, Angles=function(...) return _dummy("CFrame") end},
-    Color3={new=function(...) return _dummy("Color3") end, fromRGB=function(...) return _dummy("Color3") end},
-    UDim2={new=function(...) return _dummy("UDim2") end},
-    Enum=_dummy("Enum"),
-    Drawing=_dummy("Drawing"),
-    syn=_dummy("syn"),
-    writefile=function() end,
-    readfile=function() return "" end,
-    isfile=function() return false end,
-    isfolder=function() return false end,
-    makefolder=function() end,
-    listfiles=function() return {} end,
-    request=function() return {Body="",StatusCode=200,Success=true} end,
-    http={request=function() return {Body="",StatusCode=200} end},
-    identifyexecutor=function() return "synapse","2.0" end,
-    getexecutorname=function() return "synapse" end,
-    checkcaller=function() return true end,
-    isrbxactive=function() return true end,
-    hookfunction=function(a,b) return a end,
-    newcclosure=function(f) return f end,
-    clonefunction=function(f) return f end,
-    rconsole={print=function()end,clear=function()end},
+    tick        = function() return 0 end,
+    time        = function() return 0 end,
+    elapsedtime = function() return 0 end,
+    wait        = function(n)
+        _wait_cnt = _wait_cnt + 1
+        if _wait_cnt > 500 then _er("__WAIT_LIMIT__") end
+        return n or 0
+    end,
+    spawn       = function(f) if _ty(f)=="function" then _pc(f) end end,
+    delay       = function(t,f) if _ty(f)=="function" then _pc(f) end end,
+    shared      = {}, _VERSION = "Lua 5.1",
+    game        = _dummy("game"), workspace = _dummy("workspace"),
+    script      = _dummy("script"), Players = _dummy("Players"),
+    RunService  = _dummy("RunService"), UserInputService = _dummy("UserInputService"),
+    TweenService = _dummy("TweenService"), HttpService = _dummy("HttpService"),
+    Instance    = {new=function(n) return _dummy("Instance:"..n) end},
+    Vector3     = {new=function(...) return _dummy("Vector3") end},
+    Vector2     = {new=function(...) return _dummy("Vector2") end},
+    CFrame      = {new=function(...) return _dummy("CFrame") end, Angles=function(...) return _dummy("CFrame") end},
+    Color3      = {new=function(...) return _dummy("Color3") end, fromRGB=function(...) return _dummy("Color3") end},
+    UDim2       = {new=function(...) return _dummy("UDim2") end},
+    Enum        = _dummy("Enum"), Drawing = _dummy("Drawing"), syn = _dummy("syn"),
+    writefile   = function() end, readfile = function() return "" end,
+    isfile      = function() return false end, isfolder = function() return false end,
+    makefolder  = function() end, listfiles = function() return {} end,
+    request     = function() return {Body="",StatusCode=200,Success=true} end,
+    http        = {request=function() return {Body="",StatusCode=200} end},
+    identifyexecutor = function() return "synapse","2.0" end,
+    getexecutorname  = function() return "synapse" end,
+    checkcaller      = function() return true end,
+    isrbxactive      = function() return true end,
+    hookfunction     = function(a,b) return a end,
+    newcclosure      = function(f) return f end,
+    clonefunction    = function(f) return f end,
+    rconsole         = {print=function()end,clear=function()end},
 }
 
 _sm(_env, {
     __index = function(_, k)
         if _safe[k] ~= nil then return _safe[k] end
-        if k == "getfenv" then return function() return _env end end
+        if k == "getfenv" then return function(n) return _env end end
         if k == "setfenv" then
             return function(n,t)
                 if _ty(t)=="table" then
-                    for kk,vv in _pa(t) do _env[kk]=vv end
+                    for kk,vv in _pa(t) do _rs(_env, kk, vv) end
                 end
                 return t
             end
@@ -244,55 +229,102 @@ _sm(_env, {
         if k=="getgenv" or k=="getrenv" then return function() return _env end end
         return _dummy(k)
     end,
-    __newindex = function(_, k, v) _safe[k] = v end,
+    __newindex = function(_, k, v) _rs(_env, k, v) end,
 })
 
-_safe["_G"]      = _env
-_safe["_ENV"]    = _env
-_safe["getfenv"] = function() return _env end
-_safe["setfenv"] = function(n,t)
-    if _ty(t)=="table" then
-        for k,v in _pa(t) do _env[k]=v end
-    end
-    return t
-end
+_rs(_env, "loadstring",   _hook_ls)
+_rs(_env, "load",         _hook_ls)
+_rs(_env, "getfenv",      function(n) return _env end)
+_rs(_env, "setfenv",      function(n,t)
+    if _ty(t)=="table" then for k,v in _pa(t) do _rs(_env, k, v) end end return t end)
+_rs(_env, "_G",           _env)
+_rs(_env, "_ENV",         _env)
+_rs(_env, "shared",       _env)
+_rs(_env, "string",       string)
+_rs(_env, "math",         math)
+_rs(_env, "table",        table)
+_rs(_env, "bit",          bit)
+_rs(_env, "bit32",        bit)
+_rs(_env, "pairs",        _pa)
+_rs(_env, "ipairs",       _ip)
+_rs(_env, "select",       _sl)
+_rs(_env, "next",         _nx)
+_rs(_env, "tostring",     _ts)
+_rs(_env, "tonumber",     tonumber)
+_rs(_env, "type",         _ty)
+_rs(_env, "rawget",       _rg)
+_rs(_env, "rawset",       _rs)
+_rs(_env, "rawequal",     rawequal)
+_rs(_env, "rawlen",       rawlen)
+_rs(_env, "setmetatable", _sm)
+_rs(_env, "getmetatable", _gm)
+_rs(_env, "unpack",       _un)
+_rs(_env, "pcall",        _pc)
+_rs(_env, "xpcall",       xpcall)
+_rs(_env, "error",        _er)
+_rs(_env, "assert",       _as)
+_rs(_env, "print",        function() end)
+_rs(_env, "warn",         function() end)
+_rs(_env, "coroutine",    coroutine)
+_rs(_env, "debug",        _safe.debug)
+_rs(_env, "os",           _safe.os)
+_rs(_env, "tick",         _safe.tick)
+_rs(_env, "time",         _safe.time)
+_rs(_env, "wait",         _safe.wait)
+_rs(_env, "spawn",        _safe.spawn)
+_rs(_env, "delay",        _safe.delay)
+_rs(_env, "game",         _safe.game)
+_rs(_env, "workspace",    _safe.workspace)
+_rs(_env, "script",       _safe.script)
+_rs(_env, "Players",      _safe.Players)
+_rs(_env, "Instance",     _safe.Instance)
+_rs(_env, "Vector3",      _safe.Vector3)
+_rs(_env, "CFrame",       _safe.CFrame)
+_rs(_env, "Enum",         _safe.Enum)
+_rs(_env, "syn",          _safe.syn)
 
 local function _run()
-    local f = io.open(_inpath, "r")
-    if not f then print("[ERR] cannot open input") return end
+    local f = io.open(_inp, "r")
+    if not f then
+        _L("CANNOT_OPEN_INPUT")
+        local df = io.open(_out .. "/diag.txt", "w")
+        if df then df:write(_tc(_log, "\n")) df:close() end
+        return
+    end
     local code = f:read("*a")
     f:close()
+    _L("Script size: " .. #code .. " bytes")
 
     code = code:gsub("getfenv%s*%(%)%s*or%s*_ENV", "getfenv()")
     code = code:gsub("getfenv%s*%(%)%s*or%s*_G",   "getfenv()")
 
     local chunk, err = _ls(code)
     if not chunk then
-        print("[ERR] compile: " .. _ts(err))
-        return
+        _L("COMPILE ERROR: " .. _ts(err))
+    else
+        setfenv(chunk, _env)
+        _L("Executing...")
+        local ok, res = _pc(chunk)
+        if ok then
+            _L("OK. layers=" .. _lyr)
+        else
+            _L("RUNTIME ERROR: " .. _ts(res))
+        end
     end
-    setfenv(chunk, _env)
-    local ok, res = _pc(chunk)
-    if not ok then
-        print("[ERR] runtime: " .. _ts(res))
-    end
-    print("[OK] layers=" .. _layer)
 
-    local sf = io.open(_outdir .. "/cap.txt", "w")
+    local sf = io.open(_out .. "/cap.txt", "w")
     if sf then
         for _, s in _ip(_cap) do
-            sf:write(s .. "\\n---SEP---\\n")
+            sf:write(s:gsub("\n", "\\n") .. "\n---SEP---\n")
         end
         sf:close()
     end
+    local df = io.open(_out .. "/diag.txt", "w")
+    if df then df:write(_tc(_log, "\n")) df:close() end
 end
 
 _run()
 '''
-
-
-def _escape(s):
-    return s.replace('\\', '\\\\').replace('"', '\\"')
 
 
 def run_sandbox(source, timeout=20):
@@ -301,9 +333,11 @@ def run_sandbox(source, timeout=20):
         with open(in_path, 'w', encoding='utf-8') as f:
             f.write(source)
 
-        script = SANDBOX\
-            .replace('PLACEHOLDER_OUTDIR', _escape(d))\
-            .replace('PLACEHOLDER_INPATH', _escape(in_path))
+        esc_dir = d.replace('\\', '\\\\')
+        esc_inp = in_path.replace('\\', '\\\\')
+
+        script = SANDBOX.replace('OUTDIR_PLACEHOLDER', esc_dir)
+        script = script.replace('INPATH_PLACEHOLDER', esc_inp)
 
         drv = os.path.join(d, 'driver.lua')
         with open(drv, 'w', encoding='utf-8') as f:
@@ -312,8 +346,7 @@ def run_sandbox(source, timeout=20):
         try:
             proc = subprocess.run(
                 [LUA_BIN, drv],
-                capture_output=True, text=True,
-                timeout=timeout, cwd=d
+                capture_output=True, text=True, timeout=timeout, cwd=d
             )
             stdout = proc.stdout.strip()
             stderr = proc.stderr.strip()
@@ -321,6 +354,12 @@ def run_sandbox(source, timeout=20):
             stdout, stderr = 'timeout', ''
         except Exception as e:
             stdout, stderr = '', str(e)
+
+        diag = ''
+        dp = os.path.join(d, 'diag.txt')
+        if os.path.exists(dp):
+            with open(dp, encoding='utf-8', errors='replace') as f:
+                diag = f.read()
 
         layers = []
         i = 1
@@ -344,37 +383,30 @@ def run_sandbox(source, timeout=20):
                 if len(s) > 20:
                     cap_strings.append(s)
 
-        return layers, cap_strings, stdout, stderr
+        return layers, cap_strings, diag, stdout, stderr
 
 
 def score(code):
-    return (
-        code.count('function'),
-        code.count('local'),
-        code.count('end'),
-        len(code),
-    )
+    return (code.count('function'), code.count('local'), code.count('end'), len(code))
 
 
 def peel(source, max_layers=8, timeout=20):
-    current  = source
-    count    = 0
-    previews = []
-    seen     = set()
-
+    current, count, previews, seen = source, 0, [], set()
+    last_diag = ''
     for _ in range(max_layers):
-        layers, cap_strings, stdout, stderr = run_sandbox(current, timeout)
-        if not layers:
+        layers, cap_strings, diag, stdout, stderr = run_sandbox(current, timeout)
+        last_diag = diag
+        if layers:
+            best = max(layers, key=score)
+            if len(best.strip()) < 10 or best == current or best in seen:
+                break
+            seen.add(best)
+            previews.append(best[:100].replace('\n', ' '))
+            current = best
+            count += 1
+        else:
             break
-        best = max(layers, key=score)
-        if len(best.strip()) < 10 or best == current or best in seen:
-            break
-        seen.add(best)
-        previews.append(best[:100].replace('\n', ' '))
-        current = best
-        count  += 1
-
-    return current, count, previews
+    return current, count, previews, last_diag
 
 
 def detect_obfuscator(text):
@@ -431,8 +463,8 @@ def health():
     for b in [LUA_BIN, 'lua5.1', 'lua51', 'lua']:
         try:
             r = subprocess.run([b, '-v'], capture_output=True, timeout=2)
-            out = r.stderr.decode() + r.stdout.decode()
-            if '5.1' in out:
+            out = (r.stderr + r.stdout).decode(errors='replace')
+            if '5.1' in out or 'LuaJIT' in out:
                 lua_ok = True; active = b; break
         except:
             pass
@@ -446,8 +478,8 @@ def deobf():
     if not source.strip():
         return jsonify({'error': 'no source'}), 400
 
-    obf    = detect_obfuscator(source)
-    result, layers, previews = peel(source, max_layers=8, timeout=20)
+    obf = detect_obfuscator(source)
+    result, layers, previews, diag = peel(source)
 
     if layers > 0:
         result = static_decode(result)
@@ -459,11 +491,12 @@ def deobf():
         method = 'static'
 
     return jsonify({
-        'result':   result,
-        'layers':   layers,
-        'previews': previews,
-        'method':   method,
-        'detected': obf,
+        'result':     result,
+        'layers':     layers,
+        'previews':   previews,
+        'method':     method,
+        'detected':   obf,
+        'diagnostic': diag[:1000],
     })
 
 

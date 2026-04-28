@@ -12,7 +12,6 @@ local function _capture(v)
 end
 
 local _ls = loadstring
-local _lo = load
 local _pc = pcall
 local _ty = type
 local _ts = tostring
@@ -27,49 +26,6 @@ local _tc = table.concat
 local _un = unpack or table.unpack
 local _sl = select
 local _nx = next
-
-local function _hook_ls(code, name)
-    if _ty(code) == "function" then
-        local parts = {}
-        while true do
-            local p = code()
-            if not p then break end
-            if _ty(p) == "string" then parts[#parts+1] = p end
-            if #parts > 5000 then break end
-        end
-        code = _tc(parts)
-    end
-    if _ty(code) ~= "string" or #code < 5 then return function() end end
-    _capture(code)
-    if not _seen[code] then
-        _seen[code] = true
-        _lyr = _lyr + 1
-        _L("LAYER " .. _lyr .. " (" .. #code .. " bytes)")
-        local f = io.open(_out .. "/layer_" .. _lyr .. ".lua", "w")
-        if f then f:write(code) f:close() end
-    end
-    local fn, err = _ls(code, name)
-    if not fn then
-        _L("COMPILE_ERR: " .. _ts(err))
-        return function() end
-    end
-    return fn
-end
-
-loadstring = _hook_ls
-load       = _hook_ls
-
-string.char = function(...)
-    local r = _sc(...)
-    _capture(r)
-    return r
-end
-
-table.concat = function(t, sep, i, j)
-    local r = _tc(t, sep, i, j)
-    _capture(r)
-    return r
-end
 
 local function _dummy(name)
     local d = {}
@@ -97,15 +53,61 @@ local function _dummy(name)
         __mod      = function(a,b) return _dummy(name.."%") end,
         __pow      = function(a,b) return _dummy(name.."^") end,
         __unm      = function(a)   return _dummy("-"..name) end,
-        __len      = function()    return 1 end,
+        __len      = function()    return 0 end,
         __lt       = function(a,b) return false end,
         __le       = function(a,b) return true end,
-        __eq       = function(a,b) return false end,
+        __eq       = function(a,b) return _ts(a)==_ts(b) end,
     })
     return d
 end
 
 local _env = {}
+
+local _hook_ls
+_hook_ls = function(code, name)
+    if _ty(code) == "function" then
+        local parts = {}
+        while true do
+            local p = code()
+            if not p then break end
+            if _ty(p) == "string" then parts[#parts+1] = p end
+            if #parts > 5000 then break end
+        end
+        code = _tc(parts)
+    end
+    if _ty(code) ~= "string" or #code < 5 then return function() end end
+    _capture(code)
+    if not _seen[code] then
+        _seen[code] = true
+        _lyr = _lyr + 1
+        _L("LAYER " .. _lyr .. " (" .. #code .. " bytes)")
+        local f = io.open(_out .. "/layer_" .. _lyr .. ".lua", "w")
+        if f then f:write(code) f:close() end
+    end
+    local fn, err = _ls(code, name)
+    if not fn then
+        _L("COMPILE_ERR: " .. _ts(err))
+        return function() end
+    end
+    setfenv(fn, _env)
+    return fn
+end
+
+loadstring = _hook_ls
+load       = _hook_ls
+
+string.char = function(...)
+    local r = _sc(...)
+    _capture(r)
+    return r
+end
+
+table.concat = function(t, sep, i, j)
+    local r = _tc(t, sep, i, j)
+    _capture(r)
+    return r
+end
+
 local _safe = {
     string   = string, math = math, table = table,
     pairs    = _pa, ipairs = _ip, select = _sl, next = _nx,
@@ -126,11 +128,21 @@ local _safe = {
     spawn    = function(f) if _ty(f)=="function" then _pc(f) end end,
     delay    = function(t,f) if _ty(f)=="function" then _pc(f) end end,
     shared   = {}, _VERSION = "Lua 5.1",
-    game     = _dummy("game"),
-    workspace = _dummy("workspace"),
+    game     = _dummy("game"), workspace = _dummy("workspace"),
     script   = _dummy("script"),
     Instance = {new = function(n) return _dummy("Instance:"..n) end},
     Vector3  = {new = function(...) return _dummy("Vector3") end},
+    Players  = _dummy("Players"),
+    RunService = _dummy("RunService"),
+    syn      = _dummy("syn"),
+    Drawing  = _dummy("Drawing"),
+    Enum     = _dummy("Enum"),
+    writefile = function() end, readfile = function() return "" end,
+    isfile = function() return false end, makefolder = function() end,
+    identifyexecutor = function() return "synapse","2.0" end,
+    checkcaller = function() return true end,
+    hookfunction = function(a,b) return a end,
+    newcclosure = function(f) return f end,
 }
 
 _sm(_env, {
@@ -153,6 +165,40 @@ _sm(_env, {
     __newindex = function(_, k, v) _rs(_env, k, v) end,
 })
 
+_rs(_env, "loadstring",   _hook_ls)
+_rs(_env, "load",         _hook_ls)
+_rs(_env, "getfenv",      function() return _env end)
+_rs(_env, "setfenv",      function(n,t)
+    if _ty(t)=="table" then for k,v in _pa(t) do _rs(_env, k, v) end end
+    return t
+end)
+_rs(_env, "_G",           _env)
+_rs(_env, "_ENV",         _env)
+_rs(_env, "shared",       _env)
+_rs(_env, "string",       string)
+_rs(_env, "math",         math)
+_rs(_env, "table",        table)
+_rs(_env, "pairs",        _pa)
+_rs(_env, "ipairs",       _ip)
+_rs(_env, "select",       _sl)
+_rs(_env, "tostring",     _ts)
+_rs(_env, "tonumber",     tonumber)
+_rs(_env, "type",         _ty)
+_rs(_env, "rawget",       _rg)
+_rs(_env, "rawset",       _rs)
+_rs(_env, "setmetatable", _sm)
+_rs(_env, "getmetatable", _gm)
+_rs(_env, "unpack",       _un)
+_rs(_env, "pcall",        _pc)
+_rs(_env, "error",        error)
+_rs(_env, "assert",       assert)
+_rs(_env, "print",        function() end)
+_rs(_env, "warn",         function() end)
+_rs(_env, "game",         _safe.game)
+_rs(_env, "workspace",    _safe.workspace)
+_rs(_env, "Instance",     _safe.Instance)
+_rs(_env, "syn",          _safe.syn)
+
 function _run(code)
     local chunk, err = _ls(code)
     if not chunk then
@@ -160,7 +206,7 @@ function _run(code)
         return
     end
     setfenv(chunk, _env)
-    local ok, res = pcall(chunk)
+    local ok, res = _pc(chunk)
     if ok then
         print("OK. layers=" .. _lyr)
     else
@@ -173,5 +219,13 @@ function _run(code)
             sf:write(s:gsub("\n", "\\n") .. "\n---SEP---\n")
         end
         sf:close()
+    end
+
+    local df = io.open(_out .. "/diag.txt", "w")
+    if df then
+        local lines = {}
+        for _, l in _ip(_log) do lines[#lines+1] = l end
+        df:write(table.concat(lines, "\n"))
+        df:close()
     end
 end

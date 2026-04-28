@@ -1,341 +1,326 @@
-import os, re, subprocess, tempfile, shutil, base64
+import os, re, subprocess, tempfile, shutil
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 def find_lua():
-    for path in [shutil.which(b) for b in ['lua5.1','lua51','lua'] if shutil.which(b)]:
-        try:
-            if subprocess.run([path, '-v'], capture_output=True, timeout=2).returncode == 0:
-                return path
-        except:
-            pass
+    for b in ['lua5.1', 'lua51', 'lua']:
+        path = shutil.which(b)
+        if path:
+            try:
+                r = subprocess.run([path, '-v'], capture_output=True, timeout=2)
+                if '5.1' in (r.stderr.decode() + r.stdout.decode()):
+                    return path
+            except:
+                pass
     return 'lua5.1'
 
 LUA_BIN = os.environ.get('LUA_BIN') or find_lua()
 
-class SandboxTemplate:
-    def __init__(self):
-        self.preamble = r'''
-local __outdir  = "{OUTDIR}"
-local __layer   = 0
-local __captured = {{}}
-local __orig_loadstring = loadstring
-local __orig_load       = load
-local __orig_pcall      = pcall
-local __orig_type       = type
-local __orig_tostring   = tostring
-local __orig_pairs      = pairs
-local __orig_ipairs     = ipairs
-local __orig_setmt      = setmetatable
-local __orig_getmt      = getmetatable
-local __orig_rawset     = rawset
-local __orig_rawget     = rawget
-local __orig_char       = string.char
-local __orig_concat     = table.concat
-local __orig_print      = print
-local __orig_error      = error
-local __orig_select     = select
+# The sandbox is a plain file — no Python string substitution inside Lua code.
+# Only OUTDIR and INPATH are substituted, and only in safe string positions.
+SANDBOX = '''\
+local _outdir  = "PLACEHOLDER_OUTDIR"
+local _inpath  = "PLACEHOLDER_INPATH"
+local _layer   = 0
+local _seen    = {}
+local _cap     = {}
 
-local function __capture(v)
-    if __orig_type(v) == "string" and #v > 20 then
-        table.insert(__captured, v)
+local _ls  = loadstring
+local _lo  = load
+local _pc  = pcall
+local _ty  = type
+local _ts  = tostring
+local _pa  = pairs
+local _ip  = ipairs
+local _sm  = setmetatable
+local _gm  = getmetatable
+local _rg  = rawget
+local _rs  = rawset
+local _sc  = string.char
+local _tc  = table.concat
+local _pr  = print
+local _er  = error
+local _sel = select
+local _un  = unpack or table.unpack
+
+local function _capture(v)
+    if _ty(v) == "string" and #v > 10 then
+        _cap[#_cap + 1] = v
     end
 end
 
-local function __hook_loadstring(code, chunkname)
-    if __orig_type(code) == "string" and #code > 5 then
-        __layer = __layer + 1
-        local f = io.open(__outdir .. "/layer_" .. __layer .. ".lua", "w")
-        if f then f:write(code) f:close() end
-        __capture(code)
-        __orig_print("[SANDBOX] CAPTURED LAYER " .. __layer .. " (" .. #code .. " bytes)")
+local function _save_layer(code)
+    if _ty(code) ~= "string" or #code < 5 then return end
+    if _seen[code] then return end
+    _seen[code] = true
+    _layer = _layer + 1
+    local f = io.open(_outdir .. "/layer_" .. _layer .. ".lua", "w")
+    if f then f:write(code) f:close() end
+    _capture(code)
+end
+
+local function _hook_ls(code, name)
+    if _ty(code) == "function" then
+        local parts = {}
+        while true do
+            local p = code()
+            if not p then break end
+            if _ty(p) == "string" then parts[#parts+1] = p end
+            if #parts > 5000 then break end
+        end
+        code = _tc(parts)
     end
-    local fn, err = __orig_loadstring(code, chunkname)
-    if not fn then
-        __orig_print("[SANDBOX] LOADSTRING ERROR: " .. __orig_tostring(err))
-        return function() end
-    end
+    if _ty(code) ~= "string" or #code < 5 then return function() end end
+    _save_layer(code)
+    local fn, err = _ls(code, name)
+    if not fn then return function() end end
     return fn
 end
 
-local function __hook_load(code, chunkname)
-    if __orig_type(code) == "function" then
-        local parts = {{}}
-        while true do
-            local part = code()
-            if not part then break end
-            if __orig_type(part) == "string" then
-                table.insert(parts, part)
-            end
-            if #parts > 5000 then break end
-        end
-        code = __orig_concat(parts)
-    end
-    if __orig_type(code) == "string" and #code > 5 then
-        return __hook_loadstring(code, chunkname)
-    end
-    return __orig_load(code, chunkname)
-end
-
-loadstring = __hook_loadstring
-load       = __hook_load
-rawset(_G, "loadstring", __hook_loadstring)
-rawset(_G, "load", __hook_load)
+loadstring = _hook_ls
+load       = _hook_ls
 
 string.char = function(...)
-    local result = __orig_char(...)
-    if #result > 20 then
-        __capture(result)
-    end
-    return result
+    local r = _sc(...)
+    _capture(r)
+    return r
 end
 
 table.concat = function(t, sep, i, j)
-    local result = __orig_concat(t, sep, i, j)
-    if __orig_type(result) == "string" and #result > 20 then
-        __capture(result)
-    end
-    return result
+    local r = _tc(t, sep, i, j)
+    _capture(r)
+    return r
 end
 
-local function __make_proxy(name)
-    local proxy = {{}}
-    __orig_setmt(proxy, {{
-        __index = function(self, key)
-            local child_name = name .. "." .. __orig_tostring(key)
-            local child = __make_proxy(child_name)
-            rawset(self, key, child)
-            return child
-        end,
-        __newindex = function(self, key, value)
-            rawset(self, key, value)
-            __capture(value)
-        end,
-        __call = function(self, ...)
-            local args = {{...}}
-            for _, v in __orig_ipairs(args) do
-                if __orig_type(v) == "function" then
-                    __orig_pcall(v)
-                end
-                __capture(v)
+if not bit then
+    bit = {}
+    bit.bxor = function(a,b)
+        local r,p = 0,1
+        while a>0 or b>0 do
+            if a%2~=b%2 then r=r+p end
+            a=math.floor(a/2); b=math.floor(b/2); p=p*2
+        end
+        return r
+    end
+    bit.band = function(a,b)
+        local r,p = 0,1
+        while a>0 and b>0 do
+            if a%2==1 and b%2==1 then r=r+p end
+            a=math.floor(a/2); b=math.floor(b/2); p=p*2
+        end
+        return r
+    end
+    bit.bor = function(a,b)
+        local r,p = 0,1
+        while a>0 or b>0 do
+            if a%2==1 or b%2==1 then r=r+p end
+            a=math.floor(a/2); b=math.floor(b/2); p=p*2
+        end
+        return r
+    end
+    bit.bnot    = function(a) return -a-1 end
+    bit.rshift  = function(a,b) return math.floor(a/(2^b)) end
+    bit.lshift  = function(a,b) return math.floor(a*(2^b)) end
+    bit.arshift = function(a,b) return math.floor(a/(2^b)) end
+    bit.btest   = function(a,b) return bit.band(a,b)~=0 end
+    bit.tobit   = function(a) return a end
+    bit32 = bit
+end
+
+local function _dummy(name)
+    local d = {}
+    _sm(d, {
+        __index     = function(_, k) return _dummy(name .. "." .. _ts(k)) end,
+        __newindex  = function(_, k, v) _rs(d, k, v) end,
+        __call      = function(_, ...)
+            local args = {...}
+            for _, v in _ip(args) do
+                if _ty(v) == "function" then _pc(v, _dummy("a"), _dummy("b")) end
+                _capture(v)
             end
-            local child = __make_proxy(name .. "()")
-            __capture(__orig_tostring(child))
-            return child
+            return _dummy(name .. "()")
         end,
-        __tostring = function() return name end,
-        __concat   = function(a, b)
-            local s = __orig_tostring(a) .. __orig_tostring(b)
-            __capture(s)
-            return s
-        end,
-        __add = function(a,b) return __make_proxy(name.."+") end,
-        __sub = function(a,b) return __make_proxy(name.."-") end,
-        __mul = function(a,b) return __make_proxy(name.."*") end,
-        __div = function(a,b) return __make_proxy(name.."/") end,
-        __mod = function(a,b) return __make_proxy(name.."%") end,
-        __pow = function(a,b) return __make_proxy(name.."^") end,
-        __unm = function(a)   return __make_proxy("-"..name) end,
-        __len = function()    return 1 end,
-        __lt  = function(a,b) return false end,
-        __le  = function(a,b) return true end,
-        __eq  = function(a,b) return false end,
-    }})
-    return proxy
+        __tostring  = function() return name end,
+        __concat    = function(a,b) return _ts(a).._ts(b) end,
+        __add       = function(a,b) return _dummy(name.."+") end,
+        __sub       = function(a,b) return _dummy(name.."-") end,
+        __mul       = function(a,b) return _dummy(name.."*") end,
+        __div       = function(a,b) return _dummy(name.."/") end,
+        __mod       = function(a,b) return _dummy(name.."%") end,
+        __pow       = function(a,b) return _dummy(name.."^") end,
+        __unm       = function(a)   return _dummy("-"..name) end,
+        __len       = function()    return 0 end,
+        __lt        = function(a,b) return false end,
+        __le        = function(a,b) return true end,
+        __eq        = function(a,b) return _ts(a)==_ts(b) end,
+    })
+    return d
 end
 
-local __env = __make_proxy("env")
-__env.string  = string
-__env.math    = math
-__env.table   = table
-__env.bit     = bit or {{}}
-__env.bit32   = bit32 or {{}}
-__env.pairs   = __orig_pairs
-__env.ipairs  = __orig_ipairs
-__env.select  = __orig_select
-__env.next    = next
-__env.tostring = __orig_tostring
-__env.tonumber = tonumber
-__env.type     = __orig_type
-__env.rawget   = __orig_rawget
-__env.rawset   = __orig_rawset
-__env.setmetatable = __orig_setmt
-__env.getmetatable = __orig_getmt
-__env.unpack   = unpack or table.unpack
-__env.loadstring = __hook_loadstring
-__env.load     = __hook_load
-__env.pcall    = __orig_pcall
-__env.xpcall   = xpcall
-__env.error    = __orig_error
-__env.assert   = assert
-__env.print    = function(...)
-    local parts = {{}}
-    for i=1, __orig_select('#', ...) do
-        parts[i] = __orig_tostring(__orig_select(i, ...))
-    end
-    __orig_print("[SANDBOX PRINT] " .. __orig_concat(parts, "\t"))
-end
-__env.warn = function() end
-__env.coroutine = coroutine
-__env.debug = {{
-    traceback = function() return "" end,
-    getinfo   = function()
-        return {{short_src="script.lua", currentline=0, what="Lua"}}
+local _env = {}
+local _safe = {
+    string=string, math=math, table=table,
+    bit=bit, bit32=bit32,
+    pairs=_pa, ipairs=_ip, select=_sel, next=next,
+    tostring=_ts, tonumber=tonumber, type=_ty, typeof=_ty,
+    rawget=_rg, rawset=_rs, rawequal=rawequal, rawlen=rawlen,
+    setmetatable=_sm, getmetatable=_gm,
+    unpack=_un,
+    pcall=_pc, xpcall=xpcall, error=_er, assert=assert,
+    print=function() end, warn=function() end,
+    loadstring=_hook_ls, load=_hook_ls,
+    coroutine=coroutine,
+    debug={
+        traceback    = function() return "" end,
+        getinfo      = function() return {short_src="script.lua",currentline=0,what="Lua"} end,
+        sethook      = function() end,
+        getupvalue   = function() return nil end,
+        setupvalue   = function() end,
+        getmetatable = _gm,
+    },
+    os={
+        clock=function() return 0 end,
+        time=function() return 1000000 end,
+        date=function() return "2024-01-01" end,
+        difftime=function() return 0 end,
+    },
+    tick=function() return 0 end,
+    time=function() return 0 end,
+    elapsedtime=function() return 0 end,
+    wait=function(n) return n or 0 end,
+    spawn=function(f) if _ty(f)=="function" then _pc(f) end end,
+    delay=function(t,f) if _ty(f)=="function" then _pc(f) end end,
+    shared={},
+    _VERSION="Lua 5.1",
+    game=_dummy("game"),
+    workspace=_dummy("workspace"),
+    script=_dummy("script"),
+    Players=_dummy("Players"),
+    RunService=_dummy("RunService"),
+    UserInputService=_dummy("UserInputService"),
+    TweenService=_dummy("TweenService"),
+    HttpService=_dummy("HttpService"),
+    Instance={new=function(n) return _dummy("Instance:"..n) end},
+    Vector3={new=function(...) return _dummy("Vector3") end},
+    Vector2={new=function(...) return _dummy("Vector2") end},
+    CFrame={new=function(...) return _dummy("CFrame") end, Angles=function(...) return _dummy("CFrame") end},
+    Color3={new=function(...) return _dummy("Color3") end, fromRGB=function(...) return _dummy("Color3") end},
+    UDim2={new=function(...) return _dummy("UDim2") end},
+    Enum=_dummy("Enum"),
+    Drawing=_dummy("Drawing"),
+    syn=_dummy("syn"),
+    writefile=function() end,
+    readfile=function() return "" end,
+    isfile=function() return false end,
+    isfolder=function() return false end,
+    makefolder=function() end,
+    listfiles=function() return {} end,
+    request=function() return {Body="",StatusCode=200,Success=true} end,
+    http={request=function() return {Body="",StatusCode=200} end},
+    identifyexecutor=function() return "synapse","2.0" end,
+    getexecutorname=function() return "synapse" end,
+    checkcaller=function() return true end,
+    isrbxactive=function() return true end,
+    hookfunction=function(a,b) return a end,
+    newcclosure=function(f) return f end,
+    clonefunction=function(f) return f end,
+    rconsole={print=function()end,clear=function()end},
+}
+
+_sm(_env, {
+    __index = function(_, k)
+        if _safe[k] ~= nil then return _safe[k] end
+        if k == "getfenv" then return function() return _env end end
+        if k == "setfenv" then
+            return function(n,t)
+                if _ty(t)=="table" then
+                    for kk,vv in _pa(t) do _env[kk]=vv end
+                end
+                return t
+            end
+        end
+        if k=="_G" or k=="_ENV" or k=="shared" then return _env end
+        if k=="getgenv" or k=="getrenv" then return function() return _env end end
+        return _dummy(k)
     end,
-    sethook   = function() end,
-    getupvalue = function() return nil end,
-    setupvalue = function() end,
-}}
-__env.os = {{
-    clock  = function() return 0 end,
-    time   = function() return 1000000 end,
-    date   = function() return "2024-01-01" end,
-    difftime = function() return 0 end,
-}}
-__env.tick = function() return 0 end
-__env.time = function() return 0 end
-__env.wait = function(n) return n or 0 end
-__env.spawn = function(f)
-    if __orig_type(f) == "function" then
-        __orig_pcall(f)
-    end
-end
-__env.delay = function(t,f)
-    if __orig_type(f) == "function" then
-        __orig_pcall(f)
-    end
-end
-__env._VERSION = "Lua 5.1"
-__env._G = __env
-__env._ENV = __env
-__env.shared = __env
-__env.game = {{
-    GetService = function(self, name)
-        return __make_proxy("Service:" .. name)
-    end
-}}
-__env.Players = __make_proxy("Players")
-__env.RunService = __make_proxy("RunService")
-__env.UserInputService = __make_proxy("UserInputService")
-__env.TweenService = __make_proxy("TweenService")
-__env.HttpService = __make_proxy("HttpService")
-__env.Instance = {{
-    new = function(className)
-        return __make_proxy("Instance:" .. className)
-    end
-}}
-__env.Vector3 = {new = function(...) return __make_proxy("Vector3") end}
-__env.Vector2 = {new = function(...) return __make_proxy("Vector2") end}
-__env.CFrame = {{
-    new    = function(...) return __make_proxy("CFrame") end,
-    Angles = function(...) return __make_proxy("CFrame.Angles") end,
-}}
-__env.Color3 = {{
-    new    = function(...) return __make_proxy("Color3") end,
-    fromRGB = function(...) return __make_proxy("Color3") end,
-}}
-__env.UDim2 = {new = function(...) return __make_proxy("UDim2") end}
-__env.Enum = __make_proxy("Enum")
-__env.Drawing = __make_proxy("Drawing")
-__env.syn = __make_proxy("syn")
-__env.writefile = function() end
-__env.readfile  = function() return "" end
-__env.isfile    = function() return false end
-__env.isfolder  = function() return false end
-__env.makefolder = function() end
-__env.listfiles  = function() return {{}} end
-__env.request    = function() return {{Body="", StatusCode=200, Success=true}} end
-__env.http       = {{
-    request = function() return {{Body="", StatusCode=200}} end
-}}
-__env.identifyexecutor = function() return "synapse", "2.0" end
-__env.getexecutorname  = function() return "synapse" end
-__env.checkcaller      = function() return true end
-__env.isrbxactive      = function() return true end
-__env.hookfunction     = function(a,b) return a end
-__env.newcclosure      = function(f) return f end
-__env.clonefunction    = function(f) return f end
-__env.elapsedtime      = function() return 0 end
-__env.rconsole         = {{print=function()end,clear=function()end}}
-getfenv = function(n) return __env end
-setfenv = function(n, t)
-    if __orig_type(t) == "table" then
-        for k, v in __orig_pairs(t) do rawset(__env, k, v) end
+    __newindex = function(_, k, v) _safe[k] = v end,
+})
+
+_safe["_G"]      = _env
+_safe["_ENV"]    = _env
+_safe["getfenv"] = function() return _env end
+_safe["setfenv"] = function(n,t)
+    if _ty(t)=="table" then
+        for k,v in _pa(t) do _env[k]=v end
     end
     return t
 end
-_ENV = __env
-_G   = __env
 
-local function __run()
-    local f = io.open("{INPATH}", "r")
-    if not f then
-        __orig_print("[SANDBOX] CANNOT OPEN INPUT")
-        return
-    end
+local function _run()
+    local f = io.open(_inpath, "r")
+    if not f then print("[ERR] cannot open input") return end
     local code = f:read("*a")
     f:close()
 
     code = code:gsub("getfenv%s*%(%)%s*or%s*_ENV", "getfenv()")
     code = code:gsub("getfenv%s*%(%)%s*or%s*_G",   "getfenv()")
 
-    local chunk, err = __orig_loadstring(code)
+    local chunk, err = _ls(code)
     if not chunk then
-        __orig_print("[SANDBOX] COMPILE ERROR: " .. __orig_tostring(err))
+        print("[ERR] compile: " .. _ts(err))
         return
     end
-    setfenv(chunk, __env)
-
-    local ok, result = __orig_pcall(chunk)
-    if ok then
-        __capture(result)
-        __orig_print("[SANDBOX] EXECUTION DONE. LAYERS: " .. __layer)
-    else
-        __orig_print("[SANDBOX] RUNTIME ERROR: " .. __orig_tostring(result))
+    setfenv(chunk, _env)
+    local ok, res = _pc(chunk)
+    if not ok then
+        print("[ERR] runtime: " .. _ts(res))
     end
+    print("[OK] layers=" .. _layer)
 
-    local sf = io.open(__outdir .. "/captured_strings.txt", "w")
+    local sf = io.open(_outdir .. "/cap.txt", "w")
     if sf then
-        for _, s in __orig_ipairs(__captured) do
-            sf:write(s:gsub("\n", "\\n") .. "\n---SEP---\n")
+        for _, s in _ip(_cap) do
+            sf:write(s .. "\\n---SEP---\\n")
         end
         sf:close()
     end
-    local lf = io.open(__outdir .. "/layer_count.txt", "w")
-    if lf then lf:write(__orig_tostring(__layer)) lf:close() end
 end
 
-__run()
+_run()
 '''
-    def render(self, outdir, inpath):
-        return self.preamble.replace('{OUTDIR}', outdir).replace('{INPATH}', inpath)
 
-sandbox_template = SandboxTemplate()
 
-def run_sandbox(source, timeout=25):
+def _escape(s):
+    return s.replace('\\', '\\\\').replace('"', '\\"')
+
+
+def run_sandbox(source, timeout=20):
     with tempfile.TemporaryDirectory() as d:
         in_path = os.path.join(d, 'input.lua')
         with open(in_path, 'w', encoding='utf-8') as f:
             f.write(source)
 
-        esc_dir    = d.replace('\\', '\\\\').replace('"', '\\"')
-        esc_input  = in_path.replace('\\', '\\\\').replace('"', '\\"')
-        driver = sandbox_template.render(esc_dir, esc_input)
+        script = SANDBOX\
+            .replace('PLACEHOLDER_OUTDIR', _escape(d))\
+            .replace('PLACEHOLDER_INPATH', _escape(in_path))
 
-        drv_path = os.path.join(d, 'driver.lua')
-        with open(drv_path, 'w', encoding='utf-8') as f:
-            f.write(driver)
+        drv = os.path.join(d, 'driver.lua')
+        with open(drv, 'w', encoding='utf-8') as f:
+            f.write(script)
 
         try:
-            proc = subprocess.run([LUA_BIN, drv_path], capture_output=True, text=True, timeout=timeout, cwd=d)
+            proc = subprocess.run(
+                [LUA_BIN, drv],
+                capture_output=True, text=True,
+                timeout=timeout, cwd=d
+            )
+            stdout = proc.stdout.strip()
+            stderr = proc.stderr.strip()
         except subprocess.TimeoutExpired:
-            proc = None
-        except Exception:
-            proc = None
-
-        sandbox_output = proc.stdout.strip() if proc else 'timeout'
-        sandbox_error  = proc.stderr.strip() if proc else ''
+            stdout, stderr = 'timeout', ''
+        except Exception as e:
+            stdout, stderr = '', str(e)
 
         layers = []
         i = 1
@@ -349,25 +334,52 @@ def run_sandbox(source, timeout=25):
                 layers.append(data)
             i += 1
 
-        captured_strs = ''
-        cp = os.path.join(d, 'captured_strings.txt')
+        cap_strings = []
+        cp = os.path.join(d, 'cap.txt')
         if os.path.exists(cp):
             with open(cp, encoding='utf-8', errors='replace') as f:
-                captured_strs = f.read()
+                raw = f.read()
+            for part in raw.split('---SEP---'):
+                s = part.strip().replace('\\n', '\n')
+                if len(s) > 20:
+                    cap_strings.append(s)
 
-        layer_count = 0
-        lc = os.path.join(d, 'layer_count.txt')
-        if os.path.exists(lc):
-            with open(lc) as f:
-                try:
-                    layer_count = int(f.read().strip())
-                except:
-                    pass
-        return layers, sandbox_output, sandbox_error, captured_strs, layer_count
+        return layers, cap_strings, stdout, stderr
+
+
+def score(code):
+    return (
+        code.count('function'),
+        code.count('local'),
+        code.count('end'),
+        len(code),
+    )
+
+
+def peel(source, max_layers=8, timeout=20):
+    current  = source
+    count    = 0
+    previews = []
+    seen     = set()
+
+    for _ in range(max_layers):
+        layers, cap_strings, stdout, stderr = run_sandbox(current, timeout)
+        if not layers:
+            break
+        best = max(layers, key=score)
+        if len(best.strip()) < 10 or best == current or best in seen:
+            break
+        seen.add(best)
+        previews.append(best[:100].replace('\n', ' '))
+        current = best
+        count  += 1
+
+    return current, count, previews
+
 
 def detect_obfuscator(text):
     patterns = {
-        'ironbrew':  [r'bit and bit\.bxor', r'return table\.concat\(', r'return \w+\(true,\s*\{\}'],
+        'ironbrew':  [r'bit\.bxor', r'getfenv\s*\(\s*\)\s*\[', r'IronBrew'],
         'moonsec':   [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}', r'_moon\s*=\s*function'],
         'luraph':    [r'loadstring\s*\(\s*\(function', r'bytecode\s*=\s*["\'][A-Za-z0-9+/=]{50,}'],
         'wearedevs': [r'show_\w+\s*=\s*function', r'getfenv\s*\(\s*\)', r'string\.reverse'],
@@ -381,9 +393,12 @@ def detect_obfuscator(text):
             scores[name] = s
     return max(scores, key=lambda k: scores[k]) if scores else 'generic'
 
+
 def static_decode(code):
-    code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
-    code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
+    code = re.sub(r'\\x([0-9a-fA-F]{2})',
+                  lambda m: chr(int(m.group(1), 16)), code)
+    code = re.sub(r'\\(\d{1,3})',
+                  lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
     def sc(m):
         nums = re.findall(r'\d+', m.group(1))
         try:
@@ -393,64 +408,64 @@ def static_decode(code):
     code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', sc, code)
     return code
 
+
+def beautify(code):
+    out, indent = [], 0
+    for line in code.split('\n'):
+        s = line.strip()
+        if not s:
+            out.append(''); continue
+        if re.match(r'^(end\b|else\b|elseif\b|until\b)', s):
+            indent = max(0, indent - 1)
+        out.append('    ' * indent + s)
+        if re.match(r'^(if\b|for\b|while\b|repeat\b|do\b)', s) and not s.endswith('end'):
+            indent += 1
+        if re.match(r'^(function\b|local\s+function\b)', s):
+            indent += 1
+    return '\n'.join(out)
+
+
 @app.route('/health')
 def health():
-    lua_ok = False
-    for binary in [LUA_BIN, 'lua5.1', 'lua51', 'lua']:
+    lua_ok, active = False, LUA_BIN
+    for b in [LUA_BIN, 'lua5.1', 'lua51', 'lua']:
         try:
-            r = subprocess.run([binary, '-v'], capture_output=True, timeout=2)
-            if '5.1' in (r.stderr.decode() + r.stdout.decode()):
-                lua_ok = True
-                break
+            r = subprocess.run([b, '-v'], capture_output=True, timeout=2)
+            out = r.stderr.decode() + r.stdout.decode()
+            if '5.1' in out:
+                lua_ok = True; active = b; break
         except:
             pass
-    return jsonify({'ok': True, 'lua': lua_ok})
+    return jsonify({'ok': True, 'lua': lua_ok, 'lua_bin': active})
+
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
-    data = request.get_json(force=True)
+    data   = request.get_json(force=True)
     source = data.get('source', '')
     if not source.strip():
         return jsonify({'error': 'no source'}), 400
 
-    obf_type = detect_obfuscator(source)
+    obf    = detect_obfuscator(source)
+    result, layers, previews = peel(source, max_layers=8, timeout=20)
 
-    layers, stdout, stderr, cap_strings, layer_count = run_sandbox(source)
-
-    if layer_count > 0:
-        result = max(layers, key=len)
-        method = 'sandbox_layer'
-        note = ''
+    if layers > 0:
+        result = static_decode(result)
+        result = beautify(result)
+        method = 'sandbox'
     else:
-        candidates = []
-        if cap_strings:
-            for part in cap_strings.split('---SEP---'):
-                part = part.strip().replace('\\n', '\n')
-                if len(part) > 50:
-                    candidates.append(part)
-        if candidates:
-            result = max(candidates, key=len)
-            method = 'captured_string'
-            note = 'No loadstring call detected. Best captured string returned.'
-        else:
-            result = static_decode(source)
-            method = 'static'
-            note = 'No payload found. The script may be a wrapper or already clean.'
-
-    diagnostic = ''
-    if stdout:
-        diagnostic += stdout[:1000] + '\n'
-    if stderr:
-        diagnostic += stderr[:1000] + '\n'
-    diagnostic += note
+        result = static_decode(source)
+        result = beautify(result)
+        method = 'static'
 
     return jsonify({
-        'result': result,
-        'layers': layer_count,
-        'method': method,
-        'detected': obf_type,
-        'diagnostic': diagnostic[:2000],
+        'result':   result,
+        'layers':   layers,
+        'previews': previews,
+        'method':   method,
+        'detected': obf,
     })
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

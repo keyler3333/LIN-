@@ -2,32 +2,11 @@ import re
 import struct
 
 def _decode_wearedevs_strings(source):
-    table_lines = []
-    in_table = False
-    depth = 0
-    for line in source.split('\n'):
-        if not in_table:
-            if '=' in line and '{' in line and re.search(r'local\s+\w+', line):
-                in_table = True
-                depth = 1
-                table_lines.append(line)
-                continue
-        else:
-            table_lines.append(line)
-            depth += line.count('{') - line.count('}')
-            if depth == 0:
-                break
-    if not table_lines:
+    table_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source)
+    if not table_match:
         return None
-    table_str = '\n'.join(table_lines)
-    brace_start = table_str.find('{')
-    brace_end = table_str.rfind('}')
-    if brace_start == -1 or brace_end == -1:
-        return None
-    body = table_str[brace_start+1:brace_end]
-
-    string_constants = re.findall(r'"((?:\\.|[^"\\])*)"', body)
-    decoder_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+    raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(2))
+    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
     if not decoder_match:
         decoder_match = re.search(r'(\w+)\s*=\s*\{([^}]+=\s*-?\d+[^}]+)\}', source, re.DOTALL)
     if not decoder_match:
@@ -44,14 +23,12 @@ def _decode_wearedevs_strings(source):
             pass
 
     decoded_bytes = bytearray()
-    for s in string_constants:
-        accum = 0
-        bits = 0
-        count = 0
+    for s in raw_strings:
+        accum, bits, count = 0, 0, 0
         for ch in s:
             if ch == '=':
                 if bits >= 6:
-                    accum >>= (bits - 6)
+                    accum >>= bits - 6
                     decoded_bytes.append(accum & 0xFF)
                 break
             val = char_map.get(ch)
@@ -64,9 +41,9 @@ def _decode_wearedevs_strings(source):
                 decoded_bytes.extend([
                     (accum >> 16) & 0xFF,
                     (accum >> 8) & 0xFF,
-                    accum & 0xFF
+                    accum & 0xFF,
                 ])
-                accum = bits = count = 0
+                accum, bits, count = 0, 0, 0
     return bytes(decoded_bytes)
 
 def _is_lua_bytecode(data):

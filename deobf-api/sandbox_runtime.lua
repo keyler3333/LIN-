@@ -30,12 +30,12 @@ local _er=error
 local _as=assert
 
 debug.sethook(function()
-    _step_cnt=_step_cnt+1
+    _step_cnt=_step_cnt+5000
     if _step_cnt>_max_steps then
         _L("STEP_LIMIT_HIT")
         _er("__INSTRUCTION_LIMIT__")
     end
-end,"l")
+end,"",5000)
 
 local function _capture(v)
     if _ty(v)=="string" and #v>10 then

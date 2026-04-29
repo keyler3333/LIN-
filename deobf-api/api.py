@@ -65,7 +65,14 @@ def detect_obfuscator(text):
         'ironbrew2': [r'while\s+true\s+do\s+local\s+\w+\s*=\s*\w+\[\w+\]',r'local\s+\w+,\s*\w+,\s*\w+\s*=\s*\w+\s*&'],
         'ironbrew1': [r'bit\.bxor',r'getfenv\s*\(\s*\)\s*\[',r'IronBrew'],
         'moonsec':   [r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}',r'_moon\s*=\s*function',r'MoonSec'],
-        'wearedevs': [r'show_\w+\s*=\s*function',r'getfenv\s*\(\s*\)',r'string\.reverse'],
+        'wearedevs': [
+            r'show_\w+\s*=\s*function',
+            r'getfenv\s*\(\s*\)',
+            r'string\.reverse',
+            r'https?://wearedevs\.net',
+            r'v1\.0\.0.*wearedevs',
+            r'local\s+\w+\s*=\s*\{[^}]{500,}\}',
+        ],
         'prometheus':[r'Prometheus',r'number_to_bytes'],
         'hercules':  [r'Hercules',r'Str\s*=\s*string\.sub'],
         'generic_vm':[r'mkexec',r'constTags',r'protoFormats'],
@@ -105,45 +112,41 @@ def beautify(code):
 
 def deobfuscate(source, depth=0):
     if depth > 5:
-        return source, 'generic', 0, 'max_depth', 'Max recursion reached'
-    obf_type, method = detect_obfuscator(source)
+        return source,'generic',0,'max_depth','Max recursion reached'
+    obf_type,method = detect_obfuscator(source)
     diag = ''
-
     if obf_type == 'wearedevs':
         try:
             lifted = wearedevs_lifter.lift_wearedevs(source)
             if lifted:
                 lifted = static_decode(lifted)
                 lifted = beautify(lifted)
-                return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
+                return lifted,obf_type,0,'wearedevs_vm_lift','WeAreDevs VM lifted'
         except Exception as e: diag = f'WeAreDevs lifter error: {e}'
-
     if method == 'dynamic':
-        emu_layers, emu_err, emu_stdout, emu_stderr = roblox_emulator.run_emulator(source)
+        emu_layers,emu_err,emu_stdout,emu_stderr = roblox_emulator.run_emulator(source)
         if emu_layers:
-            payload = max(emu_layers, key=len)
-            return deobfuscate(payload, depth+1)
-        layers, cap, diag2, stdout, stderr = run_sandbox(source)
+            payload = max(emu_layers,key=len)
+            return deobfuscate(payload,depth+1)
+        layers,cap,diag2,stdout,stderr = run_sandbox(source)
         if layers:
-            payload = max(layers, key=len)
-            return deobfuscate(payload, depth+1)
-
+            payload = max(layers,key=len)
+            return deobfuscate(payload,depth+1)
     if method == 'normalize':
         try:
             result = normalize_source(source)
             if result:
-                layers, cap, diag2, stdout, stderr = run_sandbox(result)
+                layers,cap,diag2,stdout,stderr = run_sandbox(result)
                 if layers:
-                    payload = max(layers, key=len)
-                    return deobfuscate(payload, depth+1)
+                    payload = max(layers,key=len)
+                    return deobfuscate(payload,depth+1)
                 result = static_decode(result)
                 result = beautify(result)
-                return result, obf_type, 0, 'ast_normalize', 'AST normalization applied'
+                return result,obf_type,0,'ast_normalize','AST normalization applied'
         except Exception as e: diag = f'AST normalizer error: {e}'
-
     result = static_decode(source)
     result = beautify(result)
-    return result, obf_type, 0, 'static', diag
+    return result,obf_type,0,'static',diag
 
 @app.route('/health')
 def health():

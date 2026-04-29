@@ -7,7 +7,6 @@ def run_emulator(source, timeout=30):
         inp = os.path.join(d, 'input.lua')
         with open(inp, 'w', encoding='utf-8') as f:
             f.write(source)
-
         driver = r'''
 local _out = os.getenv("OUTDIR") or "/tmp"
 os.setenv("OUTDIR", "''' + d.replace('\\','/') + r'''")
@@ -46,7 +45,6 @@ end
         drv = os.path.join(d, 'driver.lua')
         with open(drv, 'w', encoding='utf-8') as f:
             f.write(driver)
-
         try:
             env = os.environ.copy()
             env['OUTDIR'] = d.replace('\\','/')

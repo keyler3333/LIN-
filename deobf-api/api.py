@@ -145,6 +145,15 @@ def beautify(code):
             indent += 1
     return '\n'.join(out)
 
+def simplify_math(source):
+    def calc(match):
+        try:
+            return str(eval(match.group(0)))
+        except:
+            return match.group(0)
+    simplified = re.sub(r'\((-?\d+)\s*([\+\-\*\/])\s*(-?\d+)\)', calc, source)
+    return simplified
+
 def deobfuscate(source, depth=0):
     if depth > 5:
         return source, 'generic', 0, 'max_depth', 'Max recursion reached'
@@ -153,6 +162,7 @@ def deobfuscate(source, depth=0):
         source = normalize_source(source)
     except:
         pass
+    source = simplify_math(source)
 
     obf_type, method = detect_obfuscator(source)
     diag = ''
@@ -161,9 +171,15 @@ def deobfuscate(source, depth=0):
         try:
             lifted = wearedevs_lifter.lift_wearedevs(source)
             if lifted:
-                lifted = static_decode(lifted)
-                lifted = beautify(lifted)
-                return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
+                if isinstance(lifted, dict):
+                    commented = source
+                    for orig, dec in lifted.items():
+                        commented = commented.replace(f'"{orig}"', f'"{dec}" --[[ decoded ]]')
+                    return beautify(commented), obf_type, 0, 'wearedevs_strings', 'Strings recovered from N table'
+                else:
+                    lifted = static_decode(lifted)
+                    lifted = beautify(lifted)
+                    return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
         except Exception as e:
             diag = f'WeAreDevs lifter error: {e}'
 
@@ -181,7 +197,7 @@ def deobfuscate(source, depth=0):
                             return beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
                     except:
                         pass
-                    return "-- [Bytecode Detected]\n-- The bot found the internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
+                    return "-- [Bytecode Detected]\n-- The bot found internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
                 if len(c) > len(source) * 0.5 and "function" in c:
                     return beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
         if diag:
@@ -205,7 +221,7 @@ def deobfuscate(source, depth=0):
                             return beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
                     except:
                         pass
-                    return "-- [Bytecode Detected]\n-- The bot found the internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
+                    return "-- [Bytecode Detected]\n-- The bot found internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
                 if len(c) > len(source) * 0.5 and "function" in c:
                     return beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
 

@@ -40,7 +40,7 @@ debug.sethook(function()
 end, "", 5000)
 
 local function _capture(v)
-    if _ty(v) == "string" and #v > 10 then
+    if _ty(v) == "string" and #v > 3 then
         _cap[#_cap+1] = v
     end
 end
@@ -92,7 +92,7 @@ string.char = function(...)
 end
 table.concat = function(t, sep, i, j)
     local r = _tc(t, sep, i, j)
-    if #r > 50 then
+    if #r > 3 then
         _capture(r)
     end
     return r
@@ -151,7 +151,11 @@ if not bit then
     bit32 = bit
 end
 
+local _dummy_cache = {}
 local function _dummy(name)
+    if _dummy_cache[name] then
+        return _dummy_cache[name]
+    end
     local d = {}
     _sm(d, {
         __index = function(_, k)
@@ -212,6 +216,7 @@ local function _dummy(name)
             return false
         end,
     })
+    _dummy_cache[name] = d
     return d
 end
 
@@ -361,7 +366,9 @@ _sm(_env, {
             return _safe[k]
         end
         if k == "getfenv" then
-            return function(n) return _env end
+            return function(n)
+                return _env
+            end
         end
         if k == "setfenv" then
             return function(n, t)

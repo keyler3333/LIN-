@@ -2,52 +2,77 @@ import re
 import base64
 import struct
 
-def _decode_single_string(s, char_map):
-    if char_map:
-        decoded = bytearray()
-        accum, bits, count = 0, 0, 0
+def _extract_cipher_mapping(source):
+    mapping_pattern = r'local\s+(\w+)\s*=\s*\{(.*?)\}'
+    for match in re.finditer(mapping_pattern, source, re.DOTALL):
+        mapping_content = match.group(2)
+        if '=' not in mapping_content or mapping_content.count('=') <= 10:
+            continue
+        mapping_dict = {}
+        pairs = re.findall(r'\["([^"]+)"\]\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', mapping_content)
+        if not pairs:
+            pairs = re.findall(r'"([^"]+)"\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', mapping_content)
+        if not pairs:
+            pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', mapping_content)
+        for key, expr in pairs:
+            try:
+                val = eval(expr.replace(' ', ''))
+                mapping_dict[key.strip()] = val & 0x3F
+            except:
+                continue
+        if len(mapping_dict) > 30:
+            return mapping_dict
+    return None
+
+def _decode_wearedevs_strings(source):
+    cipher_map = _extract_cipher_mapping(source)
+    if cipher_map is None:
+        return None
+
+    table_match = re.search(r'local\s+\w+\s*=\s*\{(.*?)\}', source, re.DOTALL)
+    if not table_match:
+        return None
+    raw_table = table_match.group(1)
+    encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
+    if not encoded_strings:
+        return None
+
+    decoded_chunks = []
+    for s in encoded_strings:
+        byte_buffer = bytearray()
+        accumulator = 0
+        bits = 0
+        count = 0
         for ch in s:
             if ch == '=':
-                if bits >= 6:
-                    accum >>= bits - 6
-                    decoded.append(accum & 0xFF)
+                if count == 3:
+                    byte_buffer.append((accumulator >> 16) & 0xFF)
+                    byte_buffer.append((accumulator >> 8) & 0xFF)
+                elif count == 2:
+                    byte_buffer.append((accumulator >> 16) & 0xFF)
                 break
-            val = char_map.get(ch)
+            val = cipher_map.get(ch)
             if val is None:
                 continue
-            accum = (accum << 6) | val
+            accumulator = (accumulator << 6) | val
             bits += 6
             count += 1
             if count == 4:
-                decoded.extend([
-                    (accum >> 16) & 0xFF,
-                    (accum >> 8) & 0xFF,
-                    accum & 0xFF,
+                byte_buffer.extend([
+                    (accumulator >> 16) & 0xFF,
+                    (accumulator >> 8) & 0xFF,
+                    accumulator & 0xFF,
                 ])
-                accum, bits, count = 0, 0, 0
-        return bytes(decoded)
-    else:
-        try:
-            padded = s + "=" * ((4 - len(s) % 4) % 4)
-            return base64.b64decode(padded)
-        except:
-            return None
+                accumulator = 0
+                bits = 0
+                count = 0
+        if byte_buffer:
+            decoded_chunks.append(bytes(byte_buffer))
 
-def _build_char_map(source):
-    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
-    if not decoder_match:
-        return None
-    decoder_body = decoder_match.group(1)
-    char_map = {}
-    for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
-        key = pair.group(1).strip()
-        expr = pair.group(2).replace(' ', '')
-        try:
-            val = eval(expr)
-            char_map[key] = val & 0x3F
-        except:
-            continue
-    return char_map if char_map else None
+    full_data = bytearray()
+    for chunk in decoded_chunks:
+        full_data.extend(chunk)
+    return bytes(full_data)
 
 def _is_lua_bytecode(data):
     return len(data) >= 12 and data[:4] == b'\x1bLua'
@@ -196,33 +221,12 @@ def _lift_lua_bytecode(instructions, constants):
     return "\n".join(lines)
 
 def lift_wearedevs(source):
-    table_match = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
-    if not table_match:
+    data = _decode_wearedevs_strings(source)
+    if data is None:
         return None
-    raw_table = table_match.group(1)
-    encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
-
-    char_map = _build_char_map(source)
-
-    decoded_entries = []
-    for s in encoded_strings:
-        data = _decode_single_string(s, char_map)
-        if data:
-            decoded_entries.append(data)
-
-    for data in decoded_entries:
-        if _is_lua_bytecode(data):
-            instructions, constants = _read_lua_bytecode(data)
-            lifted = _lift_lua_bytecode(instructions, constants)
-            if lifted.strip():
-                return lifted
-
-    for data in decoded_entries:
-        try:
-            text = data.decode('utf-8', errors='ignore')
-            if len(text) > 50 and ('function' in text or 'print' in text or 'local' in text):
-                return text
-        except:
-            continue
-
+    if isinstance(data, bytes) and _is_lua_bytecode(data):
+        instructions, constants = _read_lua_bytecode(data)
+        lifted = _lift_lua_bytecode(instructions, constants)
+        if lifted.strip():
+            return lifted
     return None

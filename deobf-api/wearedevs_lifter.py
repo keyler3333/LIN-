@@ -11,7 +11,7 @@ def _decode_base85_chunk(chunk):
     v = 0
     for i, c in enumerate(chunk):
         v += (ord(c) - 33) * (85 ** (4 - i))
-    return struct.pack(">I4", v)
+    return struct.pack(">I", v)
 
 def _decode_bytecode(raw_strings):
     encoded = ""
@@ -104,25 +104,21 @@ def _lift_wearedevs_bytecode(bytecode):
                 reg_map[a] = vname
             else:
                 rets = [f"var_{var_counter + i}" for i in range(c - 1)]
-                for rv in rets:
-                    var_counter += 1
+                for rv in rets: var_counter += 1
                 lines.append(f"local {', '.join(rets)} = {get_val(a)}({args})")
                 reg_map[a] = rets[0]
         elif op == 30:
             lines.append("return")
             break
         elif op == 3:
-            for i in range(a, b + 1):
-                reg_map[i] = "nil"
+            for i in range(a, b + 1): reg_map[i] = "nil"
         else:
             lines.append(f"-- op {op} ({op_names.get(op, '?')})")
     return "\n".join(lines)
 
 def lift_wearedevs(source):
     string_table = re.search(r'local Q=\{([^}]+)\}', source)
-    if not string_table:
-        return None
+    if not string_table: return None
     raw_strings = re.findall(r'"([^"]*)"', string_table.group(1))
     bytecode = _decode_bytecode(raw_strings)
-    lifted = _lift_wearedevs_bytecode(bytecode)
-    return lifted
+    return _lift_wearedevs_bytecode(bytecode)

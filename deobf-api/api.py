@@ -90,15 +90,20 @@ def static_decode(code):
     return code
 
 def beautify(code):
-    out,indent=[],0
+    out, indent = [], 0
+    dedent_pat = r'^(end\b|else\b|elseif\b|until\b|\})'
+    indent_pat = r'^(if\b|for\b|while\b|repeat\b|do\b|else\b|elseif\b|local\s+function\b|function\b)'
     for line in code.split('\n'):
-        s=line.strip()
-        if not s: out.append(''); continue
-        if re.match(r'^(end\b|else\b|elseif\b|until\b)',s): indent=max(0,indent-1)
-        out.append('    '*indent+s)
-        if re.match(r'^(if\b|for\b|while\b|repeat\b|do\b)',s) and not s.endswith('end'): indent+=1
-        if re.match(r'^(function\b|local\s+function\b)',s): indent+=1
-    return '\n'.join(out)
+        line = line.strip()
+        if not line:
+            out.append("")
+            continue
+        if re.match(dedent_pat, line):
+            indent = max(0, indent - 1)
+        out.append("    " * indent + line)
+        if re.match(indent_pat, line) and not (line.endswith("end") or line.endswith("}")):
+            indent += 1
+    return "\n".join(out)
 
 def lupa_sandbox(source,timeout=15):
     captured=[]

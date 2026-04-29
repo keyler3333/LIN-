@@ -1,4 +1,4 @@
-import re, struct, math
+import re, struct
 
 def _decode_octal_string(s):
     result = ""
@@ -40,45 +40,80 @@ def _lift_wearedevs_bytecode(bytecode):
     }
     lines = []
     pc = 0
-    regs = [None] * 256
+    reg_map = {}
+    var_counter = 1
+
+    def get_val(r):
+        return reg_map.get(r, f"v{r}")
+
     while pc < len(bytecode):
         instr = bytecode[pc]
-        if isinstance(instr, int):
-            op = instr & 0x3F
-            a = (instr >> 6) & 0xFF
-            c = (instr >> 14) & 0x1FF
-            b = (instr >> 23) & 0x1FF
-        else:
-            op, a, b, c = 0, 0, 0, 0
+        op = instr & 0x3F
+        a = (instr >> 6) & 0xFF
+        c = (instr >> 14) & 0x1FF
+        b = (instr >> 23) & 0x1FF
         pc += 1
+
         if op == 1:
-            lines.append(f"R{a} = K[{b}]")
+            reg_map[a] = f"K[{b}]"
         elif op == 5:
-            lines.append(f"R{a} = _G[K[{b}]]")
-        elif op == 7:
-            lines.append(f"_G[K[{b}]] = R{a}")
-        elif op == 12:
-            lines.append(f"R{a} = R{b} + R{c}")
-        elif op == 13:
-            lines.append(f"R{a} = R{b} - R{c}")
-        elif op == 14:
-            lines.append(f"R{a} = R{b} * R{c}")
-        elif op == 15:
-            lines.append(f"R{a} = R{b} / R{c}")
+            reg_map[a] = f"_G[K[{b}]]"
         elif op == 0:
-            lines.append(f"R{a} = R{b}")
+            reg_map[a] = get_val(b)
+        elif op == 12:
+            reg_map[a] = f"({get_val(b)} + {get_val(c)})"
+        elif op == 13:
+            reg_map[a] = f"({get_val(b)} - {get_val(c)})"
+        elif op == 14:
+            reg_map[a] = f"({get_val(b)} * {get_val(c)})"
+        elif op == 15:
+            reg_map[a] = f"({get_val(b)} / {get_val(c)})"
+        elif op == 16:
+            reg_map[a] = f"({get_val(b)} % {get_val(c)})"
+        elif op == 18:
+            reg_map[a] = f"-{get_val(b)}"
+        elif op == 19:
+            reg_map[a] = f"not {get_val(b)}"
+        elif op == 20:
+            reg_map[a] = f"#{get_val(b)}"
+        elif op == 21:
+            parts = [get_val(b + i) for i in range(c - b + 1)]
+            reg_map[a] = " .. ".join(parts)
+        elif op == 22:
+            lines.append(f"-- jump to {pc + c}")
+        elif op == 23:
+            cond = "==" if a == 0 else "~="
+            lines.append(f"if {get_val(b)} {cond} {get_val(c)} then")
+        elif op == 24:
+            lines.append(f"if {get_val(b)} < {get_val(c)} then")
+        elif op == 25:
+            lines.append(f"if {get_val(b)} <= {get_val(c)} then")
+        elif op == 26:
+            lines.append(f"if {get_val(a)} then")
+        elif op == 27:
+            lines.append(f"if not {get_val(b)} then")
+            reg_map[a] = get_val(b)
+        elif op == 28:
+            args = ", ".join(get_val(a + 1 + i) for i in range(b - 1)) if b > 1 else ""
+            vname = f"var_{var_counter}"
+            var_counter += 1
+            if c == 1:
+                lines.append(f"{get_val(a)}({args})")
+            elif c == 0:
+                lines.append(f"local {vname} = {get_val(a)}({args})")
+                reg_map[a] = vname
+            else:
+                rets = [f"var_{var_counter + i}" for i in range(c - 1)]
+                for rv in rets:
+                    var_counter += 1
+                lines.append(f"local {', '.join(rets)} = {get_val(a)}({args})")
+                reg_map[a] = rets[0]
         elif op == 30:
             lines.append("return")
             break
-        elif op == 28:
-            args = ", ".join(f"R{a+1+i}" for i in range(b-1)) if b > 1 else ""
-            if c == 1:
-                lines.append(f"R{a}({args})")
-            elif c == 0:
-                lines.append(f"local _ = R{a}({args})")
-            else:
-                rets = ", ".join(f"R{a+i}" for i in range(c-1))
-                lines.append(f"{rets} = R{a}({args})")
+        elif op == 3:
+            for i in range(a, b + 1):
+                reg_map[i] = "nil"
         else:
             lines.append(f"-- op {op} ({op_names.get(op, '?')})")
     return "\n".join(lines)

@@ -98,10 +98,8 @@ def detect_obfuscator(text):
         'wearedevs': [
             r'show_\w+\s*=\s*function',
             r'getfenv\s*\(\s*\)',
-            r'string\.reverse',
             r'https?://wearedevs\.net',
-            r'v1\.\d+\.\d+.*wearedevs',
-            r'local\s+\w+\s*=\s*\{[^}]{500,}\}'
+            r'local\s+\w+\s*=\s*\{[^}]{1000,}\}'
         ],
         'prometheus': [r'Prometheus', r'number_to_bytes'],
         'hercules':   [r'Hercules', r'Str\s*=\s*string\.sub'],

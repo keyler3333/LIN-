@@ -498,6 +498,15 @@ local function _run()
         local ok, res = _pc(chunk)
         if ok then
             _L("OK. layers=" .. _lyr)
+            if _ty(res) == "function" then
+                local bc = string.dump(res)
+                local df = io.open(_out .. "/dump.bin", "wb")
+                if df then
+                    df:write(bc)
+                    df:close()
+                    _L("DUMPED_FUNCTION")
+                end
+            end
         else
             if _ts(res) ~= "__INSTRUCTION_LIMIT__" and _ts(res) ~= "__WAIT_LIMIT__" then
                 _L("RUNTIME ERROR: " .. _ts(res))

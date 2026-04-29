@@ -131,4 +131,45 @@ def deobfuscate(source, depth=0):
         if layers:
             payload = max(layers, key=len)
             return deobfuscate(payload, depth+1)
-        if stale.rcppath.split():%
+
+    if method == 'dynamic':
+        emu_layers,emu_err,emu_stdout,emu_stderr = roblox_emulator.run_emulator(source)
+        if emu_layers:
+            payload = max(emu_layers,key=len)
+            return deobfuscate(payload,depth+1)
+        layers,cap,diag2,stdout,stderr = run_sandbox(source)
+        if layers:
+            payload = max(layers,key=len)
+            return deobfuscate(payload,depth+1)
+
+    result = static_decode(source)
+    result = beautify(result)
+    return result, obf_type, 0, 'static', diag
+
+@app.route('/health')
+def health():
+    lua_ok,active = False,LUA_BIN
+    for b in [LUA_BIN,'lua5.1','lua51','lua']:
+        try:
+            r = subprocess.run([b,'-v'],capture_output=True,timeout=2)
+            out = (r.stderr+r.stdout).decode(errors='replace')
+            if '5.1' in out: lua_ok = True; active = b; break
+        except: pass
+    return jsonify({'ok':True,'lua':lua_ok,'lua_bin':active})
+
+@app.route('/deobf',methods=['POST'])
+def deobf():
+    data = request.get_json(force=True)
+    source = data.get('source','')
+    if not source.strip(): return jsonify({'error':'no source'}),400
+    result,obf_type,layers,method,diag = deobfuscate(source)
+    return jsonify({
+        'result':result,
+        'layers':layers,
+        'method':method,
+        'detected':obf_type,
+        'diagnostic':diag[:1000] if diag else '',
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0',port=int(os.environ.get('PORT',5000)))

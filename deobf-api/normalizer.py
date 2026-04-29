@@ -296,18 +296,11 @@ def _lift_vm_bytecode(source):
     if not code_match: return None
     code=[int(c.strip()) for c in code_match.group(2).split(',') if c.strip().isdigit()]
     output_lines=[]
-    op_to_name={
-        0:'MOVE',1:'LOADK',2:'LOADBOOL',3:'LOADNIL',5:'GETGLOBAL',7:'SETGLOBAL',
-        8:'GETTABLE',9:'SETTABLE',12:'ADD',13:'SUB',14:'MUL',15:'DIV',
-        18:'UNM',19:'NOT',20:'LEN',22:'JMP',23:'EQ',24:'LT',25:'LE',
-        28:'CALL',30:'RETURN'
-    }
     pc=0
-    regs=[None]*256
     while pc<len(code):
         instr=code[pc]; pc+=1
         op=instr&0x3F; a=(instr>>6)&0xFF; c=(instr>>14)&0x1FF; b=(instr>>23)&0x1FF
-        if op==1: output_lines.append(f'R{a} = {repr(consts[b])}'); regs[a]=consts[b]
+        if op==1: output_lines.append(f'R{a} = {repr(consts[b])}')
         elif op==5: output_lines.append(f'R{a} = _G[{repr(consts[b])}]')
         elif op==12: output_lines.append(f'R{a} = R{b} + R{c}')
         elif op==28:
@@ -317,6 +310,32 @@ def _lift_vm_bytecode(source):
         else: output_lines.append(f'-- op {op}')
     return '\n'.join(output_lines)
 
+def _de_alias(tree):
+    if not isinstance(tree, Block):
+        return tree
+    aliases = {}
+    for stmt in tree.body:
+        if isinstance(stmt, LocalAssign) and len(stmt.targets) == 1 and len(stmt.values) == 1:
+            val = stmt.values[0]
+            target = stmt.targets[0]
+            if isinstance(val, Name) and val.id in ('_G', 'string', 'math', 'table', 'bit', 'coroutine'):
+                aliases[target.id] = val.id
+    if not aliases:
+        return tree
+    def walk(node):
+        if isinstance(node, Name):
+            if node.id in aliases:
+                return Name(aliases[node.id])
+            return node
+        if isinstance(node, Call):
+            if isinstance(node.func, Name) and node.func.id in aliases:
+                base = aliases[node.func.id]
+                if len(node.args) == 1 and node.func.id == 'string':
+                    return BinaryOp(Name(base), '.', node.args[0])
+            return node
+        return node
+    return tree
+
 def normalize_source(source):
     source=strip_luau_syntax(source)
     tree=ast.parse(source)
@@ -324,6 +343,7 @@ def normalize_source(source):
     state.decryptors=_find_decryptors(tree)
     tree=_fold_constants(tree,state)
     tree=_remove_dead(tree)
+    tree=_de_alias(tree)
     state_var,state_blocks=_detect_state_machine(tree)
     if state_var and state_blocks:
         tree=_unflatten_control(tree,state_var,state_blocks)

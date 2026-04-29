@@ -45,6 +45,15 @@ local function _capture(v)
     end
 end
 
+rawget = function(t, k)
+    local v = _rg(t, k)
+    if _ty(v) == "string" and #v > 3 then
+        _capture(v)
+    end
+    return v
+end
+rawset(_G, "rawget", rawget)
+
 local _orig_ls = _ls
 loadstring = function(code, chunkname)
     if _ty(code) == "function" then
@@ -235,7 +244,7 @@ local _safe = {
     tonumber = tonumber,
     type = _ty,
     typeof = _ty,
-    rawget = _rg,
+    rawget = rawget,
     rawset = _rs,
     rawequal = rawequal,
     rawlen = rawlen,
@@ -421,7 +430,7 @@ _rs(_env, "next", _nx)
 _rs(_env, "tostring", _ts)
 _rs(_env, "tonumber", tonumber)
 _rs(_env, "type", _ty)
-_rs(_env, "rawget", _rg)
+_rs(_env, "rawget", rawget)
 _rs(_env, "rawset", _rs)
 _rs(_env, "rawequal", rawequal)
 _rs(_env, "rawlen", rawlen)

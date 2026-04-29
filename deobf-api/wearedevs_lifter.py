@@ -6,12 +6,14 @@ def _decode_wearedevs_strings(source):
     if not table_match:
         return None
     raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(2))
-    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+
+    decoder_match = re.search(r'local\s+(b)\s*=\s*\{([^}]+)\}', source, re.DOTALL)
     if not decoder_match:
         decoder_match = re.search(r'(\w+)\s*=\s*\{([^}]+=\s*-?\d+[^}]+)\}', source, re.DOTALL)
     if not decoder_match:
         return None
-    decoder_body = decoder_match.group(2)
+    decoder_body = decoder_match.group(decoder_match.lastindex)
+
     char_map = {}
     for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
         key = pair.group(1).strip()

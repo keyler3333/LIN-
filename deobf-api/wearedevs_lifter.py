@@ -13,16 +13,11 @@ def _decode_wearedevs_strings(source):
     if decoder_match:
         decoder_body = decoder_match.group(1)
         char_map = {}
-        fragments = [f.strip() for f in decoder_body.split(',') if '=' in f]
-        for frag in fragments:
-            if '=' not in frag:
-                continue
-            key_part, expr_part = frag.split('=', 1)
-            key_part = key_part.strip()
-            expr_part = expr_part.strip()
-            key = key_part.strip('"').strip("'").strip('[').strip(']').strip()
+        for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
+            key = pair.group(1).strip()
+            expr = pair.group(2).replace(' ', '')
             try:
-                val = eval(expr_part)
+                val = eval(expr)
                 char_map[key] = val & 0x3F
             except:
                 continue
@@ -50,7 +45,8 @@ def _decode_wearedevs_strings(source):
                             accum & 0xFF,
                         ])
                         accum, bits, count = 0, 0, 0
-            return bytes(decoded_bytes)
+            if decoded_bytes:
+                return bytes(decoded_bytes)
 
     all_decoded = {}
     for s in encoded_strings:
@@ -62,13 +58,15 @@ def _decode_wearedevs_strings(source):
         except:
             continue
 
+    if not all_decoded:
+        return None
     full_bytecode = bytearray()
     for s in encoded_strings:
         if s in all_decoded:
             full_bytecode.extend(all_decoded[s].encode('latin-1'))
     if full_bytecode:
         return bytes(full_bytecode)
-    return all_decoded if all_decoded else None
+    return all_decoded
 
 def _is_lua_bytecode(data):
     return len(data) >= 12 and data[:4] == b'\x1bLua'
@@ -220,9 +218,18 @@ def lift_wearedevs(source):
     data = _decode_wearedevs_strings(source)
     if data is None:
         return None
-    if isinstance(data, bytes) and _is_lua_bytecode(data):
-        instructions, constants = _read_lua_bytecode(data)
-        return _lift_lua_bytecode(instructions, constants)
     if isinstance(data, bytes):
-        return data.decode('latin-1', errors='replace')
-    return data
+        if _is_lua_bytecode(data):
+            instructions, constants = _read_lua_bytecode(data)
+            lifted = _lift_lua_bytecode(instructions, constants)
+            if lifted.strip():
+                return lifted
+        decoded_text = data.decode('latin-1', errors='replace')
+        if decoded_text.strip():
+            return decoded_text
+    if isinstance(data, dict) and data:
+        lines = ["-- Decoded strings from N table:"]
+        for orig, dec in sorted(data.items(), key=lambda x: len(x[0])):
+            lines.append(f"-- {orig} => {dec}")
+        return "\n".join(lines)
+    return None

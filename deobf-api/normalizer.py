@@ -329,4 +329,4 @@ def normalize_source(source):
         tree=_unflatten_control(tree,state_var,state_blocks)
     lifted=_lift_vm_bytecode(source)
     if lifted: return lifted
-    return tree.to_lua()
+    return ast.to_lua_source(tree)

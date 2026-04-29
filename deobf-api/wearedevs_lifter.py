@@ -2,71 +2,52 @@ import re
 import base64
 import struct
 
-def _decode_wearedevs_strings(source):
-    table_match = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
-    if not table_match:
-        return None
-    raw_table = table_match.group(1)
-    encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
-
-    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
-    if decoder_match:
-        decoder_body = decoder_match.group(1)
-        char_map = {}
-        for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
-            key = pair.group(1).strip()
-            expr = pair.group(2).replace(' ', '')
-            try:
-                val = eval(expr)
-                char_map[key] = val & 0x3F
-            except:
+def _decode_single_string(s, char_map):
+    if char_map:
+        decoded = bytearray()
+        accum, bits, count = 0, 0, 0
+        for ch in s:
+            if ch == '=':
+                if bits >= 6:
+                    accum >>= bits - 6
+                    decoded.append(accum & 0xFF)
+                break
+            val = char_map.get(ch)
+            if val is None:
                 continue
-
-        if char_map:
-            decoded_bytes = bytearray()
-            for s in encoded_strings:
+            accum = (accum << 6) | val
+            bits += 6
+            count += 1
+            if count == 4:
+                decoded.extend([
+                    (accum >> 16) & 0xFF,
+                    (accum >> 8) & 0xFF,
+                    accum & 0xFF,
+                ])
                 accum, bits, count = 0, 0, 0
-                for ch in s:
-                    if ch == '=':
-                        if bits >= 6:
-                            accum >>= bits - 6
-                            decoded_bytes.append(accum & 0xFF)
-                        break
-                    val = char_map.get(ch)
-                    if val is None:
-                        continue
-                    accum = (accum << 6) | val
-                    bits += 6
-                    count += 1
-                    if count == 4:
-                        decoded_bytes.extend([
-                            (accum >> 16) & 0xFF,
-                            (accum >> 8) & 0xFF,
-                            accum & 0xFF,
-                        ])
-                        accum, bits, count = 0, 0, 0
-            if decoded_bytes:
-                return bytes(decoded_bytes)
-
-    all_decoded = {}
-    for s in encoded_strings:
+        return bytes(decoded)
+    else:
         try:
             padded = s + "=" * ((4 - len(s) % 4) % 4)
-            dec = base64.b64decode(padded).decode('latin-1', errors='replace')
-            if len(dec) > 0:
-                all_decoded[s] = dec
+            return base64.b64decode(padded)
+        except:
+            return None
+
+def _build_char_map(source):
+    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+    if not decoder_match:
+        return None
+    decoder_body = decoder_match.group(1)
+    char_map = {}
+    for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
+        key = pair.group(1).strip()
+        expr = pair.group(2).replace(' ', '')
+        try:
+            val = eval(expr)
+            char_map[key] = val & 0x3F
         except:
             continue
-
-    if not all_decoded:
-        return None
-    full_bytecode = bytearray()
-    for s in encoded_strings:
-        if s in all_decoded:
-            full_bytecode.extend(all_decoded[s].encode('latin-1'))
-    if full_bytecode:
-        return bytes(full_bytecode)
-    return all_decoded
+    return char_map if char_map else None
 
 def _is_lua_bytecode(data):
     return len(data) >= 12 and data[:4] == b'\x1bLua'
@@ -215,21 +196,33 @@ def _lift_lua_bytecode(instructions, constants):
     return "\n".join(lines)
 
 def lift_wearedevs(source):
-    data = _decode_wearedevs_strings(source)
-    if data is None:
+    table_match = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
+    if not table_match:
         return None
-    if isinstance(data, bytes):
+    raw_table = table_match.group(1)
+    encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
+
+    char_map = _build_char_map(source)
+
+    decoded_entries = []
+    for s in encoded_strings:
+        data = _decode_single_string(s, char_map)
+        if data:
+            decoded_entries.append(data)
+
+    for data in decoded_entries:
         if _is_lua_bytecode(data):
             instructions, constants = _read_lua_bytecode(data)
             lifted = _lift_lua_bytecode(instructions, constants)
             if lifted.strip():
                 return lifted
-        decoded_text = data.decode('latin-1', errors='replace')
-        if decoded_text.strip():
-            return decoded_text
-    if isinstance(data, dict) and data:
-        lines = ["-- Decoded strings from N table:"]
-        for orig, dec in sorted(data.items(), key=lambda x: len(x[0])):
-            lines.append(f"-- {orig} => {dec}")
-        return "\n".join(lines)
+
+    for data in decoded_entries:
+        try:
+            text = data.decode('utf-8', errors='ignore')
+            if len(text) > 50 and ('function' in text or 'print' in text or 'local' in text):
+                return text
+        except:
+            continue
+
     return None

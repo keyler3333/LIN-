@@ -31,7 +31,8 @@ def run_sandbox(source,timeout=25):
             proc=subprocess.run([LUA_BIN,drv],capture_output=True,text=True,timeout=timeout,cwd=d)
             stdout=proc.stdout.strip()
             stderr=proc.stderr.strip()
-        except subprocess.TimeoutExpired: return [],[],'timeout','',''
+        except subprocess.TimeoutExpired:
+            stdout,stderr='','timeout'
         except Exception as e: return [],[],str(e),'',''
         layers=[]
         i=1
@@ -191,9 +192,6 @@ def deobfuscate(source):
             result=static_decode(result)
             result=beautify(result)
             return result,obf_type,layers,'sandbox',diag2
-        result=static_decode(source)
-        result=beautify(result)
-        return result,obf_type,0,'static','VM devirtualization not yet supported for this variant. Sandbox fallback returned static decode.'
     if method=='roblox_emulator':
         emu_layers,emu_err,emu_stdout,emu_stderr=roblox_emulator.run_emulator(source)
         if emu_layers:

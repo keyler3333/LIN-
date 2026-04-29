@@ -1,46 +1,72 @@
-import re, struct, math
+import re
+import struct
 
 def _decode_wearedevs_strings(source):
-    table_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source)
-    if not table_match:
+    table_lines = []
+    in_table = False
+    depth = 0
+    for line in source.split('\n'):
+        if not in_table:
+            if '=' in line and '{' in line and re.search(r'local\s+\w+', line):
+                in_table = True
+                depth = 1
+                table_lines.append(line)
+                continue
+        else:
+            table_lines.append(line)
+            depth += line.count('{') - line.count('}')
+            if depth == 0:
+                break
+    if not table_lines:
         return None
-    var_name = table_match.group(1)
-    raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(1))
+    table_str = '\n'.join(table_lines)
+    brace_start = table_str.find('{')
+    brace_end = table_str.rfind('}')
+    if brace_start == -1 or brace_end == -1:
+        return None
+    body = table_str[brace_start+1:brace_end]
 
-    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+    string_constants = re.findall(r'"((?:\\.|[^"\\])*)"', body)
+    decoder_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+    if not decoder_match:
+        decoder_match = re.search(r'(\w+)\s*=\s*\{([^}]+=\s*-?\d+[^}]+)\}', source, re.DOTALL)
     if not decoder_match:
         return None
-    decoder_body = decoder_match.group(1)
+    decoder_body = decoder_match.group(2)
     char_map = {}
-    for pair in re.finditer(r'(\[?"?([^"\]]+)"?\]?)\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
-        key = pair.group(2)
-        expr = pair.group(3)
-        val = eval(expr)
-        char_map[key] = val
+    for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
+        key = pair.group(1).strip()
+        expr = pair.group(2).replace(' ', '')
+        try:
+            val = eval(expr)
+            char_map[key] = val & 0x3F
+        except:
+            pass
 
     decoded_bytes = bytearray()
-    for s in raw_strings:
-        accum, bits, count = 0, 0, 0
+    for s in string_constants:
+        accum = 0
+        bits = 0
+        count = 0
         for ch in s:
             if ch == '=':
                 if bits >= 6:
-                    accum >>= bits - 6
+                    accum >>= (bits - 6)
                     decoded_bytes.append(accum & 0xFF)
                 break
             val = char_map.get(ch)
             if val is None:
                 continue
-            accum = (accum << 6) | (val & 0x3F)
+            accum = (accum << 6) | val
             bits += 6
             count += 1
             if count == 4:
                 decoded_bytes.extend([
                     (accum >> 16) & 0xFF,
                     (accum >> 8) & 0xFF,
-                    accum & 0xFF,
+                    accum & 0xFF
                 ])
-                accum, bits, count = 0, 0, 0
-
+                accum = bits = count = 0
     return bytes(decoded_bytes)
 
 def _is_lua_bytecode(data):
@@ -67,7 +93,7 @@ def _read_lua_bytecode(bc):
         size = read_int()
         if size == 0:
             return ""
-        s = bc[pos:pos+size-1].decode('utf-8', errors='replace')
+        s = bc[pos:pos+size-1].decode('latin-1', errors='replace')
         pos += size
         return s
 
@@ -91,7 +117,7 @@ def _read_lua_bytecode(bc):
                 constants.append(read_byte() != 0)
             elif t == 3:
                 size = read_int()
-                num_str = bc[pos:pos+size-1].decode('utf-8')
+                num_str = bc[pos:pos+size-1].decode('latin-1')
                 pos += size
                 if '.' in num_str or 'e' in num_str.lower():
                     constants.append(float(num_str))
@@ -105,7 +131,6 @@ def _read_lua_bytecode(bc):
         proto_count = read_int()
         for _ in range(proto_count):
             read_function()
-        return instructions, constants
 
     read_function()
     return instructions, constants
@@ -113,6 +138,7 @@ def _read_lua_bytecode(bc):
 def _lift_lua_bytecode(instructions, constants):
     lines = []
     regs = [None] * 256
+    upvals = [f"Up{i}" for i in range(256)]
     var_count = 1
 
     def rk(v):
@@ -134,8 +160,8 @@ def _lift_lua_bytecode(instructions, constants):
     for pc, instr in enumerate(instructions):
         op = instr & 0x3F
         a = (instr >> 6) & 0xFF
-        c = (instr >> 14) & 0x1FF
         b = (instr >> 23) & 0x1FF
+        c = (instr >> 14) & 0x1FF
 
         if op == 0:
             regs[a] = rk(b)
@@ -143,26 +169,40 @@ def _lift_lua_bytecode(instructions, constants):
             regs[a] = rk(b + 256)
         elif op == 5:
             regs[a] = f"_G[{repr(constants[b])}]"
+        elif op == 6:
+            regs[a] = upvals[b] if b < len(upvals) else f"Up[{b}]"
         elif op == 7:
             lines.append(f"_G[{repr(constants[b])}] = {rk(a)}")
+        elif op == 8:
+            upvals[b] = rk(a)
+        elif op == 10:
+            regs[a] = f"function_{b}"
         elif op == 12:
             lines.append(f"R{a} = {rk(b)} + {rk(c)}")
         elif op == 13:
             lines.append(f"R{a} = {rk(b)} - {rk(c)}")
         elif op == 14:
             lines.append(f"R{a} = {rk(b)} * {rk(c)}")
+        elif op == 25:
+            lines.append(f"if ({rk(b)} < {rk(c)}) ~= {a} then goto next")
+        elif op == 26:
+            lines.append(f"if ({rk(b)} == {rk(c)}) ~= {a} then goto next")
         elif op == 28:
-            args = ", ".join(rk(a+1+i) for i in range(b-1)) if b > 1 else ""
-            vname = f"var_{var_count}"
-            var_count += 1
+            args = ""
+            if b > 1:
+                args = ", ".join(rk(a+1+i) for i in range(b-1))
             if c == 1:
                 lines.append(f"{rk(a)}({args})")
             elif c == 0:
+                vname = f"var_{var_count}"
+                var_count += 1
                 lines.append(f"local {vname} = {rk(a)}({args})")
                 regs[a] = vname
             else:
-                rets = [f"var_{var_count+i}" for i in range(c-1)]
-                for _ in rets: var_count += 1
+                rets = []
+                for i in range(c-1):
+                    rets.append(f"var_{var_count}")
+                    var_count += 1
                 lines.append(f"local {', '.join(rets)} = {rk(a)}({args})")
                 regs[a] = rets[0]
         elif op == 30:
@@ -172,8 +212,6 @@ def _lift_lua_bytecode(instructions, constants):
             else:
                 lines.append("return")
             break
-        else:
-            lines.append(f"-- op {op}")
 
     return "\n".join(lines)
 

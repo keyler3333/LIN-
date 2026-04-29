@@ -43,7 +43,8 @@ local function _capture(v)
     end
 end
 
-local function _hook_ls(code,name)
+local _orig_ls=loadstring
+loadstring=function(code,chunkname)
     if _ty(code)=="function" then
         local parts={}
         while true do
@@ -54,28 +55,21 @@ local function _hook_ls(code,name)
         end
         code=_tc(parts)
     end
-    if _ty(code)~="string" or #code<5 then return function() end end
-    _capture(code)
-    if not _seen[code] then
-        _seen[code]=true
-        _lyr=_lyr+1
-        _L("LAYER ".._lyr.." ("..#code.." bytes)")
-        local f=io.open(_out.."/layer_".._lyr..".lua","w")
-        if f then f:write(code) f:close() end
+    if _ty(code)=="string" and #code>5 then
+        _capture(code)
+        if not _seen[code] then
+            _seen[code]=true
+            _lyr=_lyr+1
+            _L("LAYER ".._lyr.." ("..#code.." bytes)")
+            local f=io.open(_out.."/layer_".._lyr..".lua","w")
+            if f then f:write(code) f:close() end
+        end
     end
-    local fn,err=_ls(code,name)
-    if not fn then
-        _L("COMPILE_ERR: ".._ts(err))
-        return function() end
-    end
-    setfenv(fn,_env)
-    return fn
+    return _orig_ls(code,chunkname)
 end
-
-loadstring=_hook_ls
-load=_hook_ls
-rawset(_G,"loadstring",_hook_ls)
-rawset(_G,"load",_hook_ls)
+load=loadstring
+rawset(_G,"loadstring",loadstring)
+rawset(_G,"load",loadstring)
 
 string.char=function(...)
     local r=_sc(...)
@@ -146,10 +140,14 @@ local _safe={
     setmetatable=_sm, getmetatable=_gm, unpack=_un,
     pcall=_pc, xpcall=xpcall, error=_er, assert=_as,
     print=function() end, warn=function() end,
-    loadstring=_hook_ls, load=_hook_ls, coroutine=coroutine,
+    loadstring=loadstring, load=loadstring, coroutine=coroutine,
     debug={
-        traceback=function() return "" end,
-        getinfo=function() return {short_src="script.lua",currentline=0,what="Lua"} end,
+        traceback=function() return "script.lua:1: trace" end,
+        getinfo=function(level,what)
+            if level==1 then return {short_src="script.lua",currentline=1,what="Lua",name="main",namewhat="global"} end
+            if level==2 then return {short_src="script.lua",currentline=5,what="Lua",name="decrypt",namewhat="local"} end
+            return nil
+        end,
         sethook=function() end,
         getupvalue=function() return nil end,
         setupvalue=function() end,
@@ -232,8 +230,8 @@ _sm(_env,{
     __newindex=function(_,k,v) _rs(_env,k,v) end,
 })
 
-_rs(_env,"loadstring",_hook_ls)
-_rs(_env,"load",_hook_ls)
+_rs(_env,"loadstring",loadstring)
+_rs(_env,"load",loadstring)
 _rs(_env,"getfenv",function(n) return _env end)
 _rs(_env,"setfenv",function(n,t)
     if _ty(t)=="table" then for k,v in _pa(t) do _rs(_env,k,v) end end
@@ -306,10 +304,8 @@ local function _run()
     local code=f:read("*a")
     f:close()
     _L("Script size: "..#code.." bytes")
-
     code=code:gsub("getfenv%s*%(%)%s*or%s*_ENV","getfenv()")
     code=code:gsub("getfenv%s*%(%)%s*or%s*_G","getfenv()")
-
     local chunk,err=_ls(code)
     if not chunk then
         _L("COMPILE ERROR: ".._ts(err))
@@ -317,15 +313,13 @@ local function _run()
         setfenv(chunk,_env)
         _L("Executing...")
         local ok,res=_pc(chunk)
-        if ok then
-            _L("OK. layers=".._lyr)
+        if ok then _L("OK. layers=".._lyr)
         else
             if _ts(res)~="__INSTRUCTION_LIMIT__" and _ts(res)~="__WAIT_LIMIT__" then
                 _L("RUNTIME ERROR: ".._ts(res))
             end
         end
     end
-
     local sf=io.open(_out.."/cap.txt","w")
     if sf then
         for _,s in _ip(_cap) do
@@ -336,5 +330,4 @@ local function _run()
     local df=io.open(_out.."/diag.txt","w")
     if df then df:write(_tc(_log,"\n")) df:close() end
 end
-
 _run()

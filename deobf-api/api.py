@@ -166,17 +166,6 @@ def simplify_math(source):
     simplified = re.sub(r'\((-?\d+)\s*([\+\-\*\/])\s*(-?\d+)\)', calc, source)
     return simplified
 
-def attempt_string_recovery(source, cap_list):
-    if not cap_list:
-        return None
-    recovered = wearedevs_lifter.decode_constant_table(cap_list)
-    if recovered:
-        commented = source
-        for orig, dec in recovered.items():
-            commented = commented.replace(orig, f'{orig} --[[ "{dec}" ]]')
-        return commented
-    return None
-
 def deobfuscate(source, depth=0):
     if depth > 5:
         return source, 'generic', 0, 'max_depth', 'Max recursion reached'
@@ -188,15 +177,8 @@ def deobfuscate(source, depth=0):
     source = simplify_math(source)
 
     lifted = wearedevs_lifter.lift_wearedevs(source)
-    if lifted:
-        if isinstance(lifted, dict):
-            commented = source
-            for orig, dec in lifted.items():
-                commented = commented.replace(f'"{orig}"', f'"{dec}" --[[ decoded ]]')
-            return lua_beautify(commented), 'generic_vm_strings', 0, 'string_table_decode', 'All strings recovered from N table'
-        else:
-            lifted = static_decode(lifted)
-            return lua_beautify(lifted), 'wearedevs_vm_lift', 0, 'wearedevs_vm_lift', 'VM lifted successfully'
+    if lifted is not None and isinstance(lifted, str):
+        return lua_beautify(lifted), 'wearedevs_vm_lift', 0, 'wearedevs_vm_lift', 'VM bytecode lifted'
 
     obf_type, method = detect_obfuscator(source)
     diag = ''
@@ -207,11 +189,19 @@ def deobfuscate(source, depth=0):
             payload = max(layers, key=len)
             return deobfuscate(payload, depth + 1)
         if cap:
-            commented = attempt_string_recovery(source, cap)
-            if commented:
-                return lua_beautify(commented), obf_type, 0, 'string_recovery', 'Strings recovered from sandbox captures'
+            for c in cap:
+                if c.startswith('\x1bLua'):
+                    try:
+                        lifted2 = wearedevs_lifter.lift_wearedevs(c)
+                        if lifted2 and isinstance(lifted2, str):
+                            return lua_beautify(lifted2), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
+                    except:
+                        pass
+                    return "-- Bytecode found but could not be lifted", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
+                if len(c) > len(source) * 0.5 and "function" in c:
+                    return lua_beautify(c), obf_type, 0, 'captured_string', 'Sandbox extracted plain source'
         if diag:
-            return source, obf_type, 0, 'sandbox_failed', diag2 or diag
+            return "-- Deobfuscation failed: " + diag2[:200], obf_type, 0, 'sandbox_failed', diag2 or diag
 
     if method == 'dynamic':
         emu_layers, emu_err, emu_stdout, emu_stderr = roblox_emulator.run_emulator(source)
@@ -223,9 +213,17 @@ def deobfuscate(source, depth=0):
             payload = max(layers, key=len)
             return deobfuscate(payload, depth + 1)
         if cap:
-            commented = attempt_string_recovery(source, cap)
-            if commented:
-                return lua_beautify(commented), obf_type, 0, 'string_recovery', 'Strings recovered from sandbox captures'
+            for c in cap:
+                if c.startswith('\x1bLua'):
+                    try:
+                        lifted2 = wearedevs_lifter.lift_wearedevs(c)
+                        if lifted2 and isinstance(lifted2, str):
+                            return lua_beautify(lifted2), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
+                    except:
+                        pass
+                    return "-- Bytecode found but could not be lifted", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
+                if len(c) > len(source) * 0.5 and "function" in c:
+                    return lua_beautify(c), obf_type, 0, 'captured_string', 'Sandbox extracted plain source'
 
     result = static_decode(source)
     return lua_beautify(result), obf_type, 0, 'static', diag

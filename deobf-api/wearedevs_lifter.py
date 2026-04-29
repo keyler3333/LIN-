@@ -1,30 +1,86 @@
-import re, struct
+import re, struct, base64, math
 
-def _decode_octal_string(s):
-    result = ""
-    for part in s.split("\\"):
-        if part and part.isdigit():
-            result += chr(int(part))
-    return result
+def _is_base64(s):
+    return re.match(r'^[A-Za-z0-9+/=]+$', s) is not None
 
-def _decode_base85_chunk(chunk):
-    v = 0
-    for i, c in enumerate(chunk):
-        v += (ord(c) - 33) * (85 ** (4 - i))
-    return struct.pack(">I", v)
+def _try_decode_base64(strings):
+    data = b""
+    for s in strings:
+        try:
+            data += base64.b64decode(s)
+        except:
+            continue
+    return data
 
-def _decode_bytecode(raw_strings):
-    encoded = ""
-    for s in raw_strings:
-        encoded += _decode_octal_string(s)
-    encoded = encoded.replace("!!!!!", "z")
-    encoded = re.sub(r'\.\.\.\.\.', '', encoded)
-    decoded = b""
-    for i in range(0, len(encoded), 5):
-        chunk = encoded[i:i+5]
-        if len(chunk) == 5:
-            decoded += _decode_base85_chunk(chunk)
-    return list(decoded)
+def _decode_lua_bytecode(bc):
+    if len(bc) < 12 or bc[:4] != b'\x1bLua':
+        return None
+    pos = 12
+    strings = []
+    numbers = []
+    instructions = []
+    def read_int():
+        nonlocal pos
+        v = struct.unpack_from('<I', bc, pos)[0]
+        pos += 4
+        return v
+    def read_byte():
+        nonlocal pos
+        v = bc[pos]
+        pos += 1
+        return v
+    def read_string():
+        size = read_int()
+        if size == 0:
+            return ""
+        s = bc[pos:pos+size-1].decode('utf-8', errors='replace')
+        pos += size
+        return s
+    def read_number():
+        size = read_int()
+        if size == 0:
+            return 0
+        raw = bc[pos:pos+size-1]
+        pos += size
+        try:
+            num_str = raw.decode('utf-8')
+            if '.' in num_str or 'e' in num_str.lower():
+                return float(num_str)
+            return int(num_str)
+        except:
+            return 0
+    def read_function():
+        read_string()
+        read_int()
+        read_int()
+        read_byte()
+        read_byte()
+        read_byte()
+        read_byte()
+        code_len = read_int()
+        for _ in range(code_len):
+            instructions.append(read_int())
+        const_len = read_int()
+        for _ in range(const_len):
+            t = read_byte()
+            if t == 0:
+                continue
+            elif t == 1:
+                read_byte()
+            elif t == 3:
+                numbers.append(read_number())
+            elif t == 4:
+                s = read_string()
+                if s:
+                    strings.append(s)
+            else:
+                continue
+        proto_count = read_int()
+        for _ in range(proto_count):
+            read_function()
+        return instructions, strings, numbers
+    read_function()
+    return instructions, strings, numbers
 
 def _lift_wearedevs_bytecode(bytecode):
     op_names = {
@@ -117,8 +173,32 @@ def _lift_wearedevs_bytecode(bytecode):
     return "\n".join(lines)
 
 def lift_wearedevs(source):
-    string_table = re.search(r'local Q=\{([^}]+)\}', source)
-    if not string_table: return None
-    raw_strings = re.findall(r'"([^"]*)"', string_table.group(1))
-    bytecode = _decode_bytecode(raw_strings)
-    return _lift_wearedevs_bytecode(bytecode)
+    table_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source)
+    if not table_match:
+        return None
+    var_name = table_match.group(1)
+    raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(1))
+    if not raw_strings:
+        return None
+    if _is_base64(raw_strings[0]):
+        data = _try_decode_base64(raw_strings)
+        if len(data) > 12 and data[:4] == b'\x1bLua':
+            bytecode = list(data)
+        else:
+            bytecode = None
+    else:
+        from . import _decode_octal_string
+        encoded = ""
+        for s in raw_strings:
+            encoded += _decode_octal_string(s)
+        encoded = encoded.replace("!!!!!", "z")
+        encoded = re.sub(r'\.\.\.\.\.', '', encoded)
+        decoded = b""
+        for i in range(0, len(encoded), 5):
+            chunk = encoded[i:i+5]
+            if len(chunk) == 5:
+                decoded += struct.pack(">I", (sum((ord(c)-33)*(85**(4-j)) for j,c in enumerate(chunk))))
+        bytecode = list(decoded)
+    if bytecode:
+        return _lift_wearedevs_bytecode(bytecode)
+    return None

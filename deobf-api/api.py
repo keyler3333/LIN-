@@ -167,12 +167,7 @@ def simplify_math(source):
     return simplified
 
 def attempt_string_recovery(source, cap_list):
-    collected = []
-    for c in cap_list:
-        if c.startswith('\x1bLua'):
-            continue
-        collected.append(c)
-    if not collected:
+    if not cap_list:
         return None
     recovered = wearedevs_lifter.decode_constant_table(cap_list)
     if recovered:
@@ -192,23 +187,19 @@ def deobfuscate(source, depth=0):
         pass
     source = simplify_math(source)
 
+    lifted = wearedevs_lifter.lift_wearedevs(source)
+    if lifted:
+        if isinstance(lifted, dict):
+            commented = source
+            for orig, dec in lifted.items():
+                commented = commented.replace(f'"{orig}"', f'"{dec}" --[[ decoded ]]')
+            return lua_beautify(commented), 'generic_vm_strings', 0, 'string_table_decode', 'All strings recovered from N table'
+        else:
+            lifted = static_decode(lifted)
+            return lua_beautify(lifted), 'wearedevs_vm_lift', 0, 'wearedevs_vm_lift', 'VM lifted successfully'
+
     obf_type, method = detect_obfuscator(source)
     diag = ''
-
-    if obf_type == 'wearedevs':
-        try:
-            lifted = wearedevs_lifter.lift_wearedevs(source)
-            if lifted:
-                if isinstance(lifted, dict):
-                    commented = source
-                    for orig, dec in lifted.items():
-                        commented = commented.replace(f'"{orig}"', f'"{dec}" --[[ decoded ]]')
-                    return lua_beautify(commented), obf_type, 0, 'wearedevs_strings', 'Strings recovered from N table'
-                else:
-                    lifted = static_decode(lifted)
-                    return lua_beautify(lifted), obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
-        except Exception as e:
-            diag = f'WeAreDevs lifter error: {e}'
 
     if method == 'sandbox_peel' or method == 'normalize' or obf_type == 'wearedevs':
         layers, cap, diag2, _, _ = run_sandbox(source)

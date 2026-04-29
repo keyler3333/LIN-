@@ -24,12 +24,72 @@ def _extract_cipher_mapping(source):
             return mapping_dict
     return None
 
+def _extract_shuffle_pairs(source):
+    pattern = r'for\s+\w+\s*,\s*\w+\s+in\s+ipairs\s*\(\s*\{([^}]+)\}\s*\)'
+    match = re.search(pattern, source, re.DOTALL)
+    if not match:
+        return []
+    body = match.group(1)
+    pairs = []
+    for pair_match in re.finditer(r'\{([^}]+)\}', body):
+        nums = re.findall(r'(-?\d+(?:\s*[+\-]\s*-?\d+)*)', pair_match.group(1))
+        if len(nums) >= 2:
+            try:
+                a = eval(nums[0].replace(' ', ''))
+                b = eval(nums[1].replace(' ', ''))
+                pairs.append([a, b])
+            except:
+                continue
+    return pairs
+
+def _apply_unshuffle(strings, pairs):
+    result = list(strings)
+    for a, b in pairs:
+        a_idx = a - 1
+        b_idx = b - 1
+        if a_idx < 0 or b_idx >= len(result):
+            continue
+        while a_idx < b_idx:
+            result[a_idx], result[b_idx] = result[b_idx], result[a_idx]
+            a_idx += 1
+            b_idx -= 1
+    return result
+
+def _decode_string_with_map(s, cipher_map):
+    byte_buffer = bytearray()
+    accumulator = 0
+    count = 0
+    for ch in s:
+        if ch == '=':
+            if count == 3:
+                byte_buffer.append((accumulator >> 16) & 0xFF)
+                byte_buffer.append((accumulator >> 8) & 0xFF)
+            elif count == 2:
+                byte_buffer.append((accumulator >> 16) & 0xFF)
+            break
+        val = cipher_map.get(ch)
+        if val is None:
+            continue
+        accumulator = (accumulator << 6) | val
+        count += 1
+        if count == 4:
+            byte_buffer.extend([
+                (accumulator >> 16) & 0xFF,
+                (accumulator >> 8) & 0xFF,
+                accumulator & 0xFF,
+            ])
+            accumulator = 0
+            count = 0
+    return bytes(byte_buffer) if byte_buffer else None
+
 def _decode_wearedevs_strings(source):
     cipher_map = _extract_cipher_mapping(source)
     if cipher_map is None:
         return None
 
-    table_match = re.search(r'local\s+\w+\s*=\s*\{(.*?)\}', source, re.DOTALL)
+    table_match = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
+    if not table_match:
+        table_match = re.search(r'local\s+\w+\s*=\s*\{("[^"]*".*?)\}', source, re.DOTALL)
     if not table_match:
         return None
     raw_table = table_match.group(1)
@@ -37,42 +97,19 @@ def _decode_wearedevs_strings(source):
     if not encoded_strings:
         return None
 
-    decoded_chunks = []
-    for s in encoded_strings:
-        byte_buffer = bytearray()
-        accumulator = 0
-        bits = 0
-        count = 0
-        for ch in s:
-            if ch == '=':
-                if count == 3:
-                    byte_buffer.append((accumulator >> 16) & 0xFF)
-                    byte_buffer.append((accumulator >> 8) & 0xFF)
-                elif count == 2:
-                    byte_buffer.append((accumulator >> 16) & 0xFF)
-                break
-            val = cipher_map.get(ch)
-            if val is None:
-                continue
-            accumulator = (accumulator << 6) | val
-            bits += 6
-            count += 1
-            if count == 4:
-                byte_buffer.extend([
-                    (accumulator >> 16) & 0xFF,
-                    (accumulator >> 8) & 0xFF,
-                    accumulator & 0xFF,
-                ])
-                accumulator = 0
-                bits = 0
-                count = 0
-        if byte_buffer:
-            decoded_chunks.append(bytes(byte_buffer))
+    shuffle_pairs = _extract_shuffle_pairs(source)
+    if shuffle_pairs:
+        encoded_strings = _apply_unshuffle(encoded_strings, shuffle_pairs)
 
     full_data = bytearray()
-    for chunk in decoded_chunks:
-        full_data.extend(chunk)
-    return bytes(full_data)
+    for s in encoded_strings:
+        decoded = _decode_string_with_map(s, cipher_map)
+        if decoded:
+            full_data.extend(decoded)
+
+    if full_data:
+        return bytes(full_data)
+    return None
 
 def _is_lua_bytecode(data):
     return len(data) >= 12 and data[:4] == b'\x1bLua'
@@ -220,13 +257,23 @@ def _lift_lua_bytecode(instructions, constants):
 
     return "\n".join(lines)
 
-def lift_wearedevs(source):
-    data = _decode_wearedevs_strings(source)
-    if data is None:
-        return None
-    if isinstance(data, bytes) and _is_lua_bytecode(data):
+def try_lift_bytes(data):
+    if _is_lua_bytecode(data):
         instructions, constants = _read_lua_bytecode(data)
         lifted = _lift_lua_bytecode(instructions, constants)
         if lifted.strip():
             return lifted
+    return None
+
+def lift_wearedevs(source):
+    data = _decode_wearedevs_strings(source)
+    if data is None:
+        return None
+    if isinstance(data, bytes):
+        lifted = try_lift_bytes(data)
+        if lifted:
+            return lifted
+        text = data.decode('latin-1', errors='replace')
+        if len(text) > 50 and ('function' in text or 'local' in text):
+            return text
     return None

@@ -1,58 +1,68 @@
 import re
+import base64
 import struct
 
 def _decode_wearedevs_strings(source):
-    table_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source)
+    table_match = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
     if not table_match:
         return None
-    try:
-        table_body = table_match.group(2)
-    except IndexError:
-        return None
-    raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_body)
+    raw_table = table_match.group(1)
+    encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
 
     decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
     if not decoder_match:
         decoder_match = re.search(r'(\w+)\s*=\s*\{([^}]+=\s*-?\d+[^}]+)\}', source, re.DOTALL)
-    if not decoder_match:
-        return None
-    decoder_body = decoder_match.group(decoder_match.lastindex)
+    if decoder_match:
+        decoder_body = decoder_match.group(decoder_match.lastindex)
+        char_map = {}
+        for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
+            key = pair.group(1).strip()
+            expr = pair.group(2).replace(' ', '')
+            try:
+                val = eval(expr)
+                char_map[key] = val & 0x3F
+            except:
+                pass
 
-    char_map = {}
-    for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
-        key = pair.group(1).strip()
-        expr = pair.group(2).replace(' ', '')
-        try:
-            val = eval(expr)
-            char_map[key] = val & 0x3F
-        except:
-            pass
+        decoded_bytes = bytearray()
+        for s in encoded_strings:
+            accum, bits, count = 0, 0, 0
+            for ch in s:
+                if ch == '=':
+                    if bits >= 6:
+                        accum >>= bits - 6
+                        decoded_bytes.append(accum & 0xFF)
+                    break
+                val = char_map.get(ch)
+                if val is None:
+                    continue
+                accum = (accum << 6) | val
+                bits += 6
+                count += 1
+                if count == 4:
+                    decoded_bytes.extend([
+                        (accum >> 16) & 0xFF,
+                        (accum >> 8) & 0xFF,
+                        accum & 0xFF,
+                    ])
+                    accum, bits, count = 0, 0, 0
+        return bytes(decoded_bytes)
 
-    decoded_bytes = bytearray()
-    for s in raw_strings:
-        accum, bits, count = 0, 0, 0
-        for ch in s:
-            if ch == '=':
-                if bits >= 6:
-                    accum >>= bits - 6
-                    decoded_bytes.append(accum & 0xFF)
-                break
-            val = char_map.get(ch)
-            if val is None:
+    else:
+        all_decoded = {}
+        for s in encoded_strings:
+            try:
+                padded = s + "=" * ((4 - len(s) % 4) % 4)
+                dec = base64.b64decode(padded).decode('latin-1', errors='replace')
+                if len(dec) > 0:
+                    all_decoded[s] = dec
+            except:
                 continue
-            accum = (accum << 6) | val
-            bits += 6
-            count += 1
-            if count == 4:
-                decoded_bytes.extend([
-                    (accum >> 16) & 0xFF,
-                    (accum >> 8) & 0xFF,
-                    accum & 0xFF,
-                ])
-                accum, bits, count = 0, 0, 0
-    return bytes(decoded_bytes)
+        return all_decoded
 
 def _is_lua_bytecode(data):
+    if isinstance(data, dict):
+        return False
     return len(data) >= 12 and data[:4] == b'\x1bLua'
 
 def _read_lua_bytecode(bc):
@@ -200,7 +210,11 @@ def _lift_lua_bytecode(instructions, constants):
 
 def lift_wearedevs(source):
     data = _decode_wearedevs_strings(source)
-    if data is None or not _is_lua_bytecode(data):
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        return data
+    if not _is_lua_bytecode(data):
         return None
     instructions, constants = _read_lua_bytecode(data)
     return _lift_lua_bytecode(instructions, constants)

@@ -76,7 +76,7 @@ def detect_obfuscator(text):
         if s: scores[name] = s
     if not scores: return 'generic','normalize'
     best = max(scores,key=lambda k:scores[k])
-    if best in ('luraph','ironbrew2','generic_vm'): return best,'ast_vm_lift'
+    if best in ('luraph','ironbrew2','generic_vm'): return best,'dynamic'
     return best,'normalize'
 
 def static_decode(code):
@@ -103,93 +103,47 @@ def beautify(code):
         if re.match(indent_pat,line) and not (line.endswith('end') or line.endswith('}')): indent += 1
     return '\n'.join(out)
 
-def lupa_sandbox(source,timeout=15):
-    captured = []
-    try:
-        import lupa
-        lua = lupa.LuaRuntime(unpack_returned_tuples=True)
-        for name in ['io','os','require','dofile','loadfile','package','collectgarbage','newproxy','module']:
-            try: lua.execute(f"{name}=nil")
-            except: pass
-        lua.execute("game=setmetatable({},{__index=function()return function()end end});workspace=game;script={}")
-        lua.execute("Players={LocalPlayer={Name='Player',UserId=1}}")
-        lua.execute("RunService={Heartbeat={Connect=function()end}}")
-        lua.execute("tick=function()return 0 end;time=function()return 0 end;wait=function(n)return n or 0 end")
-        lua.execute("spawn=function(f)if type(f)=='function'then pcall(f)end end")
-        lua.execute("print=function()end;warn=function()end")
-        lua.execute("if not bit then bit={bxor=function(a,b)local r,p=0,1 while a>0 or b>0 do if a%2~=b%2 then r=r+p end a=math.floor(a/2)b=math.floor(b/2)p=p*2 end return r end,band=function(a,b)local r,p=0,1 while a>0 and b>0 do if a%2==1 and b%2==1 then r=r+p end a=math.floor(a/2)b=math.floor(b/2)p=p*2 end return r end,bor=function(a,b)local r,p=0,1 while a>0 or b>0 do if a%2==1 or b%2==1 then r=r+p end a=math.floor(a/2)b=math.floor(b/2)p=p*2 end return r end,bnot=function(a)return -a-1 end,rshift=function(a,b)return math.floor(a/(2^b))end,lshift=function(a,b)return math.floor(a*(2^b))end,bit32=bit}end")
-        lua.execute("table.pack=table.pack or function(...)return{n=select('#',...),...}end;table.unpack=table.unpack or unpack")
-        def safe_ls(code,*args):
-            if callable(code):
-                chunks = []
-                try:
-                    while True:
-                        c = code()
-                        if not c:break
-                        chunks.append(str(c))
-                except: pass
-                code = ''.join(chunks)
-            s = str(code) if code else ''
-            if len(s.strip())>5: captured.append(s)
-            return lua.eval("function(...)end")
-        lua.globals()['loadstring'] = safe_ls
-        lua.globals()['load'] = safe_ls
-        try: lua.execute(source)
-        except: pass
-        return captured
-    except ImportError: return []
-
-def deobfuscate(source):
-    obf_type,method = detect_obfuscator(source)
+def deobfuscate(source, depth=0):
+    if depth > 5:
+        return source, 'generic', 0, 'max_depth', 'Max recursion reached'
+    obf_type, method = detect_obfuscator(source)
     diag = ''
+
     if obf_type == 'wearedevs':
         try:
             lifted = wearedevs_lifter.lift_wearedevs(source)
             if lifted:
                 lifted = static_decode(lifted)
                 lifted = beautify(lifted)
-                return lifted,obf_type,0,'wearedevs_vm_lift','WeAreDevs VM lifted with register inlining'
+                return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
         except Exception as e: diag = f'WeAreDevs lifter error: {e}'
+
+    if method == 'dynamic':
+        emu_layers, emu_err, emu_stdout, emu_stderr = roblox_emulator.run_emulator(source)
+        if emu_layers:
+            payload = max(emu_layers, key=len)
+            return deobfuscate(payload, depth+1)
+        layers, cap, diag2, stdout, stderr = run_sandbox(source)
+        if layers:
+            payload = max(layers, key=len)
+            return deobfuscate(payload, depth+1)
+
     if method == 'normalize':
         try:
             result = normalize_source(source)
             if result:
+                layers, cap, diag2, stdout, stderr = run_sandbox(result)
+                if layers:
+                    payload = max(layers, key=len)
+                    return deobfuscate(payload, depth+1)
                 result = static_decode(result)
                 result = beautify(result)
-                return result,obf_type,0,'ast_normalize','AST normalization + de-aliasing applied'
+                return result, obf_type, 0, 'ast_normalize', 'AST normalization applied'
         except Exception as e: diag = f'AST normalizer error: {e}'
-    if method == 'ast_vm_lift':
-        result,layers,previews,diag2 = run_sandbox(source)
-        if layers>0:
-            result = static_decode(result)
-            result = beautify(result)
-            return result,obf_type,layers,'sandbox',diag2
-    if method == 'roblox_emulator':
-        emu_layers,emu_err,emu_stdout,emu_stderr = roblox_emulator.run_emulator(source)
-        if emu_layers:
-            result = max(emu_layers,key=len)
-            result = static_decode(result)
-            result = beautify(result)
-            return result,obf_type,1,'roblox_emulator','Emulator captured payload'
-        diag = f'Emulator failed: {emu_err}\n{emu_stdout}\n{emu_stderr}'
-    result,layers,previews,diag2 = run_sandbox(source)
-    diag = diag or diag2
-    if layers>0:
-        result = static_decode(result)
-        result = beautify(result)
-        return result,obf_type,layers,'sandbox',diag
-    captured = lupa_sandbox(source)
-    if captured:
-        best = max(captured,key=len)
-        if len(best.strip())>20 and best!=source:
-            best = static_decode(best)
-            best = beautify(best)
-            return best,obf_type,1,'lupa_sandbox','lupa captured payload'
+
     result = static_decode(source)
     result = beautify(result)
-    if obf_type in ('ironbrew2','luraph'):
-        diag += ' This obfuscator requires specialized per-version deobfuscation for full reversal.'
-    return result,obf_type,0,'static',diag
+    return result, obf_type, 0, 'static', diag
 
 @app.route('/health')
 def health():

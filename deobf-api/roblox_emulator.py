@@ -42,7 +42,7 @@ _run(code)
             stdout = proc.stdout.strip()
             stderr = proc.stderr.strip()
         except subprocess.TimeoutExpired:
-            return [], 'timeout', '', ''
+            stdout, stderr = '', 'timeout'
         except FileNotFoundError:
             return [], 'lune_not_installed', '', ''
         except Exception as e:

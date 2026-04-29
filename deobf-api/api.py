@@ -56,6 +56,7 @@ def run_sandbox(source,timeout=25):
 
 import roblox_emulator
 from normalizer import normalize_source
+import wearedevs_lifter
 
 def detect_obfuscator(text):
     patterns={
@@ -138,6 +139,14 @@ def lupa_sandbox(source,timeout=15):
 def deobfuscate(source):
     obf_type,method=detect_obfuscator(source)
     diag=''
+    if obf_type=='wearedevs':
+        try:
+            lifted=wearedevs_lifter.lift_wearedevs(source)
+            if lifted:
+                lifted=static_decode(lifted)
+                lifted=beautify(lifted)
+                return lifted,obf_type,0,'wearedevs_vm_lift','WeAreDevs VM bytecode lifted'
+        except Exception as e: diag=f'WeAreDevs lifter error: {e}'
     if method=='normalize':
         try:
             result=normalize_source(source)

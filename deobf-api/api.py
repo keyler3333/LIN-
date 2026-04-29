@@ -53,6 +53,12 @@ def run_sandbox(source, timeout=25):
             with open(p,encoding='utf-8',errors='replace') as f:
                 layers.append(f.read())
             i += 1
+        dump_path = os.path.join(d, 'dump.bin')
+        if os.path.exists(dump_path):
+            with open(dump_path, 'rb') as f:
+                bc_data = f.read()
+            if bc_data.startswith(b'\x1bLua'):
+                layers.append(bc_data)
         cap = []
         cp = os.path.join(d,'cap.txt')
         if os.path.exists(cp):
@@ -186,15 +192,24 @@ def deobfuscate(source, depth=0):
     if method == 'sandbox_peel' or method == 'normalize' or obf_type == 'wearedevs':
         layers, cap, diag2, _, _ = run_sandbox(source)
         if layers:
+            for item in layers:
+                if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
+                    try:
+                        lifted2 = wearedevs_lifter.lift_wearedevs(item)
+                        if lifted2 and isinstance(lifted2, str):
+                            return lua_beautify(lifted2), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
+                    except:
+                        pass
+                    return "-- Bytecode found but could not be lifted", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
             payload = max(layers, key=len)
             return deobfuscate(payload, depth + 1)
         if cap:
             for c in cap:
                 if c.startswith('\x1bLua'):
                     try:
-                        lifted2 = wearedevs_lifter.lift_wearedevs(c)
-                        if lifted2 and isinstance(lifted2, str):
-                            return lua_beautify(lifted2), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
+                        lifted3 = wearedevs_lifter.lift_wearedevs(c)
+                        if lifted3 and isinstance(lifted3, str):
+                            return lua_beautify(lifted3), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
                     except:
                         pass
                     return "-- Bytecode found but could not be lifted", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
@@ -210,15 +225,24 @@ def deobfuscate(source, depth=0):
             return deobfuscate(payload, depth + 1)
         layers, cap, diag2, _, _ = run_sandbox(source)
         if layers:
+            for item in layers:
+                if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
+                    try:
+                        lifted2 = wearedevs_lifter.lift_wearedevs(item)
+                        if lifted2 and isinstance(lifted2, str):
+                            return lua_beautify(lifted2), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
+                    except:
+                        pass
+                    return "-- Bytecode found but could not be lifted", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
             payload = max(layers, key=len)
             return deobfuscate(payload, depth + 1)
         if cap:
             for c in cap:
                 if c.startswith('\x1bLua'):
                     try:
-                        lifted2 = wearedevs_lifter.lift_wearedevs(c)
-                        if lifted2 and isinstance(lifted2, str):
-                            return lua_beautify(lifted2), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
+                        lifted3 = wearedevs_lifter.lift_wearedevs(c)
+                        if lifted3 and isinstance(lifted3, str):
+                            return lua_beautify(lifted3), obf_type, 0, 'captured_lift', 'Bytecode lifted from sandbox'
                     except:
                         pass
                     return "-- Bytecode found but could not be lifted", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'

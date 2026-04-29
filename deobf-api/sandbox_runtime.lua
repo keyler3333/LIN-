@@ -229,6 +229,19 @@ local function _dummy(name)
     return d
 end
 
+local _newproxy_userdata = {}
+local function _newproxy(addMeta)
+    local u = {}
+    if addMeta then
+        _sm(u, {
+            __index = function(_, k) return _dummy("userdata." .. _ts(k)) end,
+            __newindex = function(_, k, v) _rs(u, k, v) end,
+            __gc = function() end,
+        })
+    end
+    return u
+end
+
 _env = {}
 local _safe = {
     string = string,
@@ -260,6 +273,7 @@ local _safe = {
     loadstring = loadstring,
     load = loadstring,
     coroutine = coroutine,
+    newproxy = _newproxy,
     debug = {
         traceback = function() return "" end,
         getinfo = function()
@@ -443,6 +457,7 @@ _rs(_env, "error", _er)
 _rs(_env, "assert", _as)
 _rs(_env, "print", function() end)
 _rs(_env, "warn", function() end)
+_rs(_env, "newproxy", _newproxy)
 _rs(_env, "coroutine", coroutine)
 _rs(_env, "debug", _safe.debug)
 _rs(_env, "os", _safe.os)

@@ -90,6 +90,10 @@ def detect_obfuscator(text):
             r'getfenv\s*\(\s*\)\s*\[',
             r'IronBrew'
         ],
+        'moonsec_vm': [
+            r'if\s+\w+\s*<\s*\d+\s*[+\-]\s*\(?-\d+\)?\s*then',
+            r'while\s+\w+\s+do\s*\n\s*if\s+\w+\s*<'
+        ],
         'moonsec': [
             r'local\s+\w+\s*=\s*\{[\d\s,]{20,}\}',
             r'_moon\s*=\s*function',
@@ -113,7 +117,7 @@ def detect_obfuscator(text):
     if not scores:
         return 'generic', 'sandbox_peel'
     best = max(scores, key=lambda k: scores[k])
-    if best in ('luraph', 'ironbrew2', 'generic_vm'):
+    if best in ('luraph', 'ironbrew2', 'generic_vm', 'moonsec_vm'):
         return best, 'dynamic'
     return best, 'sandbox_peel'
 
@@ -162,6 +166,22 @@ def simplify_math(source):
     simplified = re.sub(r'\((-?\d+)\s*([\+\-\*\/])\s*(-?\d+)\)', calc, source)
     return simplified
 
+def attempt_string_recovery(source, cap_list):
+    collected = []
+    for c in cap_list:
+        if c.startswith('\x1bLua'):
+            continue
+        collected.append(c)
+    if not collected:
+        return None
+    recovered = wearedevs_lifter.decode_constant_table(cap_list)
+    if recovered:
+        commented = source
+        for orig, dec in recovered.items():
+            commented = commented.replace(orig, f'{orig} --[[ "{dec}" ]]')
+        return commented
+    return None
+
 def deobfuscate(source, depth=0):
     if depth > 5:
         return source, 'generic', 0, 'max_depth', 'Max recursion reached'
@@ -196,17 +216,9 @@ def deobfuscate(source, depth=0):
             payload = max(layers, key=len)
             return deobfuscate(payload, depth + 1)
         if cap:
-            for c in cap:
-                if c.startswith('\x1bLua'):
-                    try:
-                        lifted = wearedevs_lifter.lift_wearedevs(c)
-                        if lifted:
-                            return lua_beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
-                    except:
-                        pass
-                    return "-- [Bytecode Detected]\n-- The bot found internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
-                if len(c) > len(source) * 0.5 and "function" in c:
-                    return lua_beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
+            commented = attempt_string_recovery(source, cap)
+            if commented:
+                return lua_beautify(commented), obf_type, 0, 'string_recovery', 'Strings recovered from sandbox captures'
         if diag:
             return source, obf_type, 0, 'sandbox_failed', diag2 or diag
 
@@ -220,17 +232,9 @@ def deobfuscate(source, depth=0):
             payload = max(layers, key=len)
             return deobfuscate(payload, depth + 1)
         if cap:
-            for c in cap:
-                if c.startswith('\x1bLua'):
-                    try:
-                        lifted = wearedevs_lifter.lift_wearedevs(c)
-                        if lifted:
-                            return lua_beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
-                    except:
-                        pass
-                    return "-- [Bytecode Detected]\n-- The bot found internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
-                if len(c) > len(source) * 0.5 and "function" in c:
-                    return lua_beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
+            commented = attempt_string_recovery(source, cap)
+            if commented:
+                return lua_beautify(commented), obf_type, 0, 'string_recovery', 'Strings recovered from sandbox captures'
 
     result = static_decode(source)
     return lua_beautify(result), obf_type, 0, 'static', diag

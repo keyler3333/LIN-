@@ -44,7 +44,7 @@ def _extract_shuffle_pairs(source):
 
 def _apply_unshuffle(strings, pairs):
     result = list(strings)
-    for a, b in pairs:
+    for a, b in reversed(pairs):
         a_idx = a - 1
         b_idx = b - 1
         if a_idx < 0 or b_idx >= len(result):
@@ -101,18 +101,16 @@ def _decode_wearedevs_strings(source):
     if shuffle_pairs:
         encoded_strings = _apply_unshuffle(encoded_strings, shuffle_pairs)
 
-    full_data = bytearray()
+    decoded_chunks = []
     for s in encoded_strings:
         decoded = _decode_string_with_map(s, cipher_map)
         if decoded:
-            full_data.extend(decoded)
+            decoded_chunks.append(decoded)
 
-    if full_data:
-        return bytes(full_data)
-    return None
+    return decoded_chunks
 
 def _is_lua_bytecode(data):
-    return len(data) >= 12 and data[:4] == b'\x1bLua'
+    return isinstance(data, (bytes, bytearray)) and len(data) >= 12 and data[:4] == b'\x1bLua'
 
 def _read_lua_bytecode(bc):
     pos = 12
@@ -266,14 +264,30 @@ def try_lift_bytes(data):
     return None
 
 def lift_wearedevs(source):
-    data = _decode_wearedevs_strings(source)
-    if data is None:
+    decoded_chunks = _decode_wearedevs_strings(source)
+    if not decoded_chunks:
         return None
-    if isinstance(data, bytes):
-        lifted = try_lift_bytes(data)
+
+    for chunk in decoded_chunks:
+        if _is_lua_bytecode(chunk):
+            lifted = try_lift_bytes(chunk)
+            if lifted:
+                return lifted
+
+    full = bytearray()
+    for chunk in decoded_chunks:
+        full.extend(chunk)
+    if _is_lua_bytecode(full):
+        lifted = try_lift_bytes(full)
         if lifted:
             return lifted
-        text = data.decode('latin-1', errors='replace')
-        if len(text) > 50 and ('function' in text or 'local' in text):
-            return text
+
+    for chunk in decoded_chunks:
+        try:
+            text = chunk.decode('latin-1', errors='replace')
+            if len(text) > 50 and ('function' in text or 'local' in text):
+                return text
+        except:
+            continue
+
     return None

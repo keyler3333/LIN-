@@ -129,7 +129,7 @@ def static_decode(code):
     code = re.sub(r'string\.char\s*\(\s*([\d,\s]+)\s*\)', sc, code)
     return code
 
-def beautify(code):
+def simple_beautify(code):
     out, indent = [], 0
     dedent_pat = r'^(end\b|else\b|elseif\b|until\b|\})'
     indent_pat = r'^(if\b|for\b|while\b|repeat\b|do\b|else\b|elseif\b|local\s+function\b|function\b)'
@@ -144,6 +144,14 @@ def beautify(code):
         if re.match(indent_pat, line) and not (line.endswith('end') or line.endswith('}')):
             indent += 1
     return '\n'.join(out)
+
+def lua_beautify(code):
+    try:
+        from luaparser import ast
+        tree = ast.parse(code)
+        return ast.to_lua_source(tree)
+    except Exception:
+        return simple_beautify(code)
 
 def simplify_math(source):
     def calc(match):
@@ -175,11 +183,10 @@ def deobfuscate(source, depth=0):
                     commented = source
                     for orig, dec in lifted.items():
                         commented = commented.replace(f'"{orig}"', f'"{dec}" --[[ decoded ]]')
-                    return beautify(commented), obf_type, 0, 'wearedevs_strings', 'Strings recovered from N table'
+                    return lua_beautify(commented), obf_type, 0, 'wearedevs_strings', 'Strings recovered from N table'
                 else:
                     lifted = static_decode(lifted)
-                    lifted = beautify(lifted)
-                    return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
+                    return lua_beautify(lifted), obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
         except Exception as e:
             diag = f'WeAreDevs lifter error: {e}'
 
@@ -194,12 +201,12 @@ def deobfuscate(source, depth=0):
                     try:
                         lifted = wearedevs_lifter.lift_wearedevs(c)
                         if lifted:
-                            return beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
+                            return lua_beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
                     except:
                         pass
                     return "-- [Bytecode Detected]\n-- The bot found internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
                 if len(c) > len(source) * 0.5 and "function" in c:
-                    return beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
+                    return lua_beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
         if diag:
             return source, obf_type, 0, 'sandbox_failed', diag2 or diag
 
@@ -218,16 +225,15 @@ def deobfuscate(source, depth=0):
                     try:
                         lifted = wearedevs_lifter.lift_wearedevs(c)
                         if lifted:
-                            return beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
+                            return lua_beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
                     except:
                         pass
                     return "-- [Bytecode Detected]\n-- The bot found internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
                 if len(c) > len(source) * 0.5 and "function" in c:
-                    return beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
+                    return lua_beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
 
     result = static_decode(source)
-    result = beautify(result)
-    return result, obf_type, 0, 'static', diag
+    return lua_beautify(result), obf_type, 0, 'static', diag
 
 @app.route('/health')
 def health():

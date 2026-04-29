@@ -1,4 +1,17 @@
-import re, struct, base64, math
+import re, struct, base64
+
+def _decode_octal_string(s):
+    result = ""
+    for part in s.split("\\"):
+        if part and part.isdigit():
+            result += chr(int(part))
+    return result
+
+def _decode_base85_chunk(chunk):
+    v = 0
+    for i, c in enumerate(chunk):
+        v += (ord(c) - 33) * (85 ** (4 - i))
+    return struct.pack(">I", v)
 
 def _is_base64(s):
     return re.match(r'^[A-Za-z0-9+/=]+$', s) is not None
@@ -187,7 +200,6 @@ def lift_wearedevs(source):
         else:
             bytecode = None
     else:
-        from . import _decode_octal_string
         encoded = ""
         for s in raw_strings:
             encoded += _decode_octal_string(s)
@@ -197,7 +209,7 @@ def lift_wearedevs(source):
         for i in range(0, len(encoded), 5):
             chunk = encoded[i:i+5]
             if len(chunk) == 5:
-                decoded += struct.pack(">I", (sum((ord(c)-33)*(85**(4-j)) for j,c in enumerate(chunk))))
+                decoded += _decode_base85_chunk(chunk)
         bytecode = list(decoded)
     if bytecode:
         return _lift_wearedevs_bytecode(bytecode)

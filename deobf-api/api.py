@@ -86,7 +86,6 @@ def detect_obfuscator(text):
             r'https?://wearedevs\.net',
             r'v1\.\d+\.\d+.*wearedevs',
             r'local\s+\w+\s*=\s*\{[^}]{500,}\}',
-            r'return\s*\(function\s*\(\.\.\.\)',
         ],
         'prometheus':[r'Prometheus',r'number_to_bytes'],
         'hercules':  [r'Hercules',r'Str\s*=\s*string\.sub'],

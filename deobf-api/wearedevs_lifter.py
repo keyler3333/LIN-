@@ -5,9 +5,10 @@ def _decode_wearedevs_strings(source):
     table_match = re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}', source)
     if not table_match:
         return None
-    raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(2))
+    table_body = table_match.group(2)
+    raw_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_body)
 
-    decoder_match = re.search(r'local\s+(b)\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+    decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
     if not decoder_match:
         decoder_match = re.search(r'(\w+)\s*=\s*\{([^}]+=\s*-?\d+[^}]+)\}', source, re.DOTALL)
     if not decoder_match:

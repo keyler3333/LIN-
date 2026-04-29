@@ -77,23 +77,14 @@ def detect_obfuscator(text):
         'hercules':  [r'Hercules',r'Str\s*=\s*string\.sub'],
         'generic_vm':[r'mkexec',r'constTags',r'protoFormats'],
     }
-    method_map = {
-        'luraph':    'dynamic',
-        'ironbrew2': 'dynamic',
-        'ironbrew1': 'sandbox_peel',
-        'moonsec':   'sandbox_peel',
-        'wearedevs': 'sandbox_peel',
-        'prometheus':'sandbox_peel',
-        'hercules':  'sandbox_peel',
-        'generic_vm':'ast_vm_lift',
-    }
     scores = {}
     for name,pats in patterns.items():
         s = sum(1 for p in pats if re.search(p,text,re.IGNORECASE))
         if s: scores[name] = s
-    if not scores: return 'generic','normalize'
+    if not scores: return 'generic','sandbox_peel'
     best = max(scores,key=lambda k:scores[k])
-    return best, method_map.get(best, 'normalize')
+    if best in ('luraph','ironbrew2','generic_vm'): return best,'dynamic'
+    return best,'sandbox_peel'
 
 def static_decode(code):
     code = re.sub(r'\\x([0-9a-fA-F]{2})',lambda m:chr(int(m.group(1),16)),code)
@@ -134,68 +125,10 @@ def deobfuscate(source, depth=0):
                 return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
         except Exception as e:
             diag = f'WeAreDevs lifter error: {e}'
-        layers, _, diag2, _, _ = run_sandbox(source)
+
+    if method == 'sandbox_peel' or method == 'normalize':
+        layers, cap, diag2, stdout, stderr = run_sandbox(source)
         if layers:
             payload = max(layers, key=len)
             return deobfuscate(payload, depth+1)
-
-    if method == 'dynamic':
-        emu_layers,emu_err,emu_stdout,emu_stderr = roblox_emulator.run_emulator(source)
-        if emu_layers:
-            payload = max(emu_layers,key=len)
-            return deobfuscate(payload,depth+1)
-        layers,cap,diag2,stdout,stderr = run_sandbox(source)
-        if layers:
-            payload = max(layers,key=len)
-            return deobfuscate(payload,depth+1)
-
-    if method == 'normalize':
-        try:
-            result = normalize_source(source)
-            if result:
-                layers,cap,diag2,stdout,stderr = run_sandbox(result)
-                if layers:
-                    payload = max(layers,key=len)
-                    return deobfuscate(payload,depth+1)
-                result = static_decode(result)
-                result = beautify(result)
-                return result, obf_type, 0, 'ast_normalize', 'AST normalization applied'
-        except Exception as e:
-            diag = f'AST normalizer error: {e}'
-
-    result, _ = run_sandbox(source)
-    if result:
-        payload = max(result,key=len)
-        return deobfuscate(payload, depth+1)
-
-    result = static_decode(source)
-    result = beautify(result)
-    return result, obf_type, 0, 'static', diag
-
-@app.route('/health')
-def health():
-    lua_ok,active = False,LUA_BIN
-    for b in [LUA_BIN,'lua5.1','lua51','lua']:
-        try:
-            r = subprocess.run([b,'-v'],capture_output=True,timeout=2)
-            out = (r.stderr+r.stdout).decode(errors='replace')
-            if '5.1' in out: lua_ok = True; active = b; break
-        except: pass
-    return jsonify({'ok':True,'lua':lua_ok,'lua_bin':active})
-
-@app.route('/deobf',methods=['POST'])
-def deobf():
-    data = request.get_json(force=True)
-    source = data.get('source','')
-    if not source.strip(): return jsonify({'error':'no source'}),400
-    result,obf_type,layers,method,diag = deobfuscate(source)
-    return jsonify({
-        'result':result,
-        'layers':layers,
-        'method':method,
-        'detected':obf_type,
-        'diagnostic':diag[:1000] if diag else '',
-    })
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0',port=int(os.environ.get('PORT',5000)))
+        if stale.rcppath.split():%

@@ -174,13 +174,16 @@ def deobfuscate(source, depth=0):
             return deobfuscate(payload, depth + 1)
         if cap:
             for c in cap:
-                if c.startswith('\x1bLua') or len(c) > 100:
+                if c.startswith('\x1bLua'):
                     try:
                         lifted = wearedevs_lifter.lift_wearedevs(c)
                         if lifted:
                             return beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
                     except:
                         pass
+                    return "-- [Bytecode Detected]\n-- The bot found the internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
+                if len(c) > len(source) * 0.5 and "function" in c:
+                    return beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
         if diag:
             return source, obf_type, 0, 'sandbox_failed', diag2 or diag
 
@@ -195,13 +198,16 @@ def deobfuscate(source, depth=0):
             return deobfuscate(payload, depth + 1)
         if cap:
             for c in cap:
-                if c.startswith('\x1bLua') or len(c) > 100:
+                if c.startswith('\x1bLua'):
                     try:
                         lifted = wearedevs_lifter.lift_wearedevs(c)
                         if lifted:
                             return beautify(lifted), obf_type, 0, 'captured_lift', 'Lifted from sandbox capture'
                     except:
                         pass
+                    return "-- [Bytecode Detected]\n-- The bot found the internal bytecode but does not have a lifter for this specific VM version.", obf_type, 0, 'raw_bytecode', 'Bytecode found but not liftable'
+                if len(c) > len(source) * 0.5 and "function" in c:
+                    return beautify(c), obf_type, 0, 'captured_string', 'Recovered from sandbox memory'
 
     result = static_decode(source)
     result = beautify(result)

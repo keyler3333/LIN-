@@ -1,4 +1,4 @@
-import os, re, subprocess, tempfile, shutil, base64, hashlib
+import os, re, subprocess, tempfile, shutil, hashlib
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -55,7 +55,7 @@ def run_sandbox(source,timeout=25):
         return layers,cap,diag,stdout,stderr
 
 import roblox_emulator
-from normalizer import normalize_ast
+from normalizer import normalize_source
 
 def detect_obfuscator(text):
     patterns={
@@ -99,45 +99,6 @@ def beautify(code):
         if re.match(r'^(function\b|local\s+function\b)',s): indent+=1
     return '\n'.join(out)
 
-def score(code):
-    return (code.count('function'),code.count('local'),code.count('end'),len(code))
-
-def peel(source,max_layers=8,timeout=25):
-    current,count,previews,seen=source,0,[],set()
-    last_diag=''
-    for _ in range(max_layers):
-        layers,cap,diag,stdout,stderr=run_sandbox(current,timeout)
-        last_diag=diag or stderr
-        if layers:
-            best=max(layers,key=score)
-            if len(best.strip())<10 or best==current or best in seen: break
-            seen.add(best)
-            previews.append(best[:100].replace('\n',' '))
-            current=best
-            count+=1
-        else: break
-    return current,count,previews,last_diag
-
-def ast_vm_lift(source):
-    results=[]
-    const_match=re.search(r'local\s+(\w+)\s*=\s*\{([\d\s,]+)\}',source)
-    if const_match:
-        consts=[int(c.strip()) for c in const_match.group(2).split(',') if c.strip().isdigit()]
-        chars=''.join(chr(c) for c in consts if 0<c<256)
-        if len(chars)>4 and re.match(r'^[\x20-\x7e\r\n\t]+$',chars):
-            results.append('-- VM constants lifted to string:\n"'+chars.replace('"','\\"')+'"')
-    code_match=re.search(r'local\s+(\w+)\s*=\s*\{([^}]+)\}',source)
-    if code_match:
-        code=[int(c.strip()) for c in code_match.group(2).split(',') if c.strip().isdigit()]
-        results.append('-- VM instruction table found, '+str(len(code))+' instructions')
-        results.append('-- Full VM devirtualization requires version-specific handler mapping')
-    dispatch=re.findall(r'if\s+op\s*==\s*(\d+)\s+then\s+(.*?)\s+(?:elseif|end)',source,re.DOTALL)
-    if dispatch:
-        results.append('-- VM dispatch handlers identified:')
-        for op,body in dispatch[:20]:
-            results.append('--   op '+op+': '+body[:60].replace('\n',' ')+'...')
-    return '\n'.join(results) if results else None
-
 def lupa_sandbox(source,timeout=15):
     captured=[]
     try:
@@ -179,16 +140,14 @@ def deobfuscate(source):
     diag=''
     if method=='normalize':
         try:
-            result=normalize_ast(source)
+            result=normalize_source(source)
             if result:
                 result=static_decode(result)
                 result=beautify(result)
                 return result,obf_type,0,'ast_normalize','AST normalization applied'
         except Exception as e: diag=f'AST normalizer error: {e}'
     if method=='ast_vm_lift':
-        lifted=ast_vm_lift(source)
-        if lifted: return lifted,obf_type,0,'ast_vm','VM bytecode analysis output'
-        result,layers,previews,diag2=peel(source)
+        result,layers,previews,diag2=run_sandbox(source)
         if layers>0:
             result=static_decode(result)
             result=beautify(result)
@@ -201,7 +160,7 @@ def deobfuscate(source):
             result=beautify(result)
             return result,obf_type,1,'roblox_emulator','Emulator captured payload'
         diag=f'Emulator failed: {emu_err}\n{emu_stdout}\n{emu_stderr}'
-    result,layers,previews,diag2=peel(source)
+    result,layers,previews,diag2=run_sandbox(source)
     diag=diag or diag2
     if layers>0:
         result=static_decode(result)

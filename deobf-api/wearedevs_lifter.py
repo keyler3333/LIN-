@@ -60,6 +60,20 @@ def _decode_wearedevs_strings(source):
                 continue
         return all_decoded
 
+def decode_constant_table(cap_list):
+    decoded_map = {}
+    for cap in cap_list:
+        if len(cap) < 4:
+            continue
+        try:
+            padded = cap + "=" * ((4 - len(cap) % 4) % 4)
+            dec = base64.b64decode(padded).decode('latin-1', errors='replace')
+            if dec and any(c.isalnum() for c in dec):
+                decoded_map[cap] = dec
+        except:
+            continue
+    return decoded_map
+
 def _is_lua_bytecode(data):
     if isinstance(data, dict):
         return False

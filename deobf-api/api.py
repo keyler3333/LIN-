@@ -1,4 +1,4 @@
-import os, re, subprocess, tempfile, shutil
+import os, re, subprocess, tempfile, shutil, base64, hashlib
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -55,6 +55,7 @@ def run_sandbox(source,timeout=25):
         return layers,cap,diag,stdout,stderr
 
 import roblox_emulator
+from normalizer import normalize_ast
 
 def detect_obfuscator(text):
     patterns={
@@ -67,23 +68,15 @@ def detect_obfuscator(text):
         'hercules':  [r'Hercules',r'Str\s*=\s*string\.sub'],
         'generic_vm':[r'mkexec',r'constTags',r'protoFormats'],
     }
-    method_map={
-        'luraph':    'ast_vm_lift',
-        'ironbrew2': 'ast_vm_lift',
-        'ironbrew1': 'sandbox_peel',
-        'moonsec':   'sandbox_peel',
-        'wearedevs': 'sandbox_peel',
-        'prometheus':'sandbox_peel',
-        'hercules':  'sandbox_peel',
-        'generic_vm':'ast_vm_lift',
-    }
     scores={}
     for name,pats in patterns.items():
         s=sum(1 for p in pats if re.search(p,text,re.IGNORECASE))
         if s: scores[name]=s
-    if not scores: return 'generic','sandbox_peel'
+    if not scores: return 'generic','normalize'
     best=max(scores,key=lambda k:scores[k])
-    return best,method_map.get(best,'sandbox_peel')
+    if best in ('luraph','ironbrew2','generic_vm'):
+        return best,'ast_vm_lift'
+    return best,'normalize'
 
 def static_decode(code):
     code=re.sub(r'\\x([0-9a-fA-F]{2})',lambda m:chr(int(m.group(1),16)),code)
@@ -184,6 +177,14 @@ def lupa_sandbox(source,timeout=15):
 def deobfuscate(source):
     obf_type,method=detect_obfuscator(source)
     diag=''
+    if method=='normalize':
+        try:
+            result=normalize_ast(source)
+            if result:
+                result=static_decode(result)
+                result=beautify(result)
+                return result,obf_type,0,'ast_normalize','AST normalization applied'
+        except Exception as e: diag=f'AST normalizer error: {e}'
     if method=='ast_vm_lift':
         lifted=ast_vm_lift(source)
         if lifted: return lifted,obf_type,0,'ast_vm','VM bytecode analysis output'

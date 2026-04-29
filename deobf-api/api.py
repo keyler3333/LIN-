@@ -72,6 +72,7 @@ def detect_obfuscator(text):
             r'https?://wearedevs\.net',
             r'v1\.\d+\.\d+.*wearedevs',
             r'local\s+\w+\s*=\s*\{[^}]{500,}\}',
+            r'return\s*\(function\s*\(\.\.\.\)',
         ],
         'prometheus':[r'Prometheus',r'number_to_bytes'],
         'hercules':  [r'Hercules',r'Str\s*=\s*string\.sub'],
@@ -125,9 +126,13 @@ def deobfuscate(source, depth=0):
                 return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
         except Exception as e:
             diag = f'WeAreDevs lifter error: {e}'
+        layers, cap, diag2, _, _ = run_sandbox(source)
+        if layers:
+            payload = max(layers, key=len)
+            return deobfuscate(payload, depth+1)
 
     if method == 'sandbox_peel' or method == 'normalize':
-        layers, cap, diag2, stdout, stderr = run_sandbox(source)
+        layers, cap, diag2, _, _ = run_sandbox(source)
         if layers:
             payload = max(layers, key=len)
             return deobfuscate(payload, depth+1)
@@ -137,7 +142,7 @@ def deobfuscate(source, depth=0):
         if emu_layers:
             payload = max(emu_layers,key=len)
             return deobfuscate(payload,depth+1)
-        layers,cap,diag2,stdout,stderr = run_sandbox(source)
+        layers,cap,diag2,_,_ = run_sandbox(source)
         if layers:
             payload = max(layers,key=len)
             return deobfuscate(payload,depth+1)

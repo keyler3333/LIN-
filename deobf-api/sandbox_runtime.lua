@@ -332,7 +332,7 @@ local _safe = {
         fromRGB = function(...) return _dummy("Color3") end
     },
     UDim2 = { new = function(...) return _dummy("UDim2") end },
-    Enum = _dummy("Enum"),
+    Enum = setmetatable({}, { __index = function(t, k) return k end }),
     Drawing = _dummy("Drawing"),
     syn = _dummy("syn"),
     writefile = function() end,

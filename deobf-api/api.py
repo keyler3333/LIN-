@@ -70,12 +70,22 @@ def detect_obfuscator(text):
             r'getfenv\s*\(\s*\)',
             r'string\.reverse',
             r'https?://wearedevs\.net',
-            r'v1\.0\.0.*wearedevs',
+            r'v1\.\d+\.\d+.*wearedevs',
             r'local\s+\w+\s*=\s*\{[^}]{500,}\}',
         ],
         'prometheus':[r'Prometheus',r'number_to_bytes'],
         'hercules':  [r'Hercules',r'Str\s*=\s*string\.sub'],
         'generic_vm':[r'mkexec',r'constTags',r'protoFormats'],
+    }
+    method_map = {
+        'luraph':    'dynamic',
+        'ironbrew2': 'dynamic',
+        'ironbrew1': 'sandbox_peel',
+        'moonsec':   'sandbox_peel',
+        'wearedevs': 'sandbox_peel',
+        'prometheus':'sandbox_peel',
+        'hercules':  'sandbox_peel',
+        'generic_vm':'ast_vm_lift',
     }
     scores = {}
     for name,pats in patterns.items():
@@ -83,8 +93,7 @@ def detect_obfuscator(text):
         if s: scores[name] = s
     if not scores: return 'generic','normalize'
     best = max(scores,key=lambda k:scores[k])
-    if best in ('luraph','ironbrew2','generic_vm'): return best,'dynamic'
-    return best,'normalize'
+    return best, method_map.get(best, 'normalize')
 
 def static_decode(code):
     code = re.sub(r'\\x([0-9a-fA-F]{2})',lambda m:chr(int(m.group(1),16)),code)
@@ -113,16 +122,23 @@ def beautify(code):
 def deobfuscate(source, depth=0):
     if depth > 5:
         return source,'generic',0,'max_depth','Max recursion reached'
-    obf_type,method = detect_obfuscator(source)
+    obf_type, method = detect_obfuscator(source)
     diag = ''
+
     if obf_type == 'wearedevs':
         try:
             lifted = wearedevs_lifter.lift_wearedevs(source)
             if lifted:
                 lifted = static_decode(lifted)
                 lifted = beautify(lifted)
-                return lifted,obf_type,0,'wearedevs_vm_lift','WeAreDevs VM lifted'
-        except Exception as e: diag = f'WeAreDevs lifter error: {e}'
+                return lifted, obf_type, 0, 'wearedevs_vm_lift', 'WeAreDevs VM lifted'
+        except Exception as e:
+            diag = f'WeAreDevs lifter error: {e}'
+        layers, _, diag2, _, _ = run_sandbox(source)
+        if layers:
+            payload = max(layers, key=len)
+            return deobfuscate(payload, depth+1)
+
     if method == 'dynamic':
         emu_layers,emu_err,emu_stdout,emu_stderr = roblox_emulator.run_emulator(source)
         if emu_layers:
@@ -132,6 +148,7 @@ def deobfuscate(source, depth=0):
         if layers:
             payload = max(layers,key=len)
             return deobfuscate(payload,depth+1)
+
     if method == 'normalize':
         try:
             result = normalize_source(source)
@@ -142,11 +159,18 @@ def deobfuscate(source, depth=0):
                     return deobfuscate(payload,depth+1)
                 result = static_decode(result)
                 result = beautify(result)
-                return result,obf_type,0,'ast_normalize','AST normalization applied'
-        except Exception as e: diag = f'AST normalizer error: {e}'
+                return result, obf_type, 0, 'ast_normalize', 'AST normalization applied'
+        except Exception as e:
+            diag = f'AST normalizer error: {e}'
+
+    result, _ = run_sandbox(source)
+    if result:
+        payload = max(result,key=len)
+        return deobfuscate(payload, depth+1)
+
     result = static_decode(source)
     result = beautify(result)
-    return result,obf_type,0,'static',diag
+    return result, obf_type, 0, 'static', diag
 
 @app.route('/health')
 def health():

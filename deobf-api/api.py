@@ -3,9 +3,8 @@ import re
 import subprocess
 import tempfile
 import shutil
-from flask import Flask, request, jsonify
-from deobfuscator_utils import Deobfuscator, PatternScanner
 import struct
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
@@ -77,6 +76,9 @@ def run_sandbox(source, timeout=25):
                 diag = f.read()
         return layers, cap, diag, stdout, stderr
 
+from deobfuscator_utils import Deobfuscator, PatternScanner
+import wearedevs_lifter
+
 def static_decode(code):
     code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
     code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
@@ -113,191 +115,21 @@ def lua_beautify(code):
     except Exception:
         return simple_beautify(code)
 
-def simplify_math(source):
-    def calc(match):
-        try:
-            return str(eval(match.group(0)))
-        except:
-            return match.group(0)
-    simplified = re.sub(r'\((-?\d+)\s*([\+\-\*\/])\s*(-?\d+)\)', calc, source)
-    return simplified
-
 def is_lua_bytecode(data):
     return isinstance(data, bytes) and len(data) >= 12 and data[:4] == b'\x1bLua'
-
-def read_lua_bytecode(bc):
-    pos = 12
-    instructions = []
-    constants = []
-
-    def read_int():
-        nonlocal pos
-        v = struct.unpack_from('<I', bc, pos)[0]
-        pos += 4
-        return v
-
-    def read_byte():
-        nonlocal pos
-        v = bc[pos]
-        pos += 1
-        return v
-
-    def read_string():
-        size = read_int()
-        if size == 0:
-            return ""
-        s = bc[pos:pos+size-1].decode('latin-1', errors='replace')
-        pos += size
-        return s
-
-    def read_function():
-        read_string()
-        read_int()
-        read_int()
-        read_byte()
-        read_byte()
-        read_byte()
-        read_byte()
-        code_len = read_int()
-        for _ in range(code_len):
-            instructions.append(read_int())
-        const_len = read_int()
-        for _ in range(const_len):
-            t = read_byte()
-            if t == 0:
-                constants.append(None)
-            elif t == 1:
-                constants.append(read_byte() != 0)
-            elif t == 3:
-                size = read_int()
-                num_str = bc[pos:pos+size-1].decode('latin-1')
-                pos += size
-                if '.' in num_str or 'e' in num_str.lower():
-                    constants.append(float(num_str))
-                else:
-                    constants.append(int(num_str))
-            elif t == 4:
-                s = read_string()
-                constants.append(s)
-            else:
-                constants.append(None)
-        proto_count = read_int()
-        for _ in range(proto_count):
-            read_function()
-
-    read_function()
-    return instructions, constants
-
-def lift_lua_bytecode(instructions, constants):
-    lines = []
-    regs = [None] * 256
-    upvals = [f"Up{i}" for i in range(256)]
-    var_count = 1
-
-    def rk(v):
-        if v >= 256:
-            idx = v - 256
-            if 0 <= idx < len(constants):
-                c = constants[idx]
-                if isinstance(c, str):
-                    return repr(c)
-                if c is None:
-                    return "nil"
-                if isinstance(c, bool):
-                    return "true" if c else "false"
-                return str(c)
-            return f"K[{idx}]"
-        r = regs[v]
-        return r if r is not None else f"R{v}"
-
-    for pc, instr in enumerate(instructions):
-        op = instr & 0x3F
-        a = (instr >> 6) & 0xFF
-        b = (instr >> 23) & 0x1FF
-        c = (instr >> 14) & 0x1FF
-
-        if op == 0:
-            regs[a] = rk(b)
-        elif op == 1:
-            regs[a] = rk(b + 256)
-        elif op == 5:
-            regs[a] = f"_G[{repr(constants[b])}]"
-        elif op == 6:
-            regs[a] = upvals[b] if b < len(upvals) else f"Up[{b}]"
-        elif op == 7:
-            lines.append(f"_G[{repr(constants[b])}] = {rk(a)}")
-        elif op == 8:
-            upvals[b] = rk(a)
-        elif op == 10:
-            regs[a] = f"function_{b}"
-        elif op == 12:
-            lines.append(f"R{a} = {rk(b)} + {rk(c)}")
-        elif op == 13:
-            lines.append(f"R{a} = {rk(b)} - {rk(c)}")
-        elif op == 14:
-            lines.append(f"R{a} = {rk(b)} * {rk(c)}")
-        elif op == 25:
-            lines.append(f"if ({rk(b)} < {rk(c)}) ~= {a} then goto next")
-        elif op == 26:
-            lines.append(f"if ({rk(b)} == {rk(c)}) ~= {a} then goto next")
-        elif op == 28:
-            args = ""
-            if b > 1:
-                args = ", ".join(rk(a+1+i) for i in range(b-1))
-            if c == 1:
-                lines.append(f"{rk(a)}({args})")
-            elif c == 0:
-                vname = f"var_{var_count}"
-                var_count += 1
-                lines.append(f"local {vname} = {rk(a)}({args})")
-                regs[a] = vname
-            else:
-                rets = []
-                for i in range(c-1):
-                    rets.append(f"var_{var_count}")
-                    var_count += 1
-                lines.append(f"local {', '.join(rets)} = {rk(a)}({args})")
-                regs[a] = rets[0]
-        elif op == 30:
-            nret = b - 1
-            if nret >= 0:
-                lines.append("return " + ", ".join(rk(a+i) for i in range(nret)))
-            else:
-                lines.append("return")
-            break
-
-    return "\n".join(lines)
-
-def try_lift_bytes(data):
-    if is_lua_bytecode(data):
-        instructions, constants = read_lua_bytecode(data)
-        lifted = lift_lua_bytecode(instructions, constants)
-        if lifted.strip():
-            return lifted
-    return None
 
 def deobfuscate(source, depth=0):
     if depth > 5:
         return source, 'generic', 0, 'max_depth', 'Max recursion reached'
 
-    source = simplify_math(source)
-
-    deobf = Deobfuscator()
-    analysis = deobf.analyze_script(source, is_content=True)
-    decrypted_strings = analysis.get('decrypted_strings', [])
-
-    for s in decrypted_strings:
-        if not isinstance(s, str):
-            continue
-        data = s.encode('latin-1')
-        lifted = try_lift_bytes(data)
-        if lifted:
-            return lua_beautify(lifted), 'vm_lift', 0, 'string_table_lift', 'Bytecode found in N table'
+    lifted = wearedevs_lifter.lift_wearedevs(source)
+    if lifted is not None and isinstance(lifted, str) and len(lifted) > 20:
+        return lua_beautify(lifted), 'vm_lift', 0, 'string_table_lift', 'Bytecode found in N table'
 
     scanner = PatternScanner()
     scan_result = scanner.analyze_target_content(source)
     risk = scan_result.get('risk_assessment', 'Low')
-    if risk == 'High' or any(k in str(scan_result.get('detection_data', {})) for k in ['env_access', 'load_function']):
+    if risk == 'High':
         method = 'dynamic'
     else:
         method = 'sandbox_peel'
@@ -311,18 +143,24 @@ def deobfuscate(source, depth=0):
 
     layers, cap, diag, _, _ = run_sandbox(source)
     for item in layers:
-        if isinstance(item, bytes):
-            lifted = try_lift_bytes(item)
+        if isinstance(item, bytes) and is_lua_bytecode(item):
+            lifted = wearedevs_lifter.try_lift_bytes(item)
             if lifted:
                 return lua_beautify(lifted), 'vm_lift', 0, 'sandbox_dump', 'Bytecode dumped from sandbox'
         elif isinstance(item, str):
-            lifted = try_lift_bytes(item.encode('latin-1'))
-            if lifted:
-                return lua_beautify(lifted), 'vm_lift', 0, 'sandbox_layer', 'Bytecode in layer'
+            data = item.encode('latin-1')
+            if is_lua_bytecode(data):
+                lifted = wearedevs_lifter.try_lift_bytes(data)
+                if lifted:
+                    return lua_beautify(lifted), 'vm_lift', 0, 'sandbox_layer', 'Bytecode in layer'
 
     if layers:
         payload = max(layers, key=len)
         return deobfuscate(payload, depth+1)
+
+    for c in cap:
+        if c.startswith('\x1bLua') or (len(c) > 100 and 'function' in c):
+            return lua_beautify(c), 'generic', 0, 'captured', 'Captured from sandbox'
 
     result = static_decode(source)
     return lua_beautify(result), 'generic', 0, 'static', diag

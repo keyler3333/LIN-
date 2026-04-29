@@ -10,73 +10,67 @@ def _decode_wearedevs_strings(source):
     encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
 
     decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
-    if not decoder_match:
-        decoder_match = re.search(r'(\w+)\s*=\s*\{([^}]+=\s*-?\d+[^}]+)\}', source, re.DOTALL)
     if decoder_match:
-        decoder_body = decoder_match.group(decoder_match.lastindex)
+        decoder_body = decoder_match.group(1)
         char_map = {}
-        for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
-            key = pair.group(1).strip()
-            expr = pair.group(2).replace(' ', '')
+        fragments = [f.strip() for f in decoder_body.split(',') if '=' in f]
+        for frag in fragments:
+            if '=' not in frag:
+                continue
+            key_part, expr_part = frag.split('=', 1)
+            key_part = key_part.strip()
+            expr_part = expr_part.strip()
+            key = key_part.strip('"').strip("'").strip('[').strip(']').strip()
             try:
-                val = eval(expr)
+                val = eval(expr_part)
                 char_map[key] = val & 0x3F
             except:
-                pass
-
-        decoded_bytes = bytearray()
-        for s in encoded_strings:
-            accum, bits, count = 0, 0, 0
-            for ch in s:
-                if ch == '=':
-                    if bits >= 6:
-                        accum >>= bits - 6
-                        decoded_bytes.append(accum & 0xFF)
-                    break
-                val = char_map.get(ch)
-                if val is None:
-                    continue
-                accum = (accum << 6) | val
-                bits += 6
-                count += 1
-                if count == 4:
-                    decoded_bytes.extend([
-                        (accum >> 16) & 0xFF,
-                        (accum >> 8) & 0xFF,
-                        accum & 0xFF,
-                    ])
-                    accum, bits, count = 0, 0, 0
-        return bytes(decoded_bytes)
-
-    else:
-        all_decoded = {}
-        for s in encoded_strings:
-            try:
-                padded = s + "=" * ((4 - len(s) % 4) % 4)
-                dec = base64.b64decode(padded).decode('latin-1', errors='replace')
-                if len(dec) > 0:
-                    all_decoded[s] = dec
-            except:
                 continue
-        return all_decoded
 
-def decode_constant_table(cap_list):
-    decoded_map = {}
-    for cap in cap_list:
-        if len(cap) < 4:
-            continue
+        if char_map:
+            decoded_bytes = bytearray()
+            for s in encoded_strings:
+                accum, bits, count = 0, 0, 0
+                for ch in s:
+                    if ch == '=':
+                        if bits >= 6:
+                            accum >>= bits - 6
+                            decoded_bytes.append(accum & 0xFF)
+                        break
+                    val = char_map.get(ch)
+                    if val is None:
+                        continue
+                    accum = (accum << 6) | val
+                    bits += 6
+                    count += 1
+                    if count == 4:
+                        decoded_bytes.extend([
+                            (accum >> 16) & 0xFF,
+                            (accum >> 8) & 0xFF,
+                            accum & 0xFF,
+                        ])
+                        accum, bits, count = 0, 0, 0
+            return bytes(decoded_bytes)
+
+    all_decoded = {}
+    for s in encoded_strings:
         try:
-            padded = cap + "=" * ((4 - len(cap) % 4) % 4)
+            padded = s + "=" * ((4 - len(s) % 4) % 4)
             dec = base64.b64decode(padded).decode('latin-1', errors='replace')
-            if dec and any(c.isalnum() for c in dec):
-                decoded_map[cap] = dec
+            if len(dec) > 0:
+                all_decoded[s] = dec
         except:
             continue
-    return decoded_map
+
+    full_bytecode = bytearray()
+    for s in encoded_strings:
+        if s in all_decoded:
+            full_bytecode.extend(all_decoded[s].encode('latin-1'))
+    if full_bytecode:
+        return bytes(full_bytecode)
+    return all_decoded if all_decoded else None
 
 def _is_lua_bytecode(data):
-    if isinstance(data, dict):
-        return False
     return len(data) >= 12 and data[:4] == b'\x1bLua'
 
 def _read_lua_bytecode(bc):
@@ -226,9 +220,9 @@ def lift_wearedevs(source):
     data = _decode_wearedevs_strings(source)
     if data is None:
         return None
-    if isinstance(data, dict):
-        return data
-    if not _is_lua_bytecode(data):
-        return None
-    instructions, constants = _read_lua_bytecode(data)
-    return _lift_lua_bytecode(instructions, constants)
+    if isinstance(data, bytes) and _is_lua_bytecode(data):
+        instructions, constants = _read_lua_bytecode(data)
+        return _lift_lua_bytecode(instructions, constants)
+    if isinstance(data, bytes):
+        return data.decode('latin-1', errors='replace')
+    return data

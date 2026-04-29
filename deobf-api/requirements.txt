@@ -1,3 +1,4 @@
 flask
 luaparser
 lupa
+z3-solver

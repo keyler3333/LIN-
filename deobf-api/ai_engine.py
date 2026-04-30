@@ -3,7 +3,14 @@ import json
 import time
 import io
 from datetime import datetime
-from groq import Groq
+
+GROQ_AVAILABLE = False
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    pass
+
 from scanner import ObfuscationScanner
 from transformers import EscapeSequenceTransformer, MathTransformer, CipherMapTransformer, HexNameRenamer
 from sandbox import execute_sandbox
@@ -95,8 +102,11 @@ def _beautify(code):
 
 class AIEngine:
     def __init__(self, api_key, model="llama-3.3-70b-versatile"):
-        self.client = Groq(api_key=api_key)
+        self.api_key = api_key
         self.model = model
+        self.client = None
+        if GROQ_AVAILABLE and api_key:
+            self.client = Groq(api_key=api_key)
         self.scanner = ObfuscationScanner()
         self.transformers = {
             'escape': EscapeSequenceTransformer(),
@@ -107,6 +117,8 @@ class AIEngine:
         self.max_iterations = 12
 
     def _call_ai(self, messages):
+        if not self.client:
+            return None
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -117,6 +129,28 @@ class AIEngine:
         return response.choices[0].message
 
     def process(self, original_source):
+        if not self.client:
+            current_code = original_source
+            for t in self.transformers.values():
+                current_code = t.transform(current_code)
+            obf_type, method = self.scanner.analyze(current_code)
+            layers, captures = execute_sandbox(current_code, use_emulator=(method == 'dynamic'))
+            if layers:
+                payload = max(layers, key=len)
+                current_code = payload
+            elif captures:
+                for cap in captures:
+                    if len(cap) > len(current_code)*0.4 and "function" in cap:
+                        current_code = cap
+                        break
+            final_code = _beautify(current_code)
+            return {
+                "result": final_code,
+                "detected": obf_type,
+                "diagnostic": "Non-AI fallback pipeline used (groq not configured).",
+                "ai_feedback": "AI not available – used static transformers + sandbox fallback."
+            }
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Deobfuscate this Lua script:\n```lua\n{original_source}\n```"}

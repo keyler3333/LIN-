@@ -25,21 +25,16 @@ def _extract_cipher_mapping(source):
     return None
 
 def _extract_shuffle_pairs(source):
-    pattern = r'for\s+\w+\s*,\s*\w+\s+in\s+ipairs\s*\(\s*\{([^}]+)\}\s*\)'
-    match = re.search(pattern, source, re.DOTALL)
-    if not match:
-        return []
-    body = match.group(1)
+    pattern = r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}'
+    matches = re.findall(pattern, source)
     pairs = []
-    for pair_match in re.finditer(r'\{([^}]+)\}', body):
-        nums = re.findall(r'(-?\d+(?:\s*[+\-]\s*-?\d+)*)', pair_match.group(1))
-        if len(nums) >= 2:
-            try:
-                a = eval(nums[0].replace(' ', ''))
-                b = eval(nums[1].replace(' ', ''))
-                pairs.append([a, b])
-            except:
-                continue
+    for a_expr, b_expr in matches:
+        try:
+            a = eval(a_expr.replace(' ', ''))
+            b = eval(b_expr.replace(' ', ''))
+            pairs.append([a, b])
+        except:
+            continue
     return pairs
 
 def _apply_unshuffle(strings, pairs):

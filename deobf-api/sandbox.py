@@ -29,7 +29,7 @@ def execute_sandbox(source, use_emulator=False, timeout=25):
 
         try:
             env = os.environ.copy()
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=d, env=env)
+            subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=d, env=env)
         except subprocess.TimeoutExpired:
             pass
         except Exception:

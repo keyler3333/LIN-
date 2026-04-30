@@ -124,46 +124,10 @@ def deobfuscate(source, depth=0):
 
     lifted = wearedevs_lifter.lift_wearedevs(source)
     if lifted is not None and isinstance(lifted, str) and len(lifted) > 20:
-        return lua_beautify(lifted), 'vm_lift', 0, 'string_table_lift', 'Bytecode found in N table'
-
-    scanner = PatternScanner()
-    scan_result = scanner.analyze_target_content(source)
-    risk = scan_result.get('risk_assessment', 'Low')
-    if risk == 'High':
-        method = 'dynamic'
-    else:
-        method = 'sandbox_peel'
-
-    if method == 'dynamic':
-        from roblox_emulator import run_emulator
-        emu_layers, emu_err, emu_stdout, emu_stderr = run_emulator(source)
-        if emu_layers:
-            payload = max(emu_layers, key=len)
-            return deobfuscate(payload, depth+1)
-
-    layers, cap, diag, _, _ = run_sandbox(source)
-    for item in layers:
-        if isinstance(item, bytes) and is_lua_bytecode(item):
-            lifted = wearedevs_lifter.try_lift_bytes(item)
-            if lifted:
-                return lua_beautify(lifted), 'vm_lift', 0, 'sandbox_dump', 'Bytecode dumped from sandbox'
-        elif isinstance(item, str):
-            data = item.encode('latin-1')
-            if is_lua_bytecode(data):
-                lifted = wearedevs_lifter.try_lift_bytes(data)
-                if lifted:
-                    return lua_beautify(lifted), 'vm_lift', 0, 'sandbox_layer', 'Bytecode in layer'
-
-    if layers:
-        payload = max(layers, key=len)
-        return deobfuscate(payload, depth+1)
-
-    for c in cap:
-        if c.startswith('\x1bLua') or (len(c) > 100 and 'function' in c):
-            return lua_beautify(c), 'generic', 0, 'captured', 'Captured from sandbox'
+        return lua_beautify(lifted), 'wearedevs_strings', 0, 'lifted', 'Original source recovered'
 
     result = static_decode(source)
-    return lua_beautify(result), 'generic', 0, 'static', diag
+    return lua_beautify(result), 'generic', 0, 'static', 'No strings recovered'
 
 @app.route('/health')
 def health():

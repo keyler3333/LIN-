@@ -112,10 +112,6 @@ class EscapeSequenceTransformer(Transformer):
         return code
 
 class HexNameRenamer(Transformer):
-    def __init__(self):
-        self.mapping = {}
-        self.counter = 0
-
     def transform(self, code):
         self.mapping = {}
         self.counter = 0
@@ -125,5 +121,17 @@ class HexNameRenamer(Transformer):
                 self.counter += 1
                 self.mapping[hex_name] = f"var{self.counter}"
             return self.mapping[hex_name]
-        code = re.sub(r'(?<![^\s\[\(\)\.\=\+\-\*\/\^\%\#\<\>\~\&\|\,])(_0x[0-9a-fA-F]+)(?=[^\w]|$)', replace_hex, code)
+        return re.sub(r'(?<![^\s\[\(\)\.\=\+\-\*\/\^\%\#\<\>\~\&\|\,])(_0x[0-9a-fA-F]+)(?=[^\w]|$)', replace_hex, code)
+
+class DictRenamer(Transformer):
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def transform(self, code):
+        for old, new in self.mapping.items():
+            code = re.sub(
+                r'(?<![^\w\.\:])' + re.escape(old) + r'(?![^\w])',
+                new,
+                code
+            )
         return code

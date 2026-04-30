@@ -1,41 +1,60 @@
-import logging
-from transformers import MathTransformer, StringTransformer, JunkTransformer, ConstantTableTransformer
-from sandbox_runner import run_sandbox
+from scanner import ObfuscationScanner
+from transformers import MathTransformer, CipherMapTransformer, EscapeSequenceTransformer
+from sandbox import execute_sandbox
+from luaparser import ast
 
 class DeobfEngine:
     def __init__(self):
+        self.scanner = ObfuscationScanner()
         self.transformers = [
+            EscapeSequenceTransformer(),
             MathTransformer(),
-            ConstantTableTransformer(),
-            StringTransformer(),
-            JunkTransformer()
+            CipherMapTransformer()
         ]
-        self.max_depth = 10
+        self.max_depth = 5
 
     def process(self, source, depth=0):
-        if depth > self.max_depth:
-            return source, "max_depth_reached"
+        if depth >= self.max_depth:
+            return self._beautify(source), "max_depth", "Max recursion depth reached"
 
         current_code = source
-        state_changed = True
-        
-        while state_changed:
-            old_code = current_code
-            for transformer in self.transformers:
-                current_code = transformer.transform(current_code)
-            state_changed = (old_code != current_code)
+        for t in self.transformers:
+            current_code = t.transform(current_code)
 
-        if self._is_vm_detected(current_code):
-            layers, error = self._run_dynamic_analysis(current_code)
-            if layers:
-                payload = max(layers, key=len)
-                return self.process(payload, depth + 1)
+        obf_type, method = self.scanner.analyze(current_code)
 
-        return current_code, "success"
+        if len(current_code) > 500 and ('function(' in current_code or 'local' in current_code) and depth > 0:
+            if obf_type == 'generic':
+                return self._beautify(current_code), obf_type, "Static Payload Recovered"
 
-    def _is_vm_detected(self, code):
-        indicators = ["while", "if", "repeat", "getfenv"]
-        return all(x in code for x in indicators) and len(code) > 5000
+        use_emu = (method == 'dynamic')
+        layers, captures = execute_sandbox(current_code, use_emulator=use_emu)
 
-    def _run_dynamic_analysis(self, source):
-        return run_sandbox(source)
+        if layers:
+            payload = max(layers, key=len)
+            return self.process(payload, depth + 1)
+            
+        if captures:
+            for cap in captures:
+                if cap.startswith('\x1bLua'):
+                    return "-- [Bytecode Recovered]\n-- Use a bytecode lifter to read.\n", obf_type, "Raw Bytecode Found"
+                if len(cap) > len(source) * 0.4 and "function" in cap:
+                    return self._beautify(cap), obf_type, "Payload recovered from VM Memory"
+
+        return self._beautify(current_code), obf_type, "Analysis Complete"
+
+    def _beautify(self, code):
+        try:
+            return ast.to_lua_source(ast.parse(code))
+        except:
+            out, ind = [], 0
+            for line in code.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith(('end', 'else', 'elseif', 'until', '}', ')')):
+                    ind = max(0, ind - 1)
+                out.append('    ' * ind + line)
+                if line.startswith(('if', 'for', 'while', 'repeat', 'function', 'local function')) and not line.endswith('end'):
+                    ind += 1
+            return '\n'.join(out)

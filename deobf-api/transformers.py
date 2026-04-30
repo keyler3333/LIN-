@@ -1,34 +1,25 @@
 import re
-from luaparser import ast
-from luaparser.astnodes import Number, Name, LocalDeclare, Assign, Function, LocalFunction
-from luaparser.utils import Walker
 
 class Transformer:
     def transform(self, code):
         raise NotImplementedError
 
-class MathTransformer(Walker, Transformer):
+class MathTransformer(Transformer):
     def transform(self, code):
-        try:
-            tree = ast.parse(code)
-            self.walk(tree)
-            return ast.to_lua_source(tree)
-        except Exception:
-            return code
-
-    def visit_BinaryOp(self, node):
-        if isinstance(node.left, Number) and isinstance(node.right, Number):
-            op = node.op
-            l, r = node.left.n, node.right.n
+        def safe_calc(match):
             try:
-                if op == '+': return Number(l + r)
-                if op == '-': return Number(l - r)
-                if op == '*': return Number(l * r)
-                if op == '/' and r != 0: return Number(l / r)
-                if op == '^': return Number(l ** r)
+                a_str, op, b_str = match.groups()
+                a, b = int(a_str), int(b_str)
+                if op == '+': return str(a + b)
+                if op == '-': return str(a - b)
+                if op == '*': return str(a * b)
+                if op == '/' and b != 0: return str(a // b)
+                if op == '^': return str(a ** b)
             except:
                 pass
-        return node
+            return match.group(0)
+        code = re.sub(r'\((-?\d+)\s*([\+\-\*\/\^])\s*(-?\d+)\)', safe_calc, code)
+        return code
 
 class CipherMapTransformer(Transformer):
     def transform(self, code):
@@ -120,58 +111,18 @@ class EscapeSequenceTransformer(Transformer):
         code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
         return code
 
-class HexNameRenamer(Walker, Transformer):
+class HexNameRenamer(Transformer):
     def __init__(self):
         self.mapping = {}
         self.counter = 0
 
     def transform(self, code):
-        try:
-            tree = ast.parse(code)
-            self.walk(tree)
-            return ast.to_lua_source(tree)
-        except Exception:
-            return code
-
-    def _new_name(self):
-        self.counter += 1
-        return f"var{self.counter}"
-
-    def _rename(self, name_node):
-        old = name_node.value
-        if old.startswith("_0x") and re.match(r'_0x[0-9a-fA-F]+$', old):
-            if old not in self.mapping:
-                self.mapping[old] = self._new_name()
-            name_node.value = self.mapping[old]
-
-    def visit_Name(self, node):
-        self._rename(node)
-
-    def visit_LocalDeclare(self, node):
-        for name in node.names:
-            self._rename(name)
-        for val in node.values:
-            self.walk(val)
-
-    def visit_Assign(self, node):
-        for var in node.variables:
-            if isinstance(var, Name):
-                self._rename(var)
-            else:
-                self.walk(var)
-        for val in node.values:
-            self.walk(val)
-
-    def visit_Function(self, node):
-        if node.name:
-            self._rename(node.name)
-        for param in node.params.names:
-            self._rename(param)
-        self.walk(node.body)
-
-    def visit_LocalFunction(self, node):
-        if node.name:
-            self._rename(node.name)
-        for param in node.params.names:
-            self._rename(param)
-        self.walk(node.body)
+        self.mapping = {}
+        self.counter = 0
+        def replace_hex(match):
+            hex_name = match.group(0)
+            if hex_name not in self.mapping:
+                self.counter += 1
+                self.mapping[hex_name] = f"var{self.counter}"
+            return self.mapping[hex_name]
+        return re.sub(r'_0x[0-9a-fA-F]+', replace_hex, code)

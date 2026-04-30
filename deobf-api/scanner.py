@@ -19,10 +19,8 @@ class ObfuscationScanner:
             score = sum(1 for p in pats if re.search(p, text, re.IGNORECASE))
             if score > 0:
                 scores[name] = score
-                
         if not scores:
             return 'generic', 'sandbox_peel'
-            
         best_match = max(scores, key=lambda k: scores[k])
         method = 'dynamic' if best_match in ('luraph', 'ironbrew2', 'moonsec_vm', 'psu') else 'static_peel'
         return best_match, method

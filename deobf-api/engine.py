@@ -1,7 +1,6 @@
 from scanner import ObfuscationScanner
 from transformers import MathTransformer, CipherMapTransformer, EscapeSequenceTransformer
 from sandbox import execute_sandbox
-from luaparser import ast
 
 class DeobfEngine:
     def __init__(self):
@@ -33,7 +32,7 @@ class DeobfEngine:
         if layers:
             payload = max(layers, key=len)
             return self.process(payload, depth + 1)
-            
+
         if captures:
             for cap in captures:
                 if cap.startswith('\x1bLua'):
@@ -45,8 +44,9 @@ class DeobfEngine:
 
     def _beautify(self, code):
         try:
+            from luaparser import ast
             return ast.to_lua_source(ast.parse(code))
-        except:
+        except Exception:
             out, ind = [], 0
             for line in code.split('\n'):
                 line = line.strip()

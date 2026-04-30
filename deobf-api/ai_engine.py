@@ -12,25 +12,34 @@ except ImportError:
     pass
 
 from scanner import ObfuscationScanner
-from transformers import EscapeSequenceTransformer, MathTransformer, CipherMapTransformer, HexNameRenamer
+from transformers import (
+    EscapeSequenceTransformer,
+    MathTransformer,
+    CipherMapTransformer,
+    HexNameRenamer,
+    DictRenamer
+)
 from sandbox import execute_sandbox
 
-SYSTEM_PROMPT = """You are a Lua reverse-engineering AI. You have full control over a deobfuscation pipeline that includes static code transformations and a dynamic sandbox. Your job is to deobfuscate a given Lua script until the result is clean, readable code. You may call the available functions to analyze, transform, run sandbox, or finish when the job is done.
+SYSTEM_PROMPT = """You are a Lua reverse-engineering AI with full control over a modular deobfuscation pipeline.
+You can:
+- analyze the code to detect the obfuscator
+- apply static transformers (escape, math, cipher, hexrename, or custom variable renaming)
+- run the sandbox to peel VM layers or capture payloads
+- rename identifiers intelligently based on their usage patterns
 
-Always explain your reasoning briefly before calling a function. When you believe the code is fully deobfuscated, call `finish` with the final code and a summary of all methods you used and what worked.
-
-You must record everything you do in the final summary."""
+Use these tools iteratively until the script is readable. When done, call finalize with the clean code and a detailed summary."""
 
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "analyze",
-            "description": "Return obfuscator type and recommended method (static_peel or dynamic).",
+            "description": "Return detected obfuscator type and recommended method.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "Current Lua source code"}
+                    "code": {"type": "string"}
                 },
                 "required": ["code"]
             }
@@ -40,12 +49,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "apply_transformers",
-            "description": "Apply one or more static transformers to the code. Available transformers: escape (decode \\x, \\ddd sequences), math (fold constant arithmetic like (number+number)), cipher (decode MoonSec/IronBrew custom base64 constant tables), hexrename (rename _0x prefixed identifiers to readable names).",
+            "description": "Apply one or more static transformers. Available: escape, math, cipher, hexrename.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "Current Lua source code"},
-                    "transformers": {"type": "array", "items": {"type": "string", "enum": ["escape", "math", "cipher", "hexrename"]}, "description": "Which transformers to apply, in order."}
+                    "code": {"type": "string"},
+                    "transformers": {"type": "array", "items": {"type": "string", "enum": ["escape", "math", "cipher", "hexrename"]}}
                 },
                 "required": ["code", "transformers"]
             }
@@ -54,13 +63,28 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "run_sandbox",
-            "description": "Execute the code in the Lua sandbox (or Lune emulator if dynamic) and return any peeled layers or captured strings/bytecode.",
+            "name": "smart_rename",
+            "description": "Replace old variable/field names with meaningful new ones based on analysis.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "Current Lua source code"},
-                    "use_emulator": {"type": "boolean", "description": "Set true for Luraph/IronBrew2/MoonSec VM style obfuscators that need a full environment."}
+                    "code": {"type": "string"},
+                    "mapping": {"type": "object", "description": "Dictionary mapping old names to new names."}
+                },
+                "required": ["code", "mapping"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sandbox",
+            "description": "Execute the code in the Lua sandbox. use_emulator=True for heavy VM obfuscators.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "use_emulator": {"type": "boolean"}
                 },
                 "required": ["code", "use_emulator"]
             }
@@ -70,12 +94,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "finalize",
-            "description": "Finish the deobfuscation with the final code and a detailed summary of everything you did.",
+            "description": "Finish the deobfuscation and return the final code and a detailed summary.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "final_code": {"type": "string", "description": "The completely deobfuscated Lua code."},
-                    "summary": {"type": "string", "description": "Detailed summary of steps taken, methods used, what worked, and any issues."}
+                    "final_code": {"type": "string"},
+                    "summary": {"type": "string"}
                 },
                 "required": ["final_code", "summary"]
             }
@@ -160,6 +184,8 @@ class AIEngine:
         while iteration < self.max_iterations:
             iteration += 1
             msg = self._call_ai(messages)
+            if msg is None:
+                break
             messages.append(msg)
             if msg.tool_calls:
                 for tool_call in msg.tool_calls:
@@ -176,8 +202,7 @@ class AIEngine:
                         }
                     elif func_name == "analyze":
                         obf_type, method = self.scanner.analyze(current_code)
-                        result_text = f"Detected obfuscator: {obf_type}, recommended method: {method}"
-                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result_text})
+                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": f"Detected: {obf_type}, method: {method}"})
                     elif func_name == "apply_transformers":
                         code = current_code
                         applied = []
@@ -186,27 +211,32 @@ class AIEngine:
                                 code = self.transformers[tname].transform(code)
                                 applied.append(tname)
                         current_code = code
-                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": f"Applied transformers: {', '.join(applied)}. Code length now: {len(current_code)}."})
+                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": f"Applied: {', '.join(applied)}. Length: {len(current_code)}."})
+                    elif func_name == "smart_rename":
+                        mapping = args["mapping"]
+                        code = DictRenamer(mapping).transform(current_code)
+                        current_code = code
+                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": f"Renamed {len(mapping)} identifiers."})
                     elif func_name == "run_sandbox":
                         use_emu = args["use_emulator"]
                         layers, captures = execute_sandbox(current_code, use_emulator=use_emu)
                         if layers:
                             payload = max(layers, key=len)
                             current_code = payload
-                            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": f"Sandbox peeled a layer of size {len(payload)} bytes."})
+                            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": f"Sandbox peeled layer of size {len(payload)}."})
                         elif captures:
                             for cap in captures:
                                 if cap.startswith('\x1bLua'):
-                                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox captured Lua 5.1 bytecode. This needs bytecode lifting."})
+                                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox captured bytecode."})
                                     break
                                 if len(cap) > len(current_code)*0.4 and "function" in cap:
                                     current_code = cap
-                                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox recovered a large payload."})
+                                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox recovered payload."})
                                     break
                             else:
-                                messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox produced no usable output."})
+                                messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox gave nothing useful."})
                         else:
-                            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Sandbox produced no layers or captures."})
+                            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "No sandbox output."})
                     else:
                         messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": "Unknown function."})
             else:
@@ -215,6 +245,6 @@ class AIEngine:
         return {
             "result": final_code,
             "detected": "ai_driven",
-            "diagnostic": "AI reached iteration limit without finalizing.",
+            "diagnostic": "AI did not finalize within iteration limit.",
             "ai_feedback": "AI did not call finalize."
         }

@@ -1,8 +1,6 @@
 import re
-import base64
-import struct
 from luaparser import ast
-from luaparser.astnodes import Number, String, BinaryOp, UnaryOp, Call, Name, LocalAssign, Block
+from luaparser.astnodes import Number
 from luaparser.utils import Walker
 
 class Transformer:
@@ -27,7 +25,6 @@ class MathTransformer(Walker, Transformer):
                 if op == '-': return Number(l - r)
                 if op == '*': return Number(l * r)
                 if op == '/' and r != 0: return Number(l / r)
-                if op == '%' and r != 0: return Number(l % r)
                 if op == '^': return Number(l ** r)
             except:
                 pass
@@ -45,7 +42,6 @@ class CipherMapTransformer(Transformer):
             
         encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(1))
         shuffle_pairs = self._extract_shuffles(code)
-        
         if shuffle_pairs:
             encoded_strings = self._unshuffle(encoded_strings, shuffle_pairs)
 
@@ -53,7 +49,6 @@ class CipherMapTransformer(Transformer):
             decoded = self._decode(s, cipher_map)
             if decoded and any(c.isprintable() for c in decoded):
                 code = code.replace(f'"{s}"', f'"{decoded}"')
-                
         return code
 
     def _extract_mapping(self, code):
@@ -61,7 +56,6 @@ class CipherMapTransformer(Transformer):
             content = match.group(1)
             if '=' not in content or content.count('=') < 10:
                 continue
-                
             mapping = {}
             pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', content)
             for k, expr in pairs:
@@ -70,7 +64,6 @@ class CipherMapTransformer(Transformer):
                     mapping[k.strip()] = val & 0x3F
                 except:
                     continue
-            
             if len(mapping) > 30:
                 return mapping
         return None

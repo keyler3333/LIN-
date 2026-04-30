@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import io
 from datetime import datetime
 
 GROQ_AVAILABLE = False

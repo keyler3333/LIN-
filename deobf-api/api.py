@@ -4,27 +4,26 @@ from engine import DeobfEngine
 app = Flask(__name__)
 engine = DeobfEngine()
 
+@app.route('/health')
+def health():
+    return jsonify({'ok': True, 'engine': 'active'})
+
 @app.route('/deobf', methods=['POST'])
 def deobf():
     data = request.get_json(silent=True)
-    if not data:
-        return jsonify({'error': 'No data'}), 400
-    source = data.get('source', '')
-    if not source.strip():
-        return jsonify({'error': 'No source'}), 400
+    if not data or not data.get('source', '').strip():
+        return jsonify({'error': 'No source code provided'}), 400
+
     try:
-        result, status = engine.process(source)
+        result, obf_type, diag = engine.process(data['source'])
         return jsonify({
             'result': result,
-            'status': status,
-            'success': True
+            'detected': obf_type,
+            'diagnostic': diag,
+            'method': 'pipeline'
         })
     except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
-
-@app.route('/health')
-def health():
-    return jsonify({'ok': True})
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

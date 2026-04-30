@@ -229,7 +229,6 @@ local function _dummy(name)
     return d
 end
 
-local _newproxy_userdata = {}
 local function _newproxy(addMeta)
     local u = {}
     if addMeta then

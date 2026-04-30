@@ -125,4 +125,5 @@ class HexNameRenamer(Transformer):
                 self.counter += 1
                 self.mapping[hex_name] = f"var{self.counter}"
             return self.mapping[hex_name]
-        return re.sub(r'_0x[0-9a-fA-F]+', replace_hex, code)
+        code = re.sub(r'(?<![^\s\[\(\)\.\=\+\-\*\/\^\%\#\<\>\~\&\|\,])(_0x[0-9a-fA-F]+)(?=[^\w]|$)', replace_hex, code)
+        return code

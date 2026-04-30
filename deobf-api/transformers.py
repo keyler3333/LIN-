@@ -1,34 +1,26 @@
 import re
-from luaparser import ast
-from luaparser.astnodes import Number
-from luaparser.utils import Walker
 
 class Transformer:
     def transform(self, code):
         raise NotImplementedError
 
-class MathTransformer(Walker, Transformer):
+class MathTransformer(Transformer):
     def transform(self, code):
-        try:
-            tree = ast.parse(code)
-            self.walk(tree)
-            return ast.to_lua_source(tree)
-        except Exception:
-            return code
-
-    def visit_BinaryOp(self, node):
-        if isinstance(node.left, Number) and isinstance(node.right, Number):
-            op = node.op
-            l, r = node.left.n, node.right.n
+        def safe_calc(match):
             try:
-                if op == '+': return Number(l + r)
-                if op == '-': return Number(l - r)
-                if op == '*': return Number(l * r)
-                if op == '/' and r != 0: return Number(l / r)
-                if op == '^': return Number(l ** r)
+                a_str, op, b_str = match.groups()
+                a, b = int(a_str), int(b_str)
+                if op == '+': return str(a + b)
+                if op == '-': return str(a - b)
+                if op == '*': return str(a * b)
+                if op == '/': return str(a // b) if b != 0 else match.group(0)
+                if op == '^': return str(a ** b)
             except:
                 pass
-        return node
+            return match.group(0)
+
+        code = re.sub(r'\((-?\d+)\s*([\+\-\*\/\^])\s*(-?\d+)\)', safe_calc, code)
+        return code
 
 class CipherMapTransformer(Transformer):
     def transform(self, code):
@@ -39,7 +31,7 @@ class CipherMapTransformer(Transformer):
         table_match = re.search(r'local\s+[a-zA-Z_]\w*\s*=\s*\{(.*?)\}', code, re.DOTALL)
         if not table_match:
             return code
-            
+
         encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(1))
         shuffle_pairs = self._extract_shuffles(code)
         if shuffle_pairs:

@@ -1,5 +1,12 @@
 from scanner import ObfuscationScanner
-from transformers import MathTransformer, CipherMapTransformer, EscapeSequenceTransformer, HexNameRenamer
+from transformers import (
+    EscapeSequenceTransformer,
+    MathTransformer,
+    CipherMapTransformer,
+    HexNameRenamer,
+    StringCharDecoder,
+    OpaquePredicateRemover
+)
 from sandbox import execute_sandbox
 
 class DeobfEngine:
@@ -9,6 +16,8 @@ class DeobfEngine:
             EscapeSequenceTransformer(),
             MathTransformer(),
             CipherMapTransformer(),
+            StringCharDecoder(),
+            OpaquePredicateRemover(),
             HexNameRenamer()
         ]
         self.max_depth = 5

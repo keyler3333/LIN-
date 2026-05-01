@@ -1,34 +1,42 @@
-from scanner import WeAreDevsScanner
-from transformers import WeAreDevsLifter, StaticCleanup
+from transformers import (
+    WeAreDevsLifter,
+    EscapeSequenceTransformer,
+    MathTransformer,
+    HexNameRenamer
+)
 from sandbox import execute_sandbox
 
-class WeAreDevsEngine:
+class DeobfEngine:
     def __init__(self):
-        self.scanner = WeAreDevsScanner()
-        self.lifter = WeAreDevsLifter()
-        self.cleaner = StaticCleanup()
+        self.transformers = [
+            EscapeSequenceTransformer(),
+            MathTransformer(),
+            WeAreDevsLifter(),
+            HexNameRenamer()
+        ]
+        self.max_depth = 5
 
-    def process(self, source):
-        if not self.scanner.is_wearedevs(source):
-            return self._beautify(source), "not_wearedevs", "Not a WeAreDevs script"
+    def process(self, source, depth=0):
+        if depth >= self.max_depth:
+            return self._beautify(source), "max_depth", "Max recursion depth reached"
 
-        lifted = self.lifter.lift(source)
-        if lifted:
-            return self._beautify(lifted), "wearedevs_lift", "Successfully lifted"
+        current_code = source
+        for t in self.transformers:
+            current_code = t.transform(current_code)
 
-        cleaned = self.cleaner.transform(source)
-        layers, captures = execute_sandbox(cleaned, use_emulator=False)
+        if depth > 0 and len(current_code) > 200 and ('function(' in current_code or 'local' in current_code):
+            return self._beautify(current_code), "lifted", "Static lift succeeded"
+
+        layers, captures = execute_sandbox(current_code, use_emulator=False)
         if layers:
             payload = max(layers, key=len)
-            return self._beautify(payload), "sandbox_peel", "Sandbox extracted layer"
+            return self.process(payload, depth + 1)
         if captures:
             for cap in captures:
-                if cap.startswith('\x1bLua'):
-                    return "-- [Bytecode Recovered]\n-- Use a bytecode lifter to read.\n", "raw_bytecode", "Bytecode found but not liftable"
                 if len(cap) > 100 and "function" in cap:
-                    return self._beautify(cap), "captured", "Sandbox captured payload"
+                    return self._beautify(cap), "captured", "Sandbox extracted payload"
 
-        return self._beautify(cleaned), "fallback", "Cleanup only"
+        return self._beautify(current_code), "done", "Analysis complete"
 
     def _beautify(self, code):
         try:

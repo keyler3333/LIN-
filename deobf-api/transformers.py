@@ -15,10 +15,11 @@ class MathTransformer(Transformer):
                 if op == '*': return str(a * b)
                 if op == '/' and b != 0: return str(a // b)
                 if op == '^': return str(a ** b)
+                if op == '%' and b != 0: return str(a % b)
             except:
                 pass
             return match.group(0)
-        code = re.sub(r'\((-?\d+)\s*([\+\-\*\/\^])\s*(-?\d+)\)', safe_calc, code)
+        code = re.sub(r'\((-?\d+)\s*([\+\-\*\/\^\%])\s*(-?\d+)\)', safe_calc, code)
         return code
 
 class CipherMapTransformer(Transformer):
@@ -134,4 +135,34 @@ class DictRenamer(Transformer):
                 new,
                 code
             )
+        return code
+
+class StringCharDecoder(Transformer):
+    def transform(self, code):
+        def decode_string_char(match):
+            inner = match.group(1)
+            try:
+                nums = [int(x.strip()) for x in inner.split(',') if x.strip().isdigit()]
+                decoded = ''.join(chr(n) for n in nums if 0 <= n < 256)
+                if len(decoded) >= 1 and any(c.isprintable() or c in '\n\r\t' for c in decoded):
+                    escaped = decoded.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                    return f'"{escaped}"'
+            except:
+                pass
+            return match.group(0)
+        code = re.sub(r'string\.char\s*\(\s*([\d\s,]+)\s*\)', decode_string_char, code)
+        return code
+
+class OpaquePredicateRemover(Transformer):
+    def transform(self, code):
+        always_true_patterns = [
+            r'\(\s*1\s*\+\s*1\s*==\s*2\s*\)\s+and\s+',
+            r'\(\s*2\s*\*\s*3\s*>\s*5\s*\)\s+and\s+',
+            r'\(\s*10\s*\-\s*5\s*==\s*5\s*\)\s+and\s+',
+            r'\(\s*1\s*\*\s*1\s*>=\s*0\s*\)\s+and\s+',
+            r'\(\s*\d+\s*==\s*\d+\s*\)\s+and\s+',
+            r'\(\s*\d+\s*[<>=!]+\s*\d+\s*\)\s+and\s+',
+        ]
+        for pat in always_true_patterns:
+            code = re.sub(pat, '', code)
         return code

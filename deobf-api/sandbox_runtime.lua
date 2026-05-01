@@ -253,6 +253,11 @@ local function _newproxy(addMeta)
     return u
 end
 
+local function _stub(v, name)
+    if v ~= nil then return v end
+    return _dummy(name)
+end
+
 _env = {}
 local _safe = {
     string = string,
@@ -336,6 +341,8 @@ local _safe = {
         wait = function(n)
             return n or 0
         end,
+        defer = function(f) _pc(f) end,
+        cancel = function() end
     },
     shared = {},
     _VERSION = "Lua 5.1",
@@ -366,7 +373,11 @@ local _safe = {
         fromRGB = function(...) return _dummy("Color3") end
     },
     UDim2 = { new = function(...) return _dummy("UDim2") end },
-    Enum = setmetatable({}, { __index = function(t, k) return k end }),
+    Enum = setmetatable({}, { __index = function(t, k)
+        local enum = _dummy("Enum." .. k)
+        rawset(t, k, enum)
+        return enum
+    end }),
     Drawing = _dummy("Drawing"),
     syn = _dummy("syn"),
     writefile = function() end,
@@ -391,18 +402,116 @@ local _safe = {
     newcclosure = function(f) return f end,
     clonefunction = function(f) return f end,
     rconsole = { print = function() end, clear = function() end },
+    getgenv = function() return _env end,
+    getrenv = function() return _G end,
+    getgc = function() return {} end,
+    getloadedmodules = function() return {} end,
+    getconnections = function() return {} end,
+    firesignal = function() end,
+    fireclickdetector = function() end,
+    fireproximityprompt = function() end,
+    firetouchinterest = function() end,
+    cloneref = function(i) return i end,
+    compareinstances = function(a,b) return a==b end,
+    isluau = function() return true end,
+    setclipboard = function() end,
+    queueteleport = function() end,
+    syn_queue_on_teleport = function() end,
+    setreadonly = function() end,
+    makereadonly = function() end,
+    makewriteable = function() end,
+    getrawmetatable = function() return nil end,
+    setrawmetatable = function() end,
+    getconstants = function() return {} end,
+    setconstant = function() end,
+    getupvalues = function() return {} end,
+    setupvalue = function() end,
+    getupvalue = function() return nil end,
+    getscriptclosure = function() return function() end,
+    restorefunction = function(f) return f end,
+    detourfunction = function(f) return f end,
+    replaceclosure = function() end,
+    unhookfunction = function() end,
+    getcallingscript = function() return _dummy("Script") end,
+    getscripthash = function() return "" end,
+    getscripts = function() return {} end,
+    getmodules = function() return {} end,
+    getproperties = function() return {} end,
+    getnilinstances = function() return {} end,
+    debug_getregistry = function() return {} end,
+    debug_traceback = function() return "" end,
+    crypt = {
+        base64encode = function() return "" end,
+        base64decode = function() return "" end,
+        encrypt = function() return "" end,
+        decrypt = function() return "" end,
+    },
+    gethui = function() return _dummy("Gui") end,
+    --- All Roblox Services list
+    Lighting = _dummy("Lighting"),
+    ReplicatedStorage = _dummy("ReplicatedStorage"),
+    ServerStorage = _dummy("ServerStorage"),
+    ServerScriptService = _dummy("ServerScriptService"),
+    StarterGui = _dummy("StarterGui"),
+    StarterPlayer = _dummy("StarterPlayer"),
+    StarterPack = _dummy("StarterPack"),
+    Chat = _dummy("Chat"),
+    SoundService = _dummy("SoundService"),
+    Debris = _dummy("Debris"),
+    Teams = _dummy("Teams"),
+    InsertService = _dummy("InsertService"),
+    MarketplaceService = _dummy("MarketplaceService"),
+    TeleportService = _dummy("TeleportService"),
+    ContextActionService = _dummy("ContextActionService"),
+    CollectionService = _dummy("CollectionService"),
+    PathfindingService = _dummy("PathfindingService"),
+    BadgeService = _dummy("BadgeService"),
+    PointsService = _dummy("PointsService"),
+    SocialService = _dummy("SocialService"),
+    GroupService = _dummy("GroupService"),
+    DataStoreService = _dummy("DataStoreService"),
+    MessagingService = _dummy("MessagingService"),
+    ScriptContext = _dummy("ScriptContext"),
+    LogService = _dummy("LogService"),
+    TestService = _dummy("TestService"),
+    AnalyticsService = _dummy("AnalyticsService"),
+    AvatarEditorService = _dummy("AvatarEditorService"),
+    AccountService = _dummy("AccountService"),
+    AssetService = _dummy("AssetService"),
+    BrowserService = _dummy("BrowserService"),
+    VRService = _dummy("VRService"),
+    HapticService = _dummy("HapticService"),
+    TouchInputService = _dummy("TouchInputService"),
+    NotificationService = _dummy("NotificationService"),
+    PolicyService = _dummy("PolicyService"),
+    GamepadService = _dummy("GamepadService"),
+    GuiService = _dummy("GuiService"),
+    NetworkClient = _dummy("NetworkClient"),
+    PhysicsService = _dummy("PhysicsService"),
+    ScriptService = _dummy("ScriptService"),
+    StarterScripts = _dummy("StarterScripts"),
+    StudioService = _dummy("StudioService"),
+    MouseService = _dummy("MouseService"),
+    WebService = _dummy("WebService"),
+    DataModelPatchService = _dummy("DataModelPatchService"),
+    MemoryStoreService = _dummy("MemoryStoreService"),
+    TextChatService = _dummy("TextChatService"),
+    KeyframeSequenceProvider = _dummy("KeyframeSequenceProvider"),
+    ExperienceAuthService = _dummy("ExperienceAuthService"),
+    AssetDeliveryService = _dummy("AssetDeliveryService"),
+    OmniRecommendationsService = _dummy("OmniRecommendationsService"),
+    PackageService = _dummy("PackageService"),
 }
 
 _sm(_env, {
     __index = function(_, k)
         _L("ENV_ACCESS: " .. _ts(k))
-        if _safe[k] ~= nil then
-            return _safe[k]
+        local v = _safe[k]
+        if v ~= nil then
+            return v
         end
         if k == "getfenv" then
-            return function(n)
-                return _env
-            end
+            return function(n) return _env end
         end
         if k == "setfenv" then
             return function(n, t)
@@ -421,7 +530,7 @@ _sm(_env, {
             return function() return _env end
         end
         local child = _dummy(k)
-        _rs(_env, k, child)
+        _safe[k] = child
         return child
     end,
     __newindex = function(_, k, v)
@@ -429,73 +538,9 @@ _sm(_env, {
     end,
 })
 
-_rs(_env, "loadstring", loadstring)
-_rs(_env, "load", loadstring)
-_rs(_env, "getfenv", function(n) return _env end)
-_rs(_env, "setfenv", function(n, t)
-    if _ty(t) == "table" then
-        for k, v in _pa(t) do
-            _rs(_env, k, v)
-        end
-    end
-    return t
-end)
-_rs(_env, "_G", _env)
-_rs(_env, "_ENV", _env)
-_rs(_env, "shared", _env)
-_rs(_env, "string", string)
-_rs(_env, "math", math)
-_rs(_env, "table", table)
-_rs(_env, "bit", bit)
-_rs(_env, "bit32", bit)
-_rs(_env, "pairs", _pa)
-_rs(_env, "ipairs", _ip)
-_rs(_env, "select", _sl)
-_rs(_env, "next", _nx)
-_rs(_env, "tostring", _ts)
-_rs(_env, "tonumber", tonumber)
-_rs(_env, "type", _ty)
-_rs(_env, "rawget", rawget)
-_rs(_env, "rawset", rawset)
-_rs(_env, "rawequal", rawequal)
-_rs(_env, "rawlen", rawlen)
-_rs(_env, "setmetatable", _sm)
-_rs(_env, "getmetatable", _gm)
-_rs(_env, "unpack", _un)
-_rs(_env, "pcall", pcall)
-_rs(_env, "xpcall", xpcall)
-_rs(_env, "error", _er)
-_rs(_env, "assert", _as)
-_rs(_env, "print", function() end)
-_rs(_env, "warn", function() end)
-_rs(_env, "newproxy", _newproxy)
-_rs(_env, "coroutine", coroutine)
-_rs(_env, "debug", _safe.debug)
-_rs(_env, "os", _safe.os)
-_rs(_env, "tick", _safe.tick)
-_rs(_env, "time", _safe.time)
-_rs(_env, "wait", _safe.wait)
-_rs(_env, "spawn", _safe.spawn)
-_rs(_env, "delay", _safe.delay)
-_rs(_env, "task", _safe.task)
-_rs(_env, "game", _safe.game)
-_rs(_env, "workspace", _safe.workspace)
-_rs(_env, "script", _safe.script)
-_rs(_env, "Players", _safe.Players)
-_rs(_env, "Instance", _safe.Instance)
-_rs(_env, "Vector3", _safe.Vector3)
-_rs(_env, "Vector2", _safe.Vector2)
-_rs(_env, "CFrame", _safe.CFrame)
-_rs(_env, "Color3", _safe.Color3)
-_rs(_env, "UDim2", _safe.UDim2)
-_rs(_env, "Enum", _safe.Enum)
-_rs(_env, "syn", _safe.syn)
-_rs(_env, "Drawing", _safe.Drawing)
-_rs(_env, "writefile", _safe.writefile)
-_rs(_env, "readfile", _safe.readfile)
-_rs(_env, "request", _safe.request)
-_rs(_env, "identifyexecutor", _safe.identifyexecutor)
-_rs(_env, "checkcaller", _safe.checkcaller)
+for k, v in pairs(_safe) do
+    _rs(_env, k, v)
+end
 
 local function _run()
     local f = io.open(_inp, "r")

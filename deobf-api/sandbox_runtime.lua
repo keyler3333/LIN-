@@ -54,6 +54,13 @@ rawget = function(t, k)
 end
 rawset(_G, "rawget", rawget)
 
+rawset = function(t, k, v)
+    _capture(k)
+    _capture(v)
+    _rs(t, k, v)
+end
+rawset(_G, "rawset", rawset)
+
 local _orig_ls = _ls
 loadstring = function(code, chunkname)
     if _ty(code) == "function" then
@@ -105,6 +112,11 @@ table.concat = function(t, sep, i, j)
         _capture(r)
     end
     return r
+end
+
+pcall = function(f, ...)
+    _capture(f)
+    return _pc(f, ...)
 end
 
 if not bit then
@@ -257,13 +269,13 @@ local _safe = {
     type = _ty,
     typeof = _ty,
     rawget = rawget,
-    rawset = _rs,
+    rawset = rawset,
     rawequal = rawequal,
     rawlen = rawlen,
     setmetatable = _sm,
     getmetatable = _gm,
     unpack = _un,
-    pcall = _pc,
+    pcall = pcall,
     xpcall = xpcall,
     error = _er,
     assert = _as,
@@ -444,13 +456,13 @@ _rs(_env, "tostring", _ts)
 _rs(_env, "tonumber", tonumber)
 _rs(_env, "type", _ty)
 _rs(_env, "rawget", rawget)
-_rs(_env, "rawset", _rs)
+_rs(_env, "rawset", rawset)
 _rs(_env, "rawequal", rawequal)
 _rs(_env, "rawlen", rawlen)
 _rs(_env, "setmetatable", _sm)
 _rs(_env, "getmetatable", _gm)
 _rs(_env, "unpack", _un)
-_rs(_env, "pcall", _pc)
+_rs(_env, "pcall", pcall)
 _rs(_env, "xpcall", xpcall)
 _rs(_env, "error", _er)
 _rs(_env, "assert", _as)

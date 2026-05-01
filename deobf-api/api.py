@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
-from engine import WeAreDevsEngine
+from engine import DeobfEngine
 
 app = Flask(__name__)
-engine = WeAreDevsEngine()
+engine = DeobfEngine()
 
 @app.route('/health')
 def health():

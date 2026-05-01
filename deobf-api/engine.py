@@ -1,11 +1,13 @@
 from scanner import ObfuscationScanner
 from transformers import (
+    WeAreDevsLifter,
     EscapeSequenceTransformer,
     MathTransformer,
     CipherMapTransformer,
     HexNameRenamer,
     StringCharDecoder,
-    OpaquePredicateRemover
+    OpaquePredicateRemover,
+    ExecutorCallResolver
 )
 from sandbox import execute_sandbox
 
@@ -13,8 +15,10 @@ class DeobfEngine:
     def __init__(self):
         self.scanner = ObfuscationScanner()
         self.transformers = [
+            ExecutorCallResolver(),
             EscapeSequenceTransformer(),
             MathTransformer(),
+            WeAreDevsLifter(),
             CipherMapTransformer(),
             StringCharDecoder(),
             OpaquePredicateRemover(),

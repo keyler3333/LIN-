@@ -2,40 +2,31 @@ import re
 import base64
 import struct
 
-class Transformer:
-    def transform(self, code):
-        raise NotImplementedError
-
-class WeAreDevsLifter(Transformer):
-    def transform(self, code):
-        lifted = self._try_lift(code)
-        if lifted is not None:
-            return lifted
-        return code
-
-    def _try_lift(self, source):
+class WeAreDevsLifter:
+    def lift(self, source):
         table_match = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
         if not table_match:
             return None
         raw_table = table_match.group(1)
         encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', raw_table)
-        if not encoded_strings:
-            return None
 
+        # Extract decoder map 'b'
         decoder_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
         if not decoder_match:
             return None
-        decoder_body = decoder_match.group(1)
         char_map = {}
-        for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_body):
+        for pair in re.finditer(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', decoder_match.group(1)):
             key = pair.group(1).strip()
             expr = pair.group(2).replace(' ', '')
             try:
-                val = eval(expr)
-                char_map[key] = val & 0x3F
+                val = eval(expr) & 0x3F
+                char_map[key] = val
             except:
                 pass
+        if len(char_map) < 40:   # must be a full Base64 table
+            return None
 
+        # Unshuffle N table
         shuffle_pairs = []
         for a_expr, b_expr in re.findall(r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}', source):
             try:
@@ -44,7 +35,6 @@ class WeAreDevsLifter(Transformer):
                 shuffle_pairs.append([a, b])
             except:
                 pass
-
         strings = list(encoded_strings)
         for a, b in reversed(shuffle_pairs):
             a_idx, b_idx = a - 1, b - 1
@@ -55,40 +45,35 @@ class WeAreDevsLifter(Transformer):
                 a_idx += 1
                 b_idx -= 1
 
-        decoded_chunks = []
+        # Decode all strings
+        decoded_bytes = bytearray()
         for s in strings:
-            byte_buffer = bytearray()
-            acc, bits, count = 0, 0, 0
+            accum, bits, count = 0, 0, 0
             for ch in s:
                 if ch == '=':
                     if count == 3:
-                        byte_buffer.append((acc >> 16) & 0xFF)
-                        byte_buffer.append((acc >> 8) & 0xFF)
+                        decoded_bytes.append((accum >> 16) & 0xFF)
+                        decoded_bytes.append((accum >> 8) & 0xFF)
                     elif count == 2:
-                        byte_buffer.append((acc >> 16) & 0xFF)
+                        decoded_bytes.append((accum >> 16) & 0xFF)
                     break
                 val = char_map.get(ch)
                 if val is None:
                     continue
-                acc = (acc << 6) | val
+                accum = (accum << 6) | val
                 bits += 6
                 count += 1
                 if count == 4:
-                    byte_buffer.extend([
-                        (acc >> 16) & 0xFF,
-                        (acc >> 8) & 0xFF,
-                        acc & 0xFF,
+                    decoded_bytes.extend([
+                        (accum >> 16) & 0xFF,
+                        (accum >> 8) & 0xFF,
+                        accum & 0xFF,
                     ])
-                    acc, bits, count = 0, 0, 0
-            if byte_buffer:
-                decoded_chunks.append(bytes(byte_buffer))
+                    accum, bits, count = 0, 0, 0
+        data = bytes(decoded_bytes)
 
-        full_data = bytearray()
-        for chunk in decoded_chunks:
-            full_data.extend(chunk)
-
-        if len(full_data) >= 12 and full_data[:4] == b'\x1bLua':
-            return self._lift_bytecode(full_data)
+        if len(data) >= 12 and data[:4] == b'\x1bLua':
+            return self._lift_bytecode(data)
         return None
 
     def _lift_bytecode(self, bc):
@@ -234,8 +219,11 @@ class WeAreDevsLifter(Transformer):
 
         return "\n".join(lines)
 
-class MathTransformer(Transformer):
+
+class StaticCleanup:
     def transform(self, code):
+        code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
+        code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
         def safe_calc(match):
             try:
                 a_str, op, b_str = match.groups()
@@ -243,200 +231,9 @@ class MathTransformer(Transformer):
                 if op == '+': return str(a + b)
                 if op == '-': return str(a - b)
                 if op == '*': return str(a * b)
-                if op == '/' and b != 0: return str(a // b)
-                if op == '^': return str(a ** b)
-                if op == '%' and b != 0: return str(a % b)
+                if op == '/': return str(a // b) if b != 0 else match.group(0)
             except:
                 pass
             return match.group(0)
-        code = re.sub(r'\((-?\d+)\s*([\+\-\*\/\^\%])\s*(-?\d+)\)', safe_calc, code)
+        code = re.sub(r'\((-?\d+)\s*([\+\-\*\/])\s*(-?\d+)\)', safe_calc, code)
         return code
-
-class CipherMapTransformer(Transformer):
-    def transform(self, code):
-        cipher_map = self._extract_mapping(code)
-        if not cipher_map:
-            return code
-
-        table_match = re.search(r'local\s+[a-zA-Z_]\w*\s*=\s*\{(.*?)\}', code, re.DOTALL)
-        if not table_match:
-            return code
-
-        encoded_strings = re.findall(r'"((?:\\.|[^"\\])*)"', table_match.group(1))
-        shuffle_pairs = self._extract_shuffles(code)
-        if shuffle_pairs:
-            encoded_strings = self._unshuffle(encoded_strings, shuffle_pairs)
-
-        for s in encoded_strings:
-            decoded = self._decode(s, cipher_map)
-            if decoded and any(c.isprintable() for c in decoded):
-                code = code.replace(f'"{s}"', f'"{decoded}"')
-        return code
-
-    def _extract_mapping(self, code):
-        for match in re.finditer(r'local\s+\w+\s*=\s*\{(.*?)\}', code, re.DOTALL):
-            content = match.group(1)
-            if '=' not in content or content.count('=') < 10:
-                continue
-            mapping = {}
-            pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', content)
-            for k, expr in pairs:
-                try:
-                    val = eval(expr.replace(' ', ''), {"__builtins__": None}, {})
-                    mapping[k.strip()] = val & 0x3F
-                except:
-                    continue
-            if len(mapping) > 30:
-                return mapping
-        return None
-
-    def _extract_shuffles(self, code):
-        pairs = []
-        for a_expr, b_expr in re.findall(r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}', code):
-            try:
-                a = eval(a_expr.replace(' ', ''), {"__builtins__": None}, {})
-                b = eval(b_expr.replace(' ', ''), {"__builtins__": None}, {})
-                pairs.append([a, b])
-            except:
-                continue
-        return pairs
-
-    def _unshuffle(self, strings, pairs):
-        res = list(strings)
-        for a, b in reversed(pairs):
-            a_idx, b_idx = a - 1, b - 1
-            if a_idx < 0 or b_idx >= len(res):
-                continue
-            while a_idx < b_idx:
-                res[a_idx], res[b_idx] = res[b_idx], res[a_idx]
-                a_idx += 1
-                b_idx -= 1
-        return res
-
-    def _decode(self, s, cmap):
-        buf = bytearray()
-        acc = count = 0
-        for ch in s:
-            if ch == '=':
-                if count == 3:
-                    buf.extend([(acc >> 16) & 0xFF, (acc >> 8) & 0xFF])
-                elif count == 2:
-                    buf.append((acc >> 16) & 0xFF)
-                break
-            val = cmap.get(ch)
-            if val is None:
-                continue
-            acc = (acc << 6) | val
-            count += 1
-            if count == 4:
-                buf.extend([(acc >> 16) & 0xFF, (acc >> 8) & 0xFF, acc & 0xFF])
-                acc = count = 0
-        try:
-            return buf.decode('utf-8', errors='ignore')
-        except:
-            return buf.decode('latin-1', errors='ignore')
-
-class EscapeSequenceTransformer(Transformer):
-    def transform(self, code):
-        code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
-        code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
-        return code
-
-class HexNameRenamer(Transformer):
-    def transform(self, code):
-        self.mapping = {}
-        self.counter = 0
-        def replace_hex(match):
-            hex_name = match.group(0)
-            if hex_name not in self.mapping:
-                self.counter += 1
-                self.mapping[hex_name] = f"var{self.counter}"
-            return self.mapping[hex_name]
-        return re.sub(r'(?<![^\s\[\(\)\.\=\+\-\*\/\^\%\#\<\>\~\&\|\,])(_0x[0-9a-fA-F]+)(?=[^\w]|$)', replace_hex, code)
-
-class DictRenamer(Transformer):
-    def __init__(self, mapping):
-        self.mapping = mapping
-
-    def transform(self, code):
-        for old, new in self.mapping.items():
-            code = re.sub(
-                r'(?<![^\w\.\:])' + re.escape(old) + r'(?![^\w])',
-                new,
-                code
-            )
-        return code
-
-class StringCharDecoder(Transformer):
-    def transform(self, code):
-        def decode_string_char(match):
-            inner = match.group(1)
-            try:
-                nums = [int(x.strip()) for x in inner.split(',') if x.strip().isdigit()]
-                decoded = ''.join(chr(n) for n in nums if 0 <= n < 256)
-                if len(decoded) >= 1 and any(c.isprintable() or c in '\n\r\t' for c in decoded):
-                    escaped = decoded.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                    return f'"{escaped}"'
-            except:
-                pass
-            return match.group(0)
-        code = re.sub(r'string\.char\s*\(\s*([\d\s,]+)\s*\)', decode_string_char, code)
-        return code
-
-class OpaquePredicateRemover(Transformer):
-    def transform(self, code):
-        always_true_patterns = [
-            r'\(\s*1\s*\+\s*1\s*==\s*2\s*\)\s+and\s+',
-            r'\(\s*2\s*\*\s*3\s*>\s*5\s*\)\s+and\s+',
-            r'\(\s*10\s*\-\s*5\s*==\s*5\s*\)\s+and\s+',
-            r'\(\s*1\s*\*\s*1\s*>=\s*0\s*\)\s+and\s+',
-            r'\(\s*\d+\s*==\s*\d+\s*\)\s+and\s+',
-            r'\(\s*\d+\s*[<>=!]+\s*\d+\s*\)\s+and\s+',
-        ]
-        for pat in always_true_patterns:
-            code = re.sub(pat, '', code)
-        return code
-
-class ExecutorCallResolver(Transformer):
-    def transform(self, code):
-        preamble = """--[[ Executor Globals Stub ]]
-local getgenv = getgenv or function() return getfenv() end
-local getrenv = getrenv or getgenv
-local getsenv = getsenv or getgenv
-local cloneref = cloneref or function(i) return i end
-local compareinstances = compareinstances or function(a,b) return a==b end
-local isluau = isluau or function() return true end
-local setclipboard = setclipboard or function() end
-local queueteleport = queueteleport or function() end
-local syn_queue_on_teleport = syn_queue_on_teleport or function() end
-local setreadonly = setreadonly or function() end
-local makereadonly = makereadonly or function() end
-local makewriteable = makewriteable or function() end
-local getrawmetatable = getrawmetatable or function() return nil end
-local setrawmetatable = setrawmetatable or function() end
-local getconstants = getconstants or function() return {} end
-local setconstant = setconstant or function() end
-local getupvalues = getupvalues or function() return {} end
-local setupvalue = setupvalue or function() end
-local getupvalue = getupvalue or function() return nil end
-local getscriptclosure = getscriptclosure or function() return function() end end
-local restorefunction = restorefunction or function(f) return f end
-local detourfunction = detourfunction or function(f) return f end
-local replaceclosure = replaceclosure or function() end
-local unhookfunction = unhookfunction or function() end
-local getcallingscript = getcallingscript or function() return nil end
-local getscripthash = getscripthash or function() return "" end
-local getscripts = getscripts or function() return {} end
-local getmodules = getmodules or function() return {} end
-local getproperties = getproperties or function() return {} end
-local getnilinstances = getnilinstances or function() return {} end
-local debug_getregistry = debug_getregistry or function() return {} end
-local debug_traceback = debug_traceback or function() return "" end
-local crypt = crypt or { base64encode = function() return "" end, base64decode = function() return "" end, encrypt = function() return "" end, decrypt = function() return "" end }
-local gethui = gethui or function() return nil end
-local hookfunction = hookfunction or function(a,b) return a end
-local newcclosure = newcclosure or function(f) return f end
-local clonefunction = clonefunction or function(f) return f end
-local rconsole = rconsole or { print = function() end, clear = function() end }
-"""
-        return preamble + code

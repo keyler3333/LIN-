@@ -1,12 +1,12 @@
 from flask import Flask, request, jsonify
-from engine import DeobfEngine
+from engine import WeAreDevsEngine
 
 app = Flask(__name__)
-engine = DeobfEngine()
+engine = WeAreDevsEngine()
 
 @app.route('/health')
 def health():
-    return jsonify({'ok': True, 'engine': 'pipeline_v2'})
+    return jsonify({'ok': True, 'engine': 'wearedevs'})
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
@@ -19,8 +19,7 @@ def deobf():
         return jsonify({
             'result': result,
             'detected': obf_type,
-            'diagnostic': diag,
-            'method': 'pipeline'
+            'diagnostic': diag
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -1,14 +1,12 @@
-import os
 from flask import Flask, request, jsonify
-from ai_engine import AIEngine
+from engine import DeobfEngine
 
 app = Flask(__name__)
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
-engine = AIEngine(api_key=GROQ_API_KEY)
+engine = DeobfEngine()
 
 @app.route('/health')
 def health():
-    return jsonify({'ok': True, 'engine': 'ai_driven', 'groq_configured': bool(GROQ_API_KEY)})
+    return jsonify({'ok': True, 'engine': 'pipeline_v2'})
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
@@ -17,17 +15,13 @@ def deobf():
         return jsonify({'error': 'No source code provided'}), 400
 
     try:
-        result = engine.process(data['source'])
-        response = {
-            'result': result['result'],
-            'detected': result['detected'],
-            'diagnostic': result['diagnostic'],
-            'method': 'ai_pipeline'
-        }
-        feedback = result.get('ai_feedback', '')
-        if feedback:
-            response['ai_feedback'] = feedback
-        return jsonify(response)
+        result, obf_type, diag = engine.process(data['source'])
+        return jsonify({
+            'result': result,
+            'detected': obf_type,
+            'diagnostic': diag,
+            'method': 'pipeline'
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

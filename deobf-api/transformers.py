@@ -20,7 +20,8 @@ class MathTransformer(Transformer):
     def transform(self, code):
         for _ in range(20):
             new_code = self._PAT.sub(self._fold, code)
-            if new_code == code: break
+            if new_code == code:
+                break
             code = new_code
         return code
 
@@ -41,13 +42,122 @@ class MathTransformer(Transformer):
 class HexNameRenamer(Transformer):
     def transform(self, code):
         mapping, ctr = {}, [0]
+
         def rep(m):
             h = m.group(0)
             if h not in mapping:
                 ctr[0] += 1
                 mapping[h] = f'var{ctr[0]}'
             return mapping[h]
+
         return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
+
+
+class WeAreDevsLifter(Transformer):
+    def transform(self, code):
+        result = self._try_static_lift(code)
+        return result if result else code
+
+    def _try_static_lift(self, source):
+        char_map = self._find_char_map(source)
+        if not char_map or len(char_map) < 30:
+            return None
+
+        data_strings = self._find_data_table(source)
+        if not data_strings:
+            return None
+
+        shuffle_pairs = self._find_shuffle_pairs(source)
+        if shuffle_pairs:
+            data_strings = self._unshuffle(data_strings, shuffle_pairs)
+
+        payload = bytearray()
+        for s in data_strings:
+            chunk = self._decode_custom_b64(s, char_map)
+            if chunk:
+                payload.extend(chunk)
+
+        data = bytes(payload)
+        if len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51:
+            return self._decompile_bytecode(data)
+
+        return None
+
+    def _find_char_map(self, source):
+        best = {}
+        for m in re.finditer(r'\b\w+\s*=\s*\{([^{}]{200,})\}', source, re.DOTALL):
+            body = m.group(1)
+            cmap = {}
+            for key, expr in re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body):
+                try:
+                    cmap[key.strip()] = eval(expr.replace(' ', '')) & 0x3F
+                except:
+                    pass
+            if len(cmap) > len(best):
+                best = cmap
+        return best if len(best) >= 30 else None
+
+    def _find_data_table(self, source):
+        best = []
+        for m in re.finditer(r'\{((?:\s*"[^"]*"\s*[,;]?\s*)+)\}', source, re.DOTALL):
+            entries = re.findall(r'"([^"]*)"', m.group(1))
+            if len(entries) > len(best) and len(entries) >= 4:
+                best = entries
+        return best if best else None
+
+    def _find_shuffle_pairs(self, source):
+        pairs = []
+        for a_s, b_s in re.findall(
+            r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*[,;]\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}',
+            source
+        ):
+            try:
+                a = eval(a_s.replace(' ', ''))
+                b = eval(b_s.replace(' ', ''))
+                if a > 0 and b > 0:
+                    pairs.append((a, b))
+            except:
+                pass
+        return pairs
+
+    def _unshuffle(self, strings, pairs):
+        res = list(strings)
+        for a, b in reversed(pairs):
+            lo, hi = a - 1, b - 1
+            if 0 <= lo < len(res) and 0 <= hi < len(res) and lo < hi:
+                res[lo:hi + 1] = res[lo:hi + 1][::-1]
+        return res
+
+    def _decode_custom_b64(self, s, char_map):
+        buf = bytearray()
+        acc = 0
+        count = 0
+        for ch in s:
+            if ch == '=':
+                if count == 3:
+                    buf.append((acc >> 16) & 0xFF)
+                    buf.append((acc >> 8) & 0xFF)
+                elif count == 2:
+                    buf.append((acc >> 16) & 0xFF)
+                break
+            val = char_map.get(ch)
+            if val is None:
+                continue
+            acc = (acc << 6) | val
+            count += 1
+            if count == 4:
+                buf.extend([(acc >> 16) & 0xFF, (acc >> 8) & 0xFF, acc & 0xFF])
+                acc = count = 0
+        return bytes(buf) if buf else None
+
+    def _decompile_bytecode(self, bc):
+        try:
+            from transformers import Lua51Parser, Lua51Decompiler
+            parser = Lua51Parser(bc)
+            func = parser.parse_function()
+            return Lua51Decompiler(func).decompile()
+        except Exception as exc:
+            return f'-- decompilation failed: {exc}\n-- length: {len(bc)}\n-- header: {bc[:16].hex()}\n'
 
 
 class Lua51Parser:
@@ -75,7 +185,8 @@ class Lua51Parser:
 
     def _string(self):
         size = self._sizet()
-        if size == 0: return None
+        if size == 0:
+            return None
         s = self.bc[self.pos[0]:self.pos[0] + size - 1].decode('latin-1', errors='replace')
         self.pos[0] += size
         return s
@@ -100,7 +211,9 @@ class Lua51Parser:
         self.little_endian = self._byte() == 1
         self.int_size = self._byte()
         self.sizet_size = self._byte()
-        self._byte(); self._byte(); self._byte()
+        self._byte()
+        self._byte()
+        self._byte()
 
     def parse_function(self):
         func = {
@@ -118,20 +231,32 @@ class Lua51Parser:
         consts = []
         for _ in range(n):
             t = self._byte()
-            if t == 0: consts.append(None)
-            elif t == 1: consts.append(bool(self._byte()))
-            elif t == 3: consts.append(self._double())
-            elif t == 4: consts.append(self._string())
-            else: consts.append(None)
+            if t == 0:
+                consts.append(None)
+            elif t == 1:
+                consts.append(bool(self._byte()))
+            elif t == 3:
+                consts.append(self._double())
+            elif t == 4:
+                consts.append(self._string())
+            else:
+                consts.append(None)
         func['constants'] = consts
         n = self._int()
         func['protos'] = [self.parse_function() for _ in range(n)]
-        self.pos[0] += self._int() * self.int_size
+
         n = self._int()
+        self.pos[0] += n * self.int_size
+
+        n = self._int()
+        locals_ = []
         for _ in range(n):
-            self._string()
-            self._int()
-            self._int()
+            name = self._string()
+            start = self._int()
+            end = self._int()
+            locals_.append({'name': name, 'start': start, 'end': end})
+        func['locals'] = locals_
+
         n = self._int()
         func['upvalue_names'] = [self._string() for _ in range(n)]
         return func

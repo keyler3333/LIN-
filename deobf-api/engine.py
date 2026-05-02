@@ -1,13 +1,5 @@
 import re
-import traceback
-from transformers import (
-    WeAreDevsLifter,
-    EscapeSequenceTransformer,
-    MathTransformer,
-    HexNameRenamer,
-    PlusEqualsTransformer,
-    FloatCleanTransformer,
-)
+from transformers import *
 from sandbox import execute_sandbox
 
 
@@ -16,10 +8,7 @@ class DeobfEngine:
         self.transformers = [
             EscapeSequenceTransformer(),
             MathTransformer(),
-            FloatCleanTransformer(),
-            WeAreDevsLifter(),
             HexNameRenamer(),
-            PlusEqualsTransformer(),
         ]
         self.max_depth = 5
 
@@ -34,71 +23,51 @@ class DeobfEngine:
             except Exception:
                 pass
 
-        if current != source and self._looks_decoded(current):
-            return self._beautify(current), 'static_lift', 'Static transformer succeeded'
+        if self._is_wearedevs(current) or True:  # always true for now
+            layers, captures = execute_sandbox(current, use_emulator=False)
 
-        layers, captures = execute_sandbox(current, use_emulator=False)
+            if layers:
+                payload = max(layers, key=len)
+                return self.process(payload, depth + 1)
 
-        if layers:
-            payload = max(layers, key=len)
-            return self.process(payload, depth + 1)
-
-        if captures:
-            for cap in captures:
-                if len(cap) > 100 and self._looks_decoded(cap):
-                    return self._beautify(cap), 'captured', 'Sandbox extracted payload'
+            if captures:
+                for cap in captures:
+                    if cap.startswith('\x1bLua') and len(cap) > 50:
+                        bc = cap.encode('latin-1') if isinstance(cap, str) else cap
+                        lifted = self._lift_bytecode(bc)
+                        if lifted:
+                            return self._beautify(lifted), 'sandbox_lift', 'Bytecode dumped and lifted'
+                    if len(cap) > 100 and 'function' in cap:
+                        return self._beautify(cap), 'captured', 'Sandbox extracted payload'
 
         return self._beautify(current), 'done', 'Analysis complete'
 
     @staticmethod
-    def _looks_decoded(code):
-        if not code or len(code) < 20:
-            return False
-        lines = code.split('\n')
-        if max((len(l) for l in lines), default=0) > 500:
-            return False
-        letter_chars = sum(1 for ch in code if ch.isalpha() or ch in '(){}[]=.,_:; \t\n')
-        return (letter_chars / max(len(code), 1)) > 0.40
+    def _is_wearedevs(code):
+        return 'wearedevs' in code.lower() and 'local N={' in code
+
+    def _lift_bytecode(self, bc):
+        try:
+            from transformers import Lua51Parser, Lua51Decompiler
+            parser = Lua51Parser(bc)
+            func = parser.parse_function()
+            return Lua51Decompiler(func).decompile()
+        except Exception:
+            return None
 
     def _beautify(self, code):
         try:
             from luaparser import ast as lua_ast
             return lua_ast.to_lua_source(lua_ast.parse(code))
         except Exception:
-            return _indent_beautify(code)
-
-
-_OPENERS = (
-    'if ', 'elseif ', 'for ', 'while ', 'repeat', 'do',
-    'function ', 'local function ',
-)
-_CLOSER_RE = re.compile(r'^(end\b|else\b|elseif\b|until\b)')
-
-
-def _indent_beautify(code: str) -> str:
-    out, ind = [], 0
-
-    def opens_block(line: str) -> bool:
-        for kw in _OPENERS:
-            if line.startswith(kw):
-                if line.endswith('end') or line.endswith('end;'):
-                    return False
-                return True
-        if re.search(r'=\s*function\s*\(', line):
-            return True
-        return False
-
-    def closes_block(line: str) -> bool:
-        return bool(_CLOSER_RE.match(line))
-
-    for raw in code.split('\n'):
-        line = raw.strip()
-        if not line:
-            continue
-        if closes_block(line):
-            ind = max(0, ind - 1)
-        out.append('    ' * ind + line)
-        if opens_block(line):
-            ind += 1
-
-    return '\n'.join(out)
+            out, ind = [], 0
+            for raw in code.split('\n'):
+                line = raw.strip()
+                if not line:
+                    continue
+                if any(line.startswith(w) for w in ('end', 'else', 'elseif', 'until', '}', ')')):
+                    ind = max(0, ind - 1)
+                out.append('    ' * ind + line)
+                if any(line.startswith(w) for w in ('if ', 'for ', 'while ', 'repeat', 'function ', 'local function ')) and not line.endswith('end'):
+                    ind += 1
+            return '\n'.join(out)

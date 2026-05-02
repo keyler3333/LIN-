@@ -56,7 +56,9 @@ class HexNameRenamer(Transformer):
 class WeAreDevsLifter(Transformer):
     def transform(self, code):
         result = self._try_static_lift(code)
-        return result if result else code
+        if result and result != code:
+            return result
+        return code
 
     def _try_static_lift(self, source):
         char_map = self._find_char_map(source)
@@ -71,12 +73,16 @@ class WeAreDevsLifter(Transformer):
         if shuffle_pairs:
             data_strings = self._unshuffle(data_strings, shuffle_pairs)
 
+        for s in data_strings:
+            chunk = self._decode_custom_b64(s, char_map)
+            if chunk and len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
+                return self._decompile_bytecode(chunk)
+
         payload = bytearray()
         for s in data_strings:
             chunk = self._decode_custom_b64(s, char_map)
             if chunk:
                 payload.extend(chunk)
-
         data = bytes(payload)
         if len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51:
             return self._decompile_bytecode(data)
@@ -88,14 +94,35 @@ class WeAreDevsLifter(Transformer):
         for m in re.finditer(r'\b\w+\s*=\s*\{([^{}]{200,})\}', source, re.DOTALL):
             body = m.group(1)
             cmap = {}
-            for key, expr in re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body):
+            pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)', body)
+            for key, expr in pairs:
                 try:
                     cmap[key.strip()] = eval(expr.replace(' ', '')) & 0x3F
                 except:
                     pass
             if len(cmap) > len(best):
                 best = cmap
+        if not best:
+            best = self._find_char_map_from_bare_keys(source)
         return best if len(best) >= 30 else None
+
+    def _find_char_map_from_bare_keys(self, source):
+        map_match = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
+        if not map_match:
+            return {}
+        body = map_match.group(1)
+        cmap = {}
+        for piece in re.split(r'[,;]', body):
+            piece = piece.strip()
+            if not piece or '=' not in piece:
+                continue
+            k, v = piece.split('=', 1)
+            k = k.strip().strip('"').strip("'").strip('[').strip(']')
+            try:
+                cmap[k] = eval(v.strip()) & 0x3F
+            except:
+                pass
+        return cmap
 
     def _find_data_table(self, source):
         best = []

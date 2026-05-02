@@ -4,7 +4,7 @@ from sandbox import execute_sandbox
 
 class DeobfEngine:
     def __init__(self):
-        self.transformers = [
+        self.cleaners = [
             EscapeSequenceTransformer(),
             MathTransformer(),
         ]
@@ -13,14 +13,14 @@ class DeobfEngine:
 
     def process(self, source):
         current = source
-        for t in self.transformers:
+        for t in self.cleaners:
             try:
                 current = t.transform(current)
             except:
                 pass
 
         lifted = self.lifter.transform(current)
-        if lifted and lifted != current and 'function' in lifted:
+        if lifted is not None and lifted != current and 'function' in lifted:
             renamed = self.renamer.transform(lifted)
             return self._beautify(renamed), 'wearedevs', 'Static bytecode lift successful'
 

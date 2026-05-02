@@ -7,9 +7,8 @@ class DeobfEngine:
         self.cleaners = [
             EscapeSequenceTransformer(),
             MathTransformer(),
+            HexNameRenamer(),
         ]
-        self.lifter = WeAreDevsLifter()
-        self.renamer = HexNameRenamer()
 
     def process(self, source):
         current = source
@@ -19,37 +18,30 @@ class DeobfEngine:
             except:
                 pass
 
-        lifted = self.lifter.transform(current)
-        if lifted is not None and lifted != current and 'function' in lifted:
-            renamed = self.renamer.transform(lifted)
-            return self._beautify(renamed), 'wearedevs', 'Static bytecode lift successful'
-
         layers, captures = execute_sandbox(current, use_emulator=False)
 
         for layer in layers:
             if isinstance(layer, bytes) and layer.startswith(b'\x1bLua'):
                 lifted = self._lift_bytecode(layer)
                 if lifted:
-                    renamed = self.renamer.transform(lifted)
-                    return self._beautify(renamed), 'wearedevs', 'Sandbox dump lifted'
-            if isinstance(layer, str) and layer.startswith('\x1bLua'):
-                lifted = self._lift_bytecode(layer.encode('latin-1'))
-                if lifted:
-                    renamed = self.renamer.transform(lifted)
-                    return self._beautify(renamed), 'wearedevs', 'Sandbox layer lifted'
-            if isinstance(layer, str) and len(layer) > 100 and 'function' in layer:
-                return self._beautify(layer), 'wearedevs', 'Sandbox extracted layer'
+                    return self._beautify(lifted), 'sandbox', 'Bytecode dump lifted'
+            if isinstance(layer, str) and len(layer) > 50:
+                if layer.startswith('\x1bLua'):
+                    lifted = self._lift_bytecode(layer.encode('latin-1'))
+                    if lifted:
+                        return self._beautify(lifted), 'sandbox', 'Bytecode layer lifted'
+                if 'function' in layer.lower():
+                    return self._beautify(layer), 'sandbox', 'Decrypted layer extracted'
 
         for cap in captures:
             if cap.startswith('\x1bLua') and len(cap) > 50:
                 lifted = self._lift_bytecode(cap.encode('latin-1'))
                 if lifted:
-                    renamed = self.renamer.transform(lifted)
-                    return self._beautify(renamed), 'wearedevs', 'Captured bytecode lifted'
+                    return self._beautify(lifted), 'sandbox', 'Captured bytecode lifted'
             if len(cap) > 100 and 'function' in cap:
-                return self._beautify(cap), 'wearedevs', 'Sandbox captured payload'
+                return self._beautify(cap), 'sandbox', 'Captured payload'
 
-        return self._beautify(current), 'wearedevs', 'No decrypted payload found'
+        return self._beautify(current), 'sandbox', 'No decrypted payload found'
 
     def _lift_bytecode(self, bc):
         try:

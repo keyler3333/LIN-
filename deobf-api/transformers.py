@@ -478,15 +478,22 @@ class WeAreDevsLifter(Transformer):
         best = {}
         for m in re.finditer(r'\{([^{}]{200,})\}', source, re.DOTALL):
             body  = m.group(1)
-            pairs = re.findall(r'\["(.)"\]\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
-            if len(pairs) < 30: continue
             cmap = {}
+            pairs = re.findall(r'\["(.)"\]\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
             for key, expr in pairs:
                 try: cmap[key] = eval(expr.replace(' ', '')) & 0x3F
                 except Exception: pass
-            if len(cmap) > len(best): best = cmap
+            bare_pairs = re.findall(
+                r'(?:^|[;,]\s*)([A-Za-z0-9+/])\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)',
+                body
+            )
+            for key, expr in bare_pairs:
+                try: cmap[key] = eval(expr.replace(' ', '')) & 0x3F
+                except Exception: pass
+            if len(cmap) > len(best):
+                best = cmap
         if not best:
-            for m in re.finditer(r'\{((?:\s*"."(?:\s*,\s*)?){30,})\}', source, re.DOTALL):
+            for m in re.finditer(r'\{((?:\s*"."(?:\s*[,;]\s*)?){30,})\}', source, re.DOTALL):
                 chars = re.findall(r'"(.)"', m.group(1))
                 if len(chars) >= 30:
                     cmap = {ch: idx for idx, ch in enumerate(chars)}
@@ -495,7 +502,7 @@ class WeAreDevsLifter(Transformer):
 
     def _find_data_table(self, source):
         best = []
-        for m in re.finditer(r'\{((?:\s*"(?:[^"\\]|\\.)*"\s*,?\s*)+)\}', source, re.DOTALL):
+        for m in re.finditer(r'\{((?:\s*"(?:[^"\\]|\\.)*"\s*[,;]?\s*)+)\}', source, re.DOTALL):
             entries = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
             if len(entries) > len(best) and len(entries) >= 4:
                 best = entries
@@ -504,7 +511,8 @@ class WeAreDevsLifter(Transformer):
     def _find_shuffle_pairs(self, source):
         pairs = []
         for a_s, b_s in re.findall(
-            r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}', source
+            r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*[,;]\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}',
+            source
         ):
             try:
                 a = eval(a_s.replace(' ', ''))

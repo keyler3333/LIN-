@@ -4,7 +4,7 @@ local _seen = {}
 local _cap  = {}
 local _log  = {}
 
-local function _L(s) table.insert(_log, s) end
+local function _L(s) table.insert(_log, tostring(s)) end
 local function _capture(v)
     if type(v) == "string" and #v > 10 then
         table.insert(_cap, v)
@@ -40,23 +40,23 @@ local function _dummy(name)
             local args = {...}
             for _, v in _ip(args) do
                 if _ty(v) == "function" then _pc(v, _dummy("a"), _dummy("b")) end
-                _capture(v)
+                if _ty(v) == "string" then _capture(v) end
             end
             return _dummy(name .. "()")
         end,
         __tostring = function() return name end,
-        __concat   = function(a,b) return _ts(a).._ts(b) end,
-        __add      = function(a,b) return _dummy(name.."+") end,
-        __sub      = function(a,b) return _dummy(name.."-") end,
-        __mul      = function(a,b) return _dummy(name.."*") end,
-        __div      = function(a,b) return _dummy(name.."/") end,
-        __mod      = function(a,b) return _dummy(name.."%") end,
-        __pow      = function(a,b) return _dummy(name.."^") end,
-        __unm      = function(a)   return _dummy("-"..name) end,
-        __len      = function()    return 0 end,
-        __lt       = function(a,b) return false end,
-        __le       = function(a,b) return true end,
-        __eq       = function(a,b) return _ts(a)==_ts(b) end,
+        __concat   = function(a, b) return _ts(a) .. _ts(b) end,
+        __add = function(a,b) return _dummy(name.."+") end,
+        __sub = function(a,b) return _dummy(name.."-") end,
+        __mul = function(a,b) return _dummy(name.."*") end,
+        __div = function(a,b) return _dummy(name.."/") end,
+        __mod = function(a,b) return _dummy(name.."%") end,
+        __pow = function(a,b) return _dummy(name.."^") end,
+        __unm = function(a)   return _dummy("-"..name) end,
+        __len = function()    return 0 end,
+        __lt  = function(a,b) return false end,
+        __le  = function(a,b) return true  end,
+        __eq  = function(a,b) return _ts(a) == _ts(b) end,
     })
     return d
 end
@@ -82,7 +82,7 @@ _hook_ls = function(code, name)
         _lyr = _lyr + 1
         _L("LAYER " .. _lyr .. " (" .. #code .. " bytes)")
         local f = io.open(_out .. "/layer_" .. _lyr .. ".lua", "w")
-        if f then f:write(code) f:close() end
+        if f then f:write(code); f:close() end
     end
     local fn, err = _ls(code, name)
     if not fn then
@@ -104,7 +104,7 @@ end
 
 table.concat = function(t, sep, i, j)
     local r = _tc(t, sep, i, j)
-    _capture(r)
+    if type(r) == "string" and #r > 3 then _capture(r) end
     return r
 end
 
@@ -112,17 +112,17 @@ local _safe = {
     string   = string, math = math, table = table,
     pairs    = _pa, ipairs = _ip, select = _sl, next = _nx,
     tostring = _ts, tonumber = tonumber, type = _ty, typeof = _ty,
-    rawget   = _rg, rawset = _rs, rawequal = rawequal, rawlen = rawlen,
+    rawget   = _rg, rawset   = _rs, rawequal = rawequal,
     setmetatable = _sm, getmetatable = _gm, unpack = _un,
     pcall    = _pc, xpcall = xpcall, error = error, assert = assert,
     print    = function() end, warn = function() end,
     loadstring = _hook_ls, load = _hook_ls, coroutine = coroutine,
     os       = {
         clock = function() return 0 end,
-        time  = function() return 1000000 end,
+        time  = function() return math.random(1680000000, 1710000000) end,
         date  = function() return "2024-01-01" end,
     },
-    tick     = function() return 0 end,
+    tick     = function() return math.random() end,
     time     = function() return 0 end,
     wait     = function(n) return n or 0 end,
     spawn    = function(f) if _ty(f)=="function" then _pc(f) end end,
@@ -140,9 +140,9 @@ local _safe = {
     writefile = function() end, readfile = function() return "" end,
     isfile = function() return false end, makefolder = function() end,
     identifyexecutor = function() return "synapse","2.0" end,
-    checkcaller = function() return true end,
+    checkcaller  = function() return true end,
     hookfunction = function(a,b) return a end,
-    newcclosure = function(f) return f end,
+    newcclosure  = function(f) return f end,
 }
 
 _sm(_env, {
@@ -150,9 +150,9 @@ _sm(_env, {
         if _safe[k] ~= nil then return _safe[k] end
         if k == "getfenv" then return function() return _env end end
         if k == "setfenv" then
-            return function(n,t)
-                if _ty(t)=="table" then
-                    for kk,vv in _pa(t) do _rs(_env, kk, vv) end
+            return function(n, t)
+                if _ty(t) == "table" then
+                    for kk, vv in _pa(t) do _rs(_env, kk, vv) end
                 end
                 return t
             end
@@ -165,67 +165,75 @@ _sm(_env, {
     __newindex = function(_, k, v) _rs(_env, k, v) end,
 })
 
-_rs(_env, "loadstring",   _hook_ls)
-_rs(_env, "load",         _hook_ls)
-_rs(_env, "getfenv",      function() return _env end)
-_rs(_env, "setfenv",      function(n,t)
+_rs(_env, "loadstring",  _hook_ls)
+_rs(_env, "load",        _hook_ls)
+_rs(_env, "getfenv",     function() return _env end)
+_rs(_env, "setfenv",     function(n,t)
     if _ty(t)=="table" then for k,v in _pa(t) do _rs(_env, k, v) end end
     return t
 end)
-_rs(_env, "_G",           _env)
-_rs(_env, "_ENV",         _env)
-_rs(_env, "shared",       _env)
-_rs(_env, "string",       string)
-_rs(_env, "math",         math)
-_rs(_env, "table",        table)
-_rs(_env, "pairs",        _pa)
-_rs(_env, "ipairs",       _ip)
-_rs(_env, "select",       _sl)
-_rs(_env, "tostring",     _ts)
-_rs(_env, "tonumber",     tonumber)
-_rs(_env, "type",         _ty)
-_rs(_env, "rawget",       _rg)
-_rs(_env, "rawset",       _rs)
+_rs(_env, "_G",          _env)
+_rs(_env, "_ENV",        _env)
+_rs(_env, "shared",      _env)
+_rs(_env, "string",      string)
+_rs(_env, "math",        math)
+_rs(_env, "table",       table)
+_rs(_env, "pairs",       _pa)
+_rs(_env, "ipairs",      _ip)
+_rs(_env, "select",      _sl)
+_rs(_env, "tostring",    _ts)
+_rs(_env, "tonumber",    tonumber)
+_rs(_env, "type",        _ty)
+_rs(_env, "rawget",      _rg)
+_rs(_env, "rawset",      _rs)
 _rs(_env, "setmetatable", _sm)
 _rs(_env, "getmetatable", _gm)
-_rs(_env, "unpack",       _un)
-_rs(_env, "pcall",        _pc)
-_rs(_env, "error",        error)
-_rs(_env, "assert",       assert)
-_rs(_env, "print",        function() end)
-_rs(_env, "warn",         function() end)
-_rs(_env, "game",         _safe.game)
-_rs(_env, "workspace",    _safe.workspace)
-_rs(_env, "Instance",     _safe.Instance)
-_rs(_env, "syn",          _safe.syn)
+_rs(_env, "unpack",      _un)
+_rs(_env, "pcall",       _pc)
+_rs(_env, "error",       error)
+_rs(_env, "assert",      assert)
+_rs(_env, "print",       function() end)
+_rs(_env, "warn",        function() end)
+_rs(_env, "game",        _safe.game)
+_rs(_env, "workspace",   _safe.workspace)
+_rs(_env, "Instance",    _safe.Instance)
+_rs(_env, "syn",         _safe.syn)
 
-function _run(code)
-    local chunk, err = _ls(code)
-    if not chunk then
-        print("COMPILE ERROR: " .. _ts(err))
-        return
-    end
-    setfenv(chunk, _env)
-    local ok, res = _pc(chunk)
-    if ok then
-        print("OK. layers=" .. _lyr)
+local inp_path = os.getenv("INPATH")
+if not inp_path then
+    _L("ERROR: INPATH env var not set")
+else
+    local fh = io.open(inp_path, "r")
+    if not fh then
+        _L("ERROR: cannot open input: " .. inp_path)
     else
-        print("RUNTIME ERROR: " .. _ts(res))
-    end
-
-    local sf = io.open(_out .. "/cap.txt", "w")
-    if sf then
-        for _, s in _ip(_cap) do
-            sf:write(s:gsub("\n", "\\n") .. "\n---SEP---\n")
+        local src = fh:read("*a")
+        fh:close()
+        local chunk, err = _ls(src)
+        if not chunk then
+            _L("COMPILE ERROR: " .. _ts(err))
+        else
+            setfenv(chunk, _env)
+            local ok, res = _pc(chunk)
+            if ok then
+                _L("OK. layers=" .. _lyr)
+            else
+                _L("RUNTIME ERROR: " .. _ts(res))
+            end
         end
-        sf:close()
     end
+end
 
-    local df = io.open(_out .. "/diag.txt", "w")
-    if df then
-        local lines = {}
-        for _, l in _ip(_log) do lines[#lines+1] = l end
-        df:write(table.concat(lines, "\n"))
-        df:close()
+local sf = io.open(_out .. "/cap.txt", "w")
+if sf then
+    for _, s in _ip(_cap) do
+        sf:write(s:gsub("\n", "\\n") .. "\n---SEP---\n")
     end
+    sf:close()
+end
+
+local df = io.open(_out .. "/diag.txt", "w")
+if df then
+    df:write(_tc(_log, "\n"))
+    df:close()
 end

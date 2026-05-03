@@ -8,7 +8,6 @@ from transformers import (
 )
 from sandbox import execute_sandbox
 
-
 class DeobfEngine:
     def __init__(self):
         self.static_transformers = [

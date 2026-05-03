@@ -82,8 +82,7 @@ class Ranker:
             if not c or not isinstance(c, (str, bytes)):
                 continue
             score = self._score(c)
-            if score >= 0:
-                scored.append((score, len(c) if isinstance(c, str) else 0, c))
+            scored.append((score, len(c) if isinstance(c, str) else 0, c))
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return [item[2] for item in scored]
 
@@ -100,7 +99,7 @@ class Ranker:
         lines = code.split('\n')
         max_line = max((len(l) for l in lines), default=0)
 
-        if max_line > 3000:
+        if max_line > 5000:
             return -1
 
         score = 0
@@ -125,9 +124,6 @@ class Ranker:
         if code.count('\n') > 3:
             score += 10
 
-        if score < 10:
-            return -1
-
         return score
 
 
@@ -140,22 +136,19 @@ class DeobfEngine:
     def process(self, source):
         static_out, changed = self.static.run(source)
 
-        if changed:
-            static_ranked = self.ranker.rank([static_out])
-            if static_ranked:
-                top = static_ranked[0]
-                if isinstance(top, str) and self._is_clean(top):
-                    return self._beautify(top), 'static', 'Static pipeline succeeded'
+        if changed and self._is_clean(static_out):
+            return self._beautify(static_out), 'static', 'Static pipeline succeeded'
 
         all_layers, all_captures = self.sandbox.run(static_out)
 
         candidates = []
+
         for layer in all_layers:
             if isinstance(layer, bytes) and layer[:4] == b'\x1bLua':
                 lifted = self._lift_bc(layer)
                 if lifted:
                     candidates.append(lifted)
-            elif isinstance(layer, str):
+            elif isinstance(layer, str) and len(layer) > 20:
                 candidates.append(layer)
 
         for cap in all_captures:
@@ -164,14 +157,11 @@ class DeobfEngine:
                     lifted = self._lift_bc(cap.encode('latin-1'))
                     if lifted:
                         candidates.append(lifted)
-                else:
+                elif len(cap) > 20:
                     candidates.append(cap)
 
-        dump_bc = next((l for l in all_layers if isinstance(l, bytes) and l[:4] == b'\x1bLua'), None)
-        if dump_bc:
-            lifted = self._lift_bc(dump_bc)
-            if lifted:
-                candidates.append(lifted)
+        if changed and static_out not in candidates:
+            candidates.append(static_out)
 
         ranked = self.ranker.rank(candidates)
 
@@ -182,9 +172,10 @@ class DeobfEngine:
                 if lifted:
                     return self._beautify(lifted), 'bytecode', 'Bytecode lifted'
             if isinstance(best, str):
-                return self._beautify(best), 'sandbox', 'Sandbox extracted and ranked'
+                method = 'sandbox' if best != static_out else 'static'
+                return self._beautify(best), method, f'Best candidate selected (score: {self.ranker._score(best)})'
 
-        return self._beautify(static_out), 'done', 'No payload extracted'
+        return self._beautify(static_out if changed else source), 'fallback', 'Returning best available output'
 
     def _is_clean(self, code):
         if not code or len(code) < 20:

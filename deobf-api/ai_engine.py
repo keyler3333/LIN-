@@ -1,6 +1,4 @@
-import os
-import json
-import re
+import os, json, re
 
 GROQ_AVAILABLE = False
 try:
@@ -11,17 +9,14 @@ except ImportError:
 
 from scanner import ObfuscationScanner
 from transformers import (
-    EscapeSequenceTransformer,
-    MathTransformer,
-    WeAreDevsLifter,
-    HexNameRenamer,
+    EscapeSequenceTransformer, MathTransformer, WeAreDevsLifter, HexNameRenamer,
 )
 from sandbox import execute_sandbox
 
 SYSTEM_PROMPT = """You are a Lua reverse-engineering AI with full control over a modular deobfuscation pipeline.
 You can:
 - analyze the code to detect the obfuscator
-- apply static transformers (escape, math, cipher, hexrename, or custom variable renaming)
+- apply static transformers (escape, math, wearedevs, hexrename)
 - run the sandbox to peel VM layers or capture payloads
 - rename identifiers intelligently based on their usage patterns
 
@@ -114,36 +109,29 @@ def _beautify(code):
         out, ind = [], 0
         for line in code.split('\n'):
             line = line.strip()
-            if not line:
-                continue
-            if line.startswith(('end', 'else', 'elseif', 'until', '}', ')')):
-                ind = max(0, ind - 1)
-            out.append('    ' * ind + line)
-            if line.startswith(('if', 'for', 'while', 'repeat', 'function', 'local function')) \
-               and not line.endswith('end'):
+            if not line: continue
+            if line.startswith(('end','else','elseif','until','}',')')): ind = max(0, ind-1)
+            out.append('    '*ind+line)
+            if line.startswith(('if','for','while','repeat','function','local function')) and not line.endswith('end'):
                 ind += 1
-            elif line.startswith(('else', 'elseif')):
-                ind += 1
+            elif line.startswith(('else','elseif')): ind += 1
         return '\n'.join(out)
 
 
 class _DictRenamer:
     def __init__(self, mapping):
         self._mapping = mapping
-
     def transform(self, code):
-        for old, new in self._mapping.items():
-            code = re.sub(r'\b' + re.escape(old) + r'\b', new, code)
+        for old,new in self._mapping.items():
+            code = re.sub(r'\b'+re.escape(old)+r'\b', new, code)
         return code
 
 
 class AIEngine:
     def __init__(self, api_key, model="llama-3.3-70b-versatile"):
         self.api_key = api_key
-        self.model   = model
-        self.client  = None
-        if GROQ_AVAILABLE and api_key:
-            self.client = Groq(api_key=api_key)
+        self.model = model
+        self.client = Groq(api_key=api_key) if GROQ_AVAILABLE and api_key else None
         self.scanner = ObfuscationScanner()
         self.transformers = {
             'escape':    EscapeSequenceTransformer(),
@@ -154,16 +142,15 @@ class AIEngine:
         self.max_iterations = 12
 
     def _call_ai(self, messages):
-        if not self.client:
+        if not self.client: return None
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=messages, tools=TOOLS,
+                tool_choice="auto", temperature=0.1,
+            )
+            return resp.choices[0].message
+        except Exception:
             return None
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.1,
-        )
-        return response.choices[0].message
 
     def process(self, original_source):
         if not self.client:
@@ -171,99 +158,69 @@ class AIEngine:
             for t in self.transformers.values():
                 current_code = t.transform(current_code)
             obf_type, method = self.scanner.analyze(current_code)
-            layers, captures = execute_sandbox(current_code, use_emulator=(method == 'dynamic'))
+            layers, captures = execute_sandbox(current_code, use_emulator=(method=='dynamic'))
             if layers:
-                payload = max((l for l in layers if isinstance(l, str)), key=len, default=None)
-                if payload:
-                    current_code = payload
+                payload = max((l for l in layers if isinstance(l,str)), key=len, default=None)
+                if payload: current_code = payload
             elif captures:
                 for cap in captures:
-                    if isinstance(cap, str) and len(cap) > len(current_code) * 0.4 and 'function' in cap:
+                    if isinstance(cap,str) and len(cap)>len(current_code)*0.4 and 'function' in cap:
                         current_code = cap
                         break
-            return {
-                'result':       _beautify(current_code),
-                'detected':     obf_type,
-                'diagnostic':   'Non-AI fallback pipeline used (groq not configured).',
-                'ai_feedback':  'AI not available - used static transformers + sandbox fallback.',
-            }
+            return {'result':_beautify(current_code), 'detected':obf_type,
+                    'diagnostic':'Non-AI fallback pipeline used (groq not configured).',
+                    'ai_feedback':'AI not available – used static transformers + sandbox fallback.'}
 
         messages = [
-            {'role': 'system', 'content': SYSTEM_PROMPT},
-            {'role': 'user',   'content': f'Deobfuscate this Lua script:\n```lua\n{original_source}\n```'},
+            {'role':'system','content':SYSTEM_PROMPT},
+            {'role':'user','content':f'Deobfuscate this Lua script:\n```lua\n{original_source}\n```'},
         ]
         current_code = original_source
-        iteration = 0
-        while iteration < self.max_iterations:
-            iteration += 1
+        for iteration in range(self.max_iterations):
             msg = self._call_ai(messages)
-            if msg is None:
-                break
+            if msg is None: break
             messages.append(msg)
-            if not msg.tool_calls:
-                break
-            for tool_call in msg.tool_calls:
-                func_name = tool_call.function.name
-                args      = json.loads(tool_call.function.arguments)
-                result_text = 'Unknown function.'
-
+            if not msg.tool_calls: break
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except Exception:
+                    break
+                func_name = tc.function.name
+                res_text = 'Unknown function.'
                 if func_name == 'finalize':
-                    return {
-                        'result':      args['final_code'],
-                        'detected':    'ai_driven',
-                        'diagnostic':  args['summary'],
-                        'ai_feedback': args['summary'],
-                    }
-
+                    return {'result':args['final_code'], 'detected':'ai_driven',
+                            'diagnostic':args['summary'], 'ai_feedback':args['summary']}
                 elif func_name == 'analyze':
                     obf_type, method = self.scanner.analyze(current_code)
-                    result_text = f'Detected: {obf_type}, method: {method}'
-
+                    res_text = f'Detected: {obf_type}, method: {method}'
                 elif func_name == 'apply_transformers':
                     applied = []
-                    for tname in args['transformers']:
+                    for tname in args.get('transformers', []):
                         if tname in self.transformers:
                             current_code = self.transformers[tname].transform(current_code)
                             applied.append(tname)
-                    result_text = f'Applied: {", ".join(applied)}. Length: {len(current_code)}.'
-
+                    res_text = f'Applied: {", ".join(applied)}. Length: {len(current_code)}.'
                 elif func_name == 'smart_rename':
                     current_code = _DictRenamer(args['mapping']).transform(current_code)
-                    result_text  = f'Renamed {len(args["mapping"])} identifiers.'
-
+                    res_text = f'Renamed {len(args["mapping"])} identifiers.'
                 elif func_name == 'run_sandbox':
-                    layers, captures = execute_sandbox(
-                        current_code, use_emulator=args['use_emulator']
-                    )
+                    layers, captures = execute_sandbox(current_code, use_emulator=args['use_emulator'])
                     if layers:
-                        str_layers = [l for l in layers if isinstance(l, str)]
+                        str_layers = [l for l in layers if isinstance(l,str)]
                         if str_layers:
                             current_code = max(str_layers, key=len)
-                            result_text  = f'Sandbox peeled layer of size {len(current_code)}.'
-                        else:
-                            result_text = 'Sandbox gave only bytecode layers.'
+                            res_text = f'Sandbox peeled layer of size {len(current_code)}.'
+                        else: res_text = 'Sandbox gave only bytecode layers.'
                     elif captures:
-                        useful = [c for c in captures if isinstance(c, str)
-                                  and not c.startswith('__')
-                                  and len(c) > len(current_code) * 0.4
-                                  and 'function' in c]
+                        useful = [c for c in captures if isinstance(c,str) and not c.startswith('__') and len(c)>len(current_code)*0.4 and 'function' in c]
                         if useful:
                             current_code = useful[0]
-                            result_text  = 'Sandbox recovered payload.'
-                        else:
-                            result_text = 'Sandbox gave nothing useful.'
-                    else:
-                        result_text = 'No sandbox output.'
-
-                messages.append({
-                    'role': 'tool',
-                    'tool_call_id': tool_call.id,
-                    'content': result_text,
-                })
-
-        return {
-            'result':      _beautify(current_code),
-            'detected':    'ai_driven',
-            'diagnostic':  'AI did not finalize within iteration limit.',
-            'ai_feedback': 'AI did not call finalize.',
-        }
+                            res_text = 'Sandbox recovered payload.'
+                        else: res_text = 'Sandbox gave nothing useful.'
+                    else: res_text = 'No sandbox output.'
+                messages.append({'role':'tool','tool_call_id':tc.id,'content':res_text})
+        else:
+            return {'result':_beautify(current_code), 'detected':'ai_driven',
+                    'diagnostic':'AI did not finalize within iteration limit.',
+                    'ai_feedback':'AI did not call finalize.'}

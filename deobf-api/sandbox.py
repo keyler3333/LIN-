@@ -3,12 +3,7 @@ import subprocess
 import tempfile
 import shutil
 
-LUA_BIN = (
-    shutil.which('lua5.1') or
-    shutil.which('lua51')  or
-    shutil.which('lua')    or
-    'lua'
-)
+LUA_BIN = shutil.which('lua5.1') or shutil.which('lua51') or shutil.which('lua') or 'lua'
 RUNTIME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sandbox_runtime.lua')
 
 
@@ -16,7 +11,7 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def execute_sandbox(source, use_emulator=False, timeout=35):
+def execute_sandbox(source, use_emulator=False, timeout=30):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 
@@ -37,17 +32,14 @@ def execute_sandbox(source, use_emulator=False, timeout=35):
         with open(drv, 'w', encoding='utf-8') as f:
             f.write(driver)
 
-        proc = None
         try:
-            proc = subprocess.run(
+            subprocess.run(
                 [LUA_BIN, drv],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=d,
             )
-        except subprocess.TimeoutExpired:
-            pass
         except Exception:
             pass
 
@@ -76,22 +68,5 @@ def execute_sandbox(source, use_emulator=False, timeout=35):
                     s = part.strip()
                     if len(s) > 20:
                         caps.append(s)
-
-        errf = os.path.join(d, 'error.txt')
-        if os.path.exists(errf):
-            with open(errf, encoding='utf-8', errors='replace') as f:
-                err_text = f.read().strip()
-            if err_text:
-                caps.append(f'__SANDBOX_ERROR__: {err_text}')
-
-        diagf = os.path.join(d, 'diag.txt')
-        if os.path.exists(diagf):
-            with open(diagf, encoding='utf-8', errors='replace') as f:
-                diag_text = f.read().strip()
-            if diag_text:
-                caps.append(f'__SANDBOX_DIAG__: {diag_text}')
-
-        if proc and proc.stderr and proc.stderr.strip():
-            caps.append(f'__LUA_STDERR__: {proc.stderr.strip()[:500]}')
 
         return layers, caps

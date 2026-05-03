@@ -29,11 +29,13 @@ class MathTransformer(Transformer):
     def _fold(m):
         try:
             a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-            if op == '+': return str(a + b)
-            if op == '-': return str(a - b)
-            if op == '*': return str(a * b)
-            if op == '/' and b != 0: return str(a // b)
-            if op == '^': return str(int(a ** b))
+            if op == '+':             result = a + b
+            elif op == '-':           result = a - b
+            elif op == '*':           result = a * b
+            elif op == '/' and b != 0: result = a // b
+            elif op == '^':           result = int(a ** b)
+            else:                     return m.group(0)
+            return '(' + str(result) + ')'
         except Exception:
             pass
         return m.group(0)

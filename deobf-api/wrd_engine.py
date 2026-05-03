@@ -1,5 +1,6 @@
 import re
 import base64
+import hashlib
 
 
 class EscapeCleaner:
@@ -7,14 +8,15 @@ class EscapeCleaner:
         code = re.sub(r'\\x([0-9a-fA-F]{2})',
                       lambda m: chr(int(m.group(1), 16)), code)
         code = re.sub(r'\\(\d{1,3})',
-                      lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0),
+                      lambda m: chr(int(m.group(1)))
+                      if int(m.group(1)) < 256 else m.group(0),
                       code)
         return code
 
 
 class MathCleaner:
     def transform(self, code):
-        for _ in range(5):
+        for _ in range(10):
             new = re.sub(r'\((\d+)\s*([\+\-\*\/])\s*(\d+)\)',
                          self._calc, code)
             if new == code:
@@ -31,6 +33,11 @@ class MathCleaner:
         return m.group(0)
 
 
+def _safe_eval(expr):
+    expr = expr.replace(' ', '')
+    return int(expr) if re.match(r'^-?\d+$', expr) else 0
+
+
 class CustomBase64Decoder:
     def __init__(self):
         self.alphabet = None
@@ -38,27 +45,33 @@ class CustomBase64Decoder:
     def extract_alphabet(self, code):
         for m in re.finditer(r'local\s+\w+\s*=\s*\{([^}]+)\}', code, re.DOTALL):
             body = m.group(1)
-            pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
-            if len(pairs) < 40:
-                continue
-            mapping = {}
-            for key, expr in pairs:
-                try:
-                    val = eval(expr.replace(' ', '')) & 0x3F
-                    mapping[key.strip()] = val
-                except:
-                    pass
-            if len(mapping) >= 40:
-                self.alphabet = mapping
+
+            pairs = re.findall(
+                r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)',
+                body
+            )
+
+            if len(pairs) >= 40:
+                mapping = {}
+                for key, expr in pairs:
+                    mapping[key.strip()] = _safe_eval(expr) & 0x3F
+                if len(mapping) >= 40:
+                    self.alphabet = mapping
+                    return True
+
+            chars = re.findall(r'"([^"]*)"', body)
+            if len(chars) >= 40:
+                self.alphabet = {c: i for i, c in enumerate(chars)}
                 return True
+
         return False
 
     def decode(self, s):
         if not self.alphabet:
             return None
-        buf = bytearray()
-        acc = 0
-        cnt = 0
+
+        buf, acc, cnt = bytearray(), 0, 0
+
         for ch in s:
             if ch == '=':
                 if cnt == 3:
@@ -67,15 +80,19 @@ class CustomBase64Decoder:
                 elif cnt == 2:
                     buf.append((acc >> 16) & 0xFF)
                 break
+
             val = self.alphabet.get(ch)
             if val is None:
                 continue
+
             acc = (acc << 6) | val
             cnt += 1
+
             if cnt == 4:
                 buf.extend([(acc >> 16) & 0xFF, (acc >> 8) & 0xFF, acc & 0xFF])
                 acc = 0
                 cnt = 0
+
         return bytes(buf)
 
 
@@ -87,126 +104,224 @@ class WeAreDevsExtractor:
     def transform(self, code):
         self.custom_b64.extract_alphabet(code)
 
-        payload = self._extract_loadstring_payload(code)
-        if payload:
-            return payload
+        candidates = []
+        candidates += self._extract_loadstring_payload(code)
+        candidates += self._extract_table_concat_payload(code)
+        candidates += self._extract_large_string_blob(code)
+        candidates += self._extract_all_strings(code)
 
-        payload = self._extract_table_concat_payload(code)
-        if payload:
-            return payload
+        scored = []
 
-        payload = self._extract_large_string_blob(code)
-        if payload:
-            return payload
+        for c in candidates:
+            score = self._score(c)
+            if score > 5:
+                scored.append((score, c))
+
+        if scored:
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return scored[0][1]
 
         return code
 
     def _extract_loadstring_payload(self, code):
-        matches = re.findall(r'loadstring\s*\((.+?)\)', code, re.DOTALL)
+        out = []
+        matches = re.findall(r'loadstring\s*\(\s*(.+?)\s*\)', code, re.DOTALL)
+
         for raw in reversed(matches):
             raw = self._clean_b64(raw)
             if len(raw) < 20:
                 continue
             decoded = self._try_decode(raw)
             if decoded:
-                return decoded
-        return None
+                out.append(decoded)
+
+        return out
 
     def _extract_table_concat_payload(self, code):
-        concat_match = re.search(r'table\.concat\s*\(\s*(\w+)\s*\)', code)
-        if not concat_match:
-            return None
-        table_name = concat_match.group(1)
-        table_match = re.search(
-            rf'local\s+{re.escape(table_name)}\s*=\s*\{{(.*?)\}}',
-            code, re.DOTALL
-        )
-        if not table_match:
-            return None
-        body = table_match.group(1)
-        strings = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
-        if not strings:
-            return None
-        joined = ''.join(strings)
-        joined = self._clean_b64(joined)
-        decoded = self._try_decode(joined)
-        if decoded:
-            return decoded
-        return None
+        out = []
+        matches = re.findall(r'table\.concat\s*\(\s*([^)]+)\s*\)', code)
+
+        for args in matches:
+            parts = [p.strip() for p in args.split(',')]
+            if not parts:
+                continue
+
+            table_ref = parts[0]
+
+            if re.match(r'^[\w.\[\]"\']+$', table_ref):
+                m = re.search(
+                    rf'local\s+{re.escape(table_ref)}\s*=\s*\{{(.*?)\}}',
+                    code,
+                    re.DOTALL
+                )
+                if not m:
+                    continue
+                body = m.group(1)
+
+            elif re.match(r'^\{(.*?)\}$', table_ref, re.DOTALL):
+                body = table_ref[1:-1]
+
+            else:
+                continue
+
+            strings = re.findall(r"""['"]((?:[^'\\]|\\.)*)['"]""", body)
+            if not strings:
+                continue
+
+            joined = self._clean_b64(''.join(strings))
+            decoded = self._try_decode(joined)
+
+            if decoded:
+                out.append(decoded)
+
+        return out
 
     def _extract_large_string_blob(self, code):
-        strings = re.findall(r'"((?:[^"\\]|\\.){30,})"', code)
-        if not strings:
-            return None
-        joined = ''.join(strings)
-        joined = self._clean_b64(joined)
-        decoded = self._try_decode(joined)
-        if decoded:
-            return decoded
-        return None
+        out = []
+        strings = re.findall(r"""['"]((?:[^'\\]|\\.){30,})['"]""", code)
+
+        if strings:
+            joined = self._clean_b64(''.join(strings))
+            decoded = self._try_decode(joined)
+            if decoded:
+                out.append(decoded)
+
+        return out
+
+    def _extract_all_strings(self, code):
+        out = []
+        strings = re.findall(r"""['"]((?:[^'\\]|\\.)*)['"]""", code)
+
+        if strings:
+            joined = self._clean_b64(''.join(strings))
+            decoded = self._try_decode(joined)
+            if decoded:
+                out.append(decoded)
+
+        return out
 
     def _clean_b64(self, s):
-        s = re.sub(r'[^A-Za-z0-9+/=]', '', s)
-        return s
+        if self.custom_b64.alphabet:
+            return s
+        return re.sub(r'[^A-Za-z0-9+/=]', '', s)
 
     def _try_decode(self, s):
-        if s in self.seen:
+        if not s:
             return None
-        self.seen.add(s)
 
-        result = None
+        h = hashlib.md5(s.encode()).hexdigest()
+        if h in self.seen:
+            return None
+        self.seen.add(h)
+
+        decoded = self._decode(s)
+        if decoded:
+            for _ in range(3):
+                nxt = self._decode(decoded)
+                if not nxt or nxt == decoded:
+                    break
+                decoded = nxt
+            return decoded
+
+        return None
+
+    def _decode(self, s):
+        if len(set(s)) < 10:
+            return None
+
         if self.custom_b64.alphabet:
-            raw = self.custom_b64.decode(s)
-            if raw:
-                try:
-                    text = raw.decode('utf-8', errors='ignore')
-                    if self._looks_valid(text):
-                        result = text
-                except:
-                    pass
-
-        if not result:
             try:
-                pad = len(s) % 4
-                if pad:
-                    s += '=' * (4 - pad)
-                data = base64.b64decode(s)
-                text = data.decode('utf-8', errors='ignore')
-                if self._looks_valid(text):
-                    result = text
+                raw = self.custom_b64.decode(s)
+                if raw:
+                    txt = raw.decode('utf-8', errors='ignore')
+                    if self._valid(txt):
+                        return txt
             except:
                 pass
 
-        return result
+        try:
+            pad = len(s) % 4
+            s2 = s + '=' * (4 - pad) if pad else s
+            data = base64.b64decode(s2)
+            txt = data.decode('utf-8', errors='ignore')
+            if self._valid(txt):
+                return txt
+        except:
+            pass
 
-    def _looks_valid(self, text):
+        for key in range(1, 32):
+            try:
+                raw = s.encode('latin-1', errors='ignore')
+                txt = ''.join(chr(b ^ key) for b in raw)
+                if self._valid(txt):
+                    return txt
+            except:
+                pass
+
+        return None
+
+    def _valid(self, text):
         if not text or len(text) < 15:
             return False
-        keywords = ['function', 'local', 'return', 'end', 'if', 'then', 'for', 'while']
-        found = sum(1 for kw in keywords if kw in text.lower())
-        if found >= 2:
-            return True
+        if text.count('\x00') > 5:
+            return False
 
         lines = text.split('\n')
-        if len(lines) > 3 and max(len(l) for l in lines) < 300:
-            alpha = sum(1 for ch in text if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-            if (alpha / max(len(text), 1)) > 0.3:
+        if lines and max(len(l) for l in lines) > 500:
+            return False
+
+        kws = ['function', 'local', 'return', 'end', 'if', 'then', 'for', 'while']
+        if sum(1 for k in kws if k in text.lower()) >= 2:
+            return True
+
+        if len(lines) > 3:
+            alpha = sum(1 for c in text if c.isalpha() or c in ' \t\n_.,;(){}[]=')
+            if alpha / max(len(text), 1) > 0.3:
                 return True
+
         return False
+
+    def _score(self, text):
+        if not text:
+            return 0
+
+        s = 0
+        t = text.lower()
+
+        s += t.count('function') * 5
+        s += t.count('local') * 4
+        s += t.count('return') * 3
+        s += t.count('end') * 2
+        s += t.count('if') * 2
+
+        lines = text.split('\n')
+        if lines:
+            ml = max(len(l) for l in lines)
+            if ml < 200:
+                s += 10
+            elif ml < 400:
+                s += 5
+
+        alpha = sum(1 for c in text if c.isalpha() or c in ' \t\n_.,;(){}[]=')
+        s += int((alpha / max(len(text), 1)) * 20)
+
+        return s
 
 
 class WRDPipeline:
     def __init__(self):
         self.steps = [
             EscapeCleaner(),
-            MathCleaner(),
+            MathCleaner()
         ]
         self.extractor = WeAreDevsExtractor()
 
     def run(self, code):
         current = code
+
         for _ in range(5):
             prev = current
+
             for step in self.steps:
                 try:
                     out = step.transform(current)
@@ -214,9 +329,12 @@ class WRDPipeline:
                         current = out
                 except:
                     pass
+
             extracted = self.extractor.transform(current)
             if extracted and extracted != current:
                 current = extracted
+
             if current == prev:
                 break
+
         return current

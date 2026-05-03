@@ -32,14 +32,17 @@ def execute_sandbox(source, use_emulator=False, timeout=35):
         with open(drv, 'w', encoding='utf-8') as f:
             f.write(driver)
 
+        proc = None
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 [LUA_BIN, drv],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=d,
             )
+        except subprocess.TimeoutExpired:
+            pass
         except Exception:
             pass
 
@@ -68,5 +71,23 @@ def execute_sandbox(source, use_emulator=False, timeout=35):
                     s = part.strip()
                     if len(s) > 20:
                         caps.append(s)
+
+        # Surface sandbox errors as diagnostic captures
+        errf = os.path.join(d, 'error.txt')
+        if os.path.exists(errf):
+            with open(errf, encoding='utf-8', errors='replace') as f:
+                err_text = f.read().strip()
+            if err_text:
+                caps.append(f'__SANDBOX_ERROR__: {err_text}')
+
+        diagf = os.path.join(d, 'diag.txt')
+        if os.path.exists(diagf):
+            with open(diagf, encoding='utf-8', errors='replace') as f:
+                diag_text = f.read().strip()
+            if diag_text:
+                caps.append(f'__SANDBOX_DIAG__: {diag_text}')
+
+        if proc and proc.stderr and proc.stderr.strip():
+            caps.append(f'__LUA_STDERR__: {proc.stderr.strip()[:500]}')
 
         return layers, caps

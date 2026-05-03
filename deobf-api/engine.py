@@ -39,10 +39,10 @@ class SandboxLoop:
         self.max_depth = max_depth
 
     def run(self, source):
-        all_layers = []
+        all_layers   = []
         all_captures = []
-        current = source
-        depth = 0
+        current      = source
+        depth        = 0
         while depth < self.max_depth:
             layers, captures = execute_sandbox(current, timeout=35)
             all_layers.extend(layers)
@@ -55,7 +55,7 @@ class SandboxLoop:
             if best_layer == current:
                 break
             current = best_layer
-            depth += 1
+            depth  += 1
         return all_layers, all_captures
 
     def _best_next_layer(self, layers):
@@ -90,40 +90,32 @@ class Ranker:
 
     def _score(self, candidate):
         if isinstance(candidate, bytes):
-            if candidate[:4] == b'\x1bLua':
-                return 1000
-            return -1
+            return 1000 if candidate[:4] == b'\x1bLua' else -1
 
         code = candidate
         if not code or len(code) < 10:
             return -1
-
         if any(code.startswith(p) for p in _DIAG_PREFIXES):
             return -1
 
-        lines = code.split('\n')
+        lines    = code.split('\n')
         max_line = max((len(l) for l in lines), default=0)
-
         if max_line > 10000 and code.count('\n') < 5:
             return -1
 
-        score = 0
+        score      = 0
         code_lower = code.lower()
         for kw in self.LUA_KEYWORDS:
             score += code_lower.count(kw) * 3
 
         alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        ratio = alpha / max(len(code), 1)
-        score += int(ratio * 80)
+        score += int((alpha / max(len(code), 1)) * 80)
 
-        if max_line < 200:
-            score += 20
-        elif max_line < 500:
-            score += 10
+        if max_line < 200:  score += 20
+        elif max_line < 500: score += 10
 
         if 'function' in code_lower and 'end' in code_lower:
             score += 30
-
         if code.count('\n') > 3:
             score += 10
 
@@ -177,13 +169,13 @@ class DeobfEngine:
                 if lifted:
                     return self._beautify(lifted), 'bytecode', 'Bytecode lifted'
             if isinstance(best, str):
-                score = self.ranker._score(best)
+                score  = self.ranker._score(best)
                 method = 'sandbox' if best != static_out else 'static'
                 if score > 0:
                     return self._beautify(best), method, f'Best candidate selected (score: {score})'
-                non_source = [c for c in ranked if isinstance(c, str) and c != static_out and len(c) > 20]
-                if non_source:
-                    pick = max(non_source, key=len)
+                non_src = [c for c in ranked if isinstance(c, str) and c != static_out and len(c) > 20]
+                if non_src:
+                    pick = max(non_src, key=len)
                     return self._beautify(pick), 'fallback', f'Best available (score: {self.ranker._score(pick)})'
                 return self._beautify(best), 'fallback', 'Returning best available output'
 
@@ -225,5 +217,7 @@ class DeobfEngine:
                 ind = max(0, ind - 1)
             out.append('    ' * ind + line)
             if any(line.startswith(o) for o in openers) and not line.endswith('end'):
+                ind += 1
+            if line.startswith('else') or line.startswith('elseif '):
                 ind += 1
         return '\n'.join(out)

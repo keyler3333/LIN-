@@ -9,16 +9,8 @@ class Transformer:
 
 class EscapeSequenceTransformer(Transformer):
     def transform(self, code):
-        code = re.sub(
-            r'\\x([0-9a-fA-F]{2})',
-            lambda m: chr(int(m.group(1), 16)),
-            code
-        )
-        code = re.sub(
-            r'\\(\d{1,3})',
-            lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0),
-            code
-        )
+        code = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), code)
+        code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
         return code
 
 
@@ -37,13 +29,11 @@ class MathTransformer(Transformer):
     def _fold(m):
         try:
             a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-            if op == '+':              result = a + b
-            elif op == '-':            result = a - b
-            elif op == '*':            result = a * b
-            elif op == '/' and b != 0: result = a // b
-            elif op == '^':            result = int(a ** b)
-            else:                      return m.group(0)
-            return '(' + str(result) + ')'
+            if op == '+': return str(a + b)
+            if op == '-': return str(a - b)
+            if op == '*': return str(a * b)
+            if op == '/' and b != 0: return str(a // b)
+            if op == '^': return str(int(a ** b))
         except Exception:
             pass
         return m.group(0)
@@ -52,14 +42,12 @@ class MathTransformer(Transformer):
 class HexNameRenamer(Transformer):
     def transform(self, code):
         mapping, ctr = {}, [0]
-
         def rep(m):
             h = m.group(0)
             if h not in mapping:
                 ctr[0] += 1
                 mapping[h] = f'var{ctr[0]}'
             return mapping[h]
-
         return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
 
 
@@ -261,7 +249,7 @@ class Lua51Decompiler:
                 self._emit(f'local r{a} = {{}}')
             elif op == 11:
                 key = RK(c); obj = R(b)
-                regs[a]     = f'{obj}:{key[1:-1]}' if (key.startswith(('"', "'")) and self._ident(key[1:-1])) else f'{obj}[{key}]'
+                regs[a]     = f'{obj}:{key[1:-1]}' if (key.startswith(('"',"'")) and self._ident(key[1:-1])) else f'{obj}[{key}]'
                 regs[a + 1] = obj
             elif op in self.BINOP: regs[a] = f'({RK(b)} {self.BINOP[op]} {RK(c)})'
             elif op in self.UNOP:  regs[a] = f'({self.UNOP[op]}{R(b)})'
@@ -315,16 +303,13 @@ class Lua51Decompiler:
                 self._emit(f'for {", ".join(vs)} in {R(a)} do')
                 self.indent += 1
             elif op == 34:
-                obj = R(a); base = (c - 1) * 50
-                cnt = b if b != 0 else func['maxstack'] - a - 1
+                obj = R(a); base = (c - 1) * 50; cnt = b if b != 0 else func['maxstack'] - a - 1
                 for k in range(1, cnt + 1): self._emit(f'{obj}[{base + k}] = {R(a + k)}')
             elif op == 35: pass
             elif op == 36:
                 pname = f'func_{bx}'
                 if bx < len(protos):
-                    sv = self.indent
-                    self._func(protos[bx], pname, False)
-                    self.indent = sv
+                    sv = self.indent; self._func(protos[bx], pname, False); self.indent = sv
                 regs[a] = pname
             elif op == 37:
                 if b == 0: regs[a] = '...'
@@ -392,10 +377,7 @@ class WeAreDevsLifter(Transformer):
 
     def _find_shuffle_pairs(self, source):
         pairs = []
-        for a_s, b_s in re.findall(
-            r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}',
-            source
-        ):
+        for a_s, b_s in re.findall(r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}', source):
             try:
                 a = eval(a_s.replace(' ', ''))
                 b = eval(b_s.replace(' ', ''))
@@ -418,8 +400,7 @@ class WeAreDevsLifter(Transformer):
         for ch in s:
             if ch == '=':
                 if count == 3:
-                    buf.append((acc >> 16) & 0xFF)
-                    buf.append((acc >> 8)  & 0xFF)
+                    buf.append((acc >> 16) & 0xFF); buf.append((acc >> 8) & 0xFF)
                 elif count == 2:
                     buf.append((acc >> 16) & 0xFF)
                 break
@@ -437,4 +418,4 @@ class WeAreDevsLifter(Transformer):
             func   = parser.parse_function()
             return Lua51Decompiler(func).decompile()
         except Exception as exc:
-            return f'-- static decompile failed: {exc}\n-- length: {len(bc)}\n-- header: {bc[:16].hex()}\n'
+            return f'-- static decompile failed: {exc}\n-- bytecode length: {len(bc)}\n-- header: {bc[:16].hex()}\n'

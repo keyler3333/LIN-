@@ -1,10 +1,12 @@
-import discord, io, os, httpx
+import discord
+import io
+import os
+import httpx
 from discord.ext import commands
 from discord import app_commands
 
 TOKEN   = os.environ['DISCORD_BOT_TOKEN']
-GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
-API_URL  = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
+API_URL = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -13,31 +15,9 @@ tree = bot.tree
 
 
 async def call_api(source):
-    async with httpx.AsyncClient(timeout=90) as c:
+    async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(f'{API_URL}/deobf', json={'source': source})
         return r.json()
-
-
-async def ai_diagnose(error_text, profile, sample):
-    if not GROQ_KEY or not error_text:
-        return None
-    prompt = (
-        "You are a Lua reverse engineer. The deobfuscation sandbox returned this diagnostic.\n"
-        "Explain what went wrong and what specific fix the user should apply.\n\n"
-        f"PROFILE: {profile}\nERROR/DIAGNOSTIC:\n{error_text[:1500]}\n\n"
-        f"SCRIPT SAMPLE:\n{sample[:1500]}\n\nDiagnosis:"
-    )
-    try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post(
-                'https://api.groq.com/openai/v1/chat/completions',
-                headers={'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'},
-                json={'model': 'llama-3.3-70b-versatile', 'max_tokens': 1024,
-                      'messages': [{'role': 'user', 'content': prompt}]},
-            )
-            return r.json()['choices'][0]['message']['content']
-    except Exception:
-        return None
 
 
 async def run_deobf(text, filename):
@@ -48,10 +28,7 @@ async def run_deobf(text, filename):
         return {'embed': em, 'file': None}
 
     if 'error' in data:
-        diag = await ai_diagnose(data.get('diagnostic', ''), str(data.get('detected', '?')), text)
-        em   = discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c)
-        if diag:
-            em.add_field(name='AI Diagnosis', value=diag[:1000], inline=False)
+        em = discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c)
         return {'embed': em, 'file': None}
 
     result     = data.get('result', '')
@@ -61,11 +38,8 @@ async def run_deobf(text, filename):
     if len(result.encode()) > 7_500_000:
         result = result[:1_000_000] + "\n-- Output truncated (too large for Discord)"
 
-    peeled = 'sandbox' in detected or 'layer' in diagnostic.lower()
-    color  = 0x2ecc71 if peeled else 0xe67e22
-
-    em = discord.Embed(title='Deobfuscation complete', color=color)
-    em.add_field(name='Obfuscator', value=detected,   inline=True)
+    em = discord.Embed(title='Deobfuscation complete', color=0x2ecc71)
+    em.add_field(name='Obfuscator', value=detected, inline=True)
     if diagnostic:
         em.add_field(name='Diagnostic', value=diagnostic[:1000], inline=False)
 

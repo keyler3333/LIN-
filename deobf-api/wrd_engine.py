@@ -293,7 +293,7 @@ class WRDPipeline:
                 f.write(driver)
             try:
                 subprocess.run([self.lua_bin, drv], capture_output=True, text=True,
-                               timeout=20, cwd=d, env=os.environ.copy())
+                               timeout=120, cwd=d, env=os.environ.copy())
             except Exception:
                 pass
             captures = self._read_captures(d)

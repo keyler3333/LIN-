@@ -43,47 +43,124 @@ class MathTransformer(Transformer):
 
 class HexNameRenamer(Transformer):
     def transform(self, code):
-        mapping, ctr = {}, [0]
-        def rep(m):
-            h = m.group(0)
-            if h not in mapping:
-                ctr[0] += 1
-                mapping[h] = f'var{ctr[0]}'
-            return mapping[h]
-        return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
+        try:
+            from luaparser import ast
+            from luaparser.astnodes import Name, LocalDeclare, Assign, Function, LocalFunction
+            from luaparser.utils import Walker
+
+            class _Renamer(Walker):
+                def __init__(self):
+                    self.mapping = {}
+                    self.counter = 0
+
+                def _new_name(self):
+                    self.counter += 1
+                    return f'var{self.counter}'
+
+                def _rename(self, name_node):
+                    old = name_node.id if hasattr(name_node, 'id') else name_node.value
+                    if old.startswith('_0x') and re.match(r'_0x[0-9a-fA-F]+$', old):
+                        if old not in self.mapping:
+                            self.mapping[old] = self._new_name()
+                        if hasattr(name_node, 'id'):
+                            name_node.id = self.mapping[old]
+                        else:
+                            name_node.value = self.mapping[old]
+
+                def visit_Name(self, node):
+                    self._rename(node)
+
+                def visit_LocalDeclare(self, node):
+                    for name in node.names:
+                        self._rename(name)
+                    for val in node.values:
+                        self.walk(val)
+
+                def visit_Assign(self, node):
+                    for var in node.variables:
+                        if isinstance(var, Name):
+                            self._rename(var)
+                        else:
+                            self.walk(var)
+                    for val in node.values:
+                        self.walk(val)
+
+                def visit_Function(self, node):
+                    if node.name:
+                        self._rename(node.name)
+                    for param in node.params.names:
+                        self._rename(param)
+                    self.walk(node.body)
+
+                def visit_LocalFunction(self, node):
+                    if node.name:
+                        self._rename(node.name)
+                    for param in node.params.names:
+                        self._rename(param)
+                    self.walk(node.body)
+
+            tree = ast.parse(code)
+            renamer = _Renamer()
+            renamer.walk(tree)
+            return ast.to_lua_source(tree)
+        except Exception:
+            mapping, ctr = {}, [0]
+            def rep(m):
+                h = m.group(0)
+                if h not in mapping:
+                    ctr[0] += 1
+                    mapping[h] = f'var{ctr[0]}'
+                return mapping[h]
+            return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
 
 
 class Lua51Parser:
     def __init__(self, bc):
+        if len(bc) < 12 or bc[:4] != b'\x1bLua' or bc[4] != 0x51:
+            raise ValueError('Invalid Lua 5.1 bytecode')
         self.bc = bc
         self.pos = [0]
         self._parse_header()
 
     def _byte(self):
+        if self.pos[0] >= len(self.bc):
+            raise IndexError('Bytecode read past EOF')
         v = self.bc[self.pos[0]]; self.pos[0] += 1; return v
 
     def _int(self):
-        data = self.bc[self.pos[0]:self.pos[0] + self.int_size]
-        self.pos[0] += self.int_size
+        sz = self.int_size
+        if self.pos[0] + sz > len(self.bc):
+            raise IndexError('Bytecode read past EOF')
+        data = self.bc[self.pos[0]:self.pos[0] + sz]
+        self.pos[0] += sz
         return int.from_bytes(data, 'little' if self.little_endian else 'big')
 
     def _sizet(self):
-        data = self.bc[self.pos[0]:self.pos[0] + self.sizet_size]
-        self.pos[0] += self.sizet_size
+        sz = self.sizet_size
+        if self.pos[0] + sz > len(self.bc):
+            raise IndexError('Bytecode read past EOF')
+        data = self.bc[self.pos[0]:self.pos[0] + sz]
+        self.pos[0] += sz
         return int.from_bytes(data, 'little' if self.little_endian else 'big')
 
     def _double(self):
+        if self.pos[0] + 8 > len(self.bc):
+            raise IndexError('Bytecode read past EOF')
         data = self.bc[self.pos[0]:self.pos[0] + 8]; self.pos[0] += 8
         return struct.unpack('<d' if self.little_endian else '>d', data)[0]
 
     def _string(self):
         size = self._sizet()
         if size == 0: return None
+        if self.pos[0] + size > len(self.bc):
+            raise IndexError('Bytecode read past EOF')
         s = self.bc[self.pos[0]:self.pos[0] + size - 1].decode('latin-1', errors='replace')
         self.pos[0] += size
         return s
 
     def _instruction(self):
+        if self.pos[0] + 4 > len(self.bc):
+            raise IndexError('Bytecode read past EOF')
         data = self.bc[self.pos[0]:self.pos[0] + 4]; self.pos[0] += 4
         v   = int.from_bytes(data, 'little' if self.little_endian else 'big')
         op  = v & 0x3F
@@ -95,8 +172,6 @@ class Lua51Parser:
         return {'op': op, 'a': a, 'b': b, 'c': c, 'bx': bx, 'sbx': sbx}
 
     def _parse_header(self):
-        assert self.bc[:4] == b'\x1bLua'
-        assert self.bc[4] == 0x51
         self.pos[0] = 5
         self._byte(); self.little_endian = self._byte() == 1
         self.int_size = self._byte(); self.sizet_size = self._byte()
@@ -113,6 +188,7 @@ class Lua51Parser:
             'maxstack':     self._byte(),
         }
         n = self._int()
+        if n < 0: raise ValueError('Invalid code length')
         func['code'] = [self._instruction() for _ in range(n)]
         n = self._int()
         consts = []

@@ -1,12 +1,12 @@
 from flask import Flask, request, jsonify
-from engine import DeobfEngine
+from wrd_engine import WRDPipeline
 
 app = Flask(__name__)
-engine = DeobfEngine()
+engine = WRDPipeline()
 
 @app.route('/health')
 def health():
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'engine': 'wrd_focused'})
 
 @app.route('/deobf', methods=['POST'])
 def deobf():
@@ -16,8 +16,12 @@ def deobf():
     if len(data['source'].encode()) > 4 * 1024 * 1024:
         return jsonify({'error': 'Source exceeds 4MB limit'}), 413
     try:
-        result, obf_type, diag = engine.process(data['source'])
-        return jsonify({'result': result, 'detected': obf_type, 'diagnostic': diag})
+        result = engine.run(data['source'])
+        return jsonify({
+            'result': result,
+            'detected': 'wearedevs',
+            'diagnostic': 'Extraction completed'
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

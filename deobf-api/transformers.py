@@ -15,6 +15,8 @@ class EscapeSequenceTransformer(Transformer):
 
 
 class MathTransformer(Transformer):
+    # BUG FIX: the original returned '(' + str(result) + ')' which left extra
+    # parens in the output and prevented further folding of nested expressions.
     _PAT = re.compile(r'\((-?\d+)\s*([\+\-\*\/\^])\s*(-?\d+)\)')
 
     def transform(self, code):
@@ -29,13 +31,14 @@ class MathTransformer(Transformer):
     def _fold(m):
         try:
             a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-            if op == '+':             result = a + b
-            elif op == '-':           result = a - b
-            elif op == '*':           result = a * b
+            if op == '+':              result = a + b
+            elif op == '-':            result = a - b
+            elif op == '*':            result = a * b
             elif op == '/' and b != 0: result = a // b
-            elif op == '^':           result = int(a ** b)
-            else:                     return m.group(0)
-            return '(' + str(result) + ')'
+            elif op == '^':            result = int(a ** b)
+            else:                      return m.group(0)
+            # BUG FIX: was '(' + str(result) + ')' — no extra parens
+            return str(result)
         except Exception:
             pass
         return m.group(0)
@@ -53,6 +56,10 @@ class HexNameRenamer(Transformer):
         return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Lua 5.1 binary parser
+# ─────────────────────────────────────────────────────────────────────────────
+
 class Lua51Parser:
     def __init__(self, bc):
         self.bc = bc
@@ -60,9 +67,7 @@ class Lua51Parser:
         self._parse_header()
 
     def _byte(self):
-        v = self.bc[self.pos[0]]
-        self.pos[0] += 1
-        return v
+        v = self.bc[self.pos[0]]; self.pos[0] += 1; return v
 
     def _int(self):
         data = self.bc[self.pos[0]:self.pos[0] + self.int_size]
@@ -75,23 +80,19 @@ class Lua51Parser:
         return int.from_bytes(data, 'little' if self.little_endian else 'big')
 
     def _double(self):
-        data = self.bc[self.pos[0]:self.pos[0] + 8]
-        self.pos[0] += 8
-        fmt = '<d' if self.little_endian else '>d'
-        return struct.unpack(fmt, data)[0]
+        data = self.bc[self.pos[0]:self.pos[0] + 8]; self.pos[0] += 8
+        return struct.unpack('<d' if self.little_endian else '>d', data)[0]
 
     def _string(self):
         size = self._sizet()
-        if size == 0:
-            return None
+        if size == 0: return None
         s = self.bc[self.pos[0]:self.pos[0] + size - 1].decode('latin-1', errors='replace')
         self.pos[0] += size
         return s
 
     def _instruction(self):
-        data = self.bc[self.pos[0]:self.pos[0] + 4]
-        self.pos[0] += 4
-        v = int.from_bytes(data, 'little' if self.little_endian else 'big')
+        data = self.bc[self.pos[0]:self.pos[0] + 4]; self.pos[0] += 4
+        v   = int.from_bytes(data, 'little' if self.little_endian else 'big')
         op  = v & 0x3F
         a   = (v >> 6)  & 0xFF
         c   = (v >> 14) & 0x1FF
@@ -104,13 +105,9 @@ class Lua51Parser:
         assert self.bc[:4] == b'\x1bLua'
         assert self.bc[4] == 0x51
         self.pos[0] = 5
-        self._byte()
-        self.little_endian = self._byte() == 1
-        self.int_size   = self._byte()
-        self.sizet_size = self._byte()
-        self._byte()
-        self._byte()
-        self._byte()
+        self._byte(); self.little_endian = self._byte() == 1
+        self.int_size = self._byte(); self.sizet_size = self._byte()
+        self._byte(); self._byte(); self._byte()
 
     def parse_function(self):
         func = {
@@ -128,7 +125,7 @@ class Lua51Parser:
         consts = []
         for _ in range(n):
             t = self._byte()
-            if t == 0:   consts.append(None)
+            if   t == 0: consts.append(None)
             elif t == 1: consts.append(bool(self._byte()))
             elif t == 3: consts.append(self._double())
             elif t == 4: consts.append(self._string())
@@ -136,17 +133,21 @@ class Lua51Parser:
         func['constants'] = consts
         n = self._int()
         func['protos'] = [self.parse_function() for _ in range(n)]
+        n = self._int(); self.pos[0] += n * self.int_size   # line info
         n = self._int()
-        self.pos[0] += n * self.int_size
-        n = self._int()
+        locals_ = []
         for _ in range(n):
-            self._string()
-            self._int()
-            self._int()
+            name = self._string(); start = self._int(); end = self._int()
+            locals_.append({'name': name, 'start': start, 'end': end})
+        func['locals'] = locals_
         n = self._int()
         func['upvalue_names'] = [self._string() for _ in range(n)]
         return func
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Lua 5.1 decompiler
+# ─────────────────────────────────────────────────────────────────────────────
 
 class Lua51Decompiler:
     OPCODES = {
@@ -210,74 +211,231 @@ class Lua51Decompiler:
             return f'{obj}.{key[1:-1]} = {val}'
         return f'{obj}[{key}] = {val}'
 
+    # ── Control-flow pre-pass ─────────────────────────────────────────────────
+
+    def _build_block_map(self, code):
+        """
+        Pre-scans the instruction list to build:
+          events    : dict pc -> list of events to fire BEFORE that instruction
+          skip_pcs  : set of PCs to treat as no-ops (paired JMPs, TFORLOOP, etc.)
+          while_pcs : set of conditional op PCs that are while-loop conditions
+
+        Event types stored in events[pc]:
+          ('end',)                    — dedent + emit 'end'
+          ('else',)                   — dedent + emit 'else' + indent
+          ('for_header', a, c)        — emit generic-for header then indent
+        """
+        events   = {}
+        skip_pcs = set()
+        while_pcs = set()
+
+        def add(pc, ev):
+            events.setdefault(pc, []).append(ev)
+
+        n = len(code)
+
+        for i, ins in enumerate(code):
+            op = ins['op']
+
+            # ── Conditionals (EQ LT LE TEST TESTSET): always followed by JMP ──
+            if op in (23, 24, 25, 26, 27):
+                if i + 1 < n and code[i + 1]['op'] == 22:
+                    skip_pcs.add(i + 1)                    # suppress the paired JMP
+                    target = i + 2 + code[i + 1]['sbx']    # first PC after the block
+
+                    if 0 <= target - 1 < n:
+                        t_prev = code[target - 1]
+                        if t_prev['op'] == 22 and t_prev['sbx'] < 0:
+                            # Backward JMP at end of block → WHILE loop
+                            while_pcs.add(i)
+                            skip_pcs.add(target - 1)       # suppress back-jump
+                            add(target, ('end',))
+                        elif t_prev['op'] == 22 and t_prev['sbx'] > 0:
+                            # Forward JMP at end of if-body → IF/ELSE
+                            else_end = target + t_prev['sbx']
+                            skip_pcs.add(target - 1)       # suppress else-skip JMP
+                            add(target, ('else',))
+                            add(else_end, ('end',))
+                        else:
+                            add(target, ('end',))
+                    else:
+                        add(target, ('end',))
+
+            # ── TFORLOOP: generic for — body *precedes* TFORLOOP in bytecode ──
+            elif op == 33:
+                body_start = i + 1 + ins['sbx']           # sbx is negative
+                skip_pcs.add(i)                            # TFORLOOP itself is no-op
+                add(i + 1, ('end',))                       # 'end' comes after TFORLOOP
+                add(body_start, ('for_header', ins['a'], ins['c']))
+                # Suppress the initial JMP to TFORLOOP (at body_start - 1)
+                if 0 <= body_start - 1 < n and code[body_start - 1]['op'] == 22:
+                    jmp_target = (body_start - 1) + 1 + code[body_start - 1]['sbx']
+                    if jmp_target == i:
+                        skip_pcs.add(body_start - 1)
+
+        return events, skip_pcs, while_pcs
+
+    # ── Main decompilation ────────────────────────────────────────────────────
+
     def _func(self, func, name='f', is_main=False):
         code     = func['code']
         consts   = func['constants']
         protos   = func['protos']
         upvnames = func.get('upvalue_names') or []
-        params   = [f'p{i}' for i in range(func['numparams'])]
+
+        params = [f'p{i}' for i in range(func['numparams'])]
         if func['is_vararg']:
             params.append('...')
         if not is_main:
             self._emit(f'local function {name}({", ".join(params)})')
             self.indent += 1
+
         regs = {}
         R  = lambda r: regs.get(r, f'r{r}')
         RK = lambda v: self._rk(v, consts, regs)
+
+        # BUG FIX: build control-flow map so if/while/for blocks are properly closed
+        events, skip_pcs, while_pcs = self._build_block_map(code)
+
         i = 0
         while i < len(code):
+
+            # ── Fire pre-instruction events (end / else / for_header) ──────────
+            for ev in events.get(i, []):
+                if ev[0] == 'end':
+                    self.indent = max(0, self.indent - 1)
+                    self._emit('end')
+                elif ev[0] == 'else':
+                    self.indent = max(0, self.indent - 1)
+                    self._emit('else')
+                    self.indent += 1
+                elif ev[0] == 'for_header':
+                    _, fa, fc = ev
+                    vs = [self._t() for _ in range(fc)]
+                    for k, v in enumerate(vs):
+                        regs[fa + 3 + k] = v
+                    self._emit(f'for {", ".join(vs)} in {R(fa)} do')
+                    self.indent += 1
+
+            # ── Skip no-op PCs (paired JMPs, TFORLOOP, etc.) ─────────────────
+            if i in skip_pcs:
+                i += 1
+                continue
+
             ins = code[i]
-            op, a, b, c, bx, sbx = ins['op'], ins['a'], ins['b'], ins['c'], ins['bx'], ins['sbx']
-            if   op == 0:  regs[a] = R(b)
-            elif op == 1:  regs[a] = self._fc(consts[bx] if bx < len(consts) else None)
-            elif op == 2:
+            op, a, b, c, bx, sbx = (
+                ins['op'], ins['a'], ins['b'], ins['c'], ins['bx'], ins['sbx']
+            )
+
+            if op == 0:    # MOVE
+                regs[a] = R(b)
+
+            elif op == 1:  # LOADK
+                regs[a] = self._fc(consts[bx] if bx < len(consts) else None)
+
+            elif op == 2:  # LOADBOOL
                 regs[a] = 'true' if b else 'false'
                 if c: i += 1
-            elif op == 3:
+
+            elif op == 3:  # LOADNIL
                 for r in range(a, b + 1): regs[r] = 'nil'
-            elif op == 4:
+
+            elif op == 4:  # GETUPVAL
                 regs[a] = upvnames[b] if b < len(upvnames) else f'upv{b}'
-            elif op == 5:  regs[a] = self._fc(consts[bx] if bx < len(consts) else None)
-            elif op == 6:  regs[a] = self._tget(R(b), RK(c))
-            elif op == 7:
+
+            elif op == 5:  # GETGLOBAL
+                # BUG FIX: was self._fc(consts[bx]) which wraps the name in repr()
+                # quotes, producing 'print' instead of print.  Strip quotes.
+                raw = self._fc(consts[bx] if bx < len(consts) else None)
+                regs[a] = raw.strip("'\"")
+
+            elif op == 6:  # GETTABLE
+                regs[a] = self._tget(R(b), RK(c))
+
+            elif op == 7:  # SETGLOBAL
                 gn = self._fc(consts[bx] if bx < len(consts) else None)
-                if gn.startswith(('"', "'")): gn = gn[1:-1]
+                if gn.startswith(("'", '"')): gn = gn[1:-1]
                 self._emit(f'{gn} = {R(a)}')
-            elif op == 8:
+
+            elif op == 8:  # SETUPVAL
                 self._emit(f'{upvnames[b] if b < len(upvnames) else f"upv{b}"} = {R(a)}')
-            elif op == 9:  self._emit(self._tset(R(a), RK(b), RK(c)))
-            elif op == 10:
-                regs[a] = '{}'
-                self._emit(f'local r{a} = {{}}')
-            elif op == 11:
+
+            elif op == 9:  # SETTABLE
+                self._emit(self._tset(R(a), RK(b), RK(c)))
+
+            elif op == 10: # NEWTABLE
+                regs[a] = f'r{a}'; self._emit(f'local r{a} = {{}}')
+
+            elif op == 11: # SELF
                 key = RK(c); obj = R(b)
-                regs[a]     = f'{obj}:{key[1:-1]}' if (key.startswith(('"',"'")) and self._ident(key[1:-1])) else f'{obj}[{key}]'
+                regs[a] = (f'{obj}:{key[1:-1]}'
+                           if (key.startswith(("'", '"')) and self._ident(key[1:-1]))
+                           else f'{obj}[{key}]')
                 regs[a + 1] = obj
-            elif op in self.BINOP: regs[a] = f'({RK(b)} {self.BINOP[op]} {RK(c)})'
-            elif op in self.UNOP:  regs[a] = f'({self.UNOP[op]}{R(b)})'
-            elif op == 21: regs[a] = ' .. '.join(R(r) for r in range(b, c + 1))
-            elif op == 22: self._emit(f'-- jmp -> {i + 1 + sbx}')
-            elif op == 23:
-                self._emit(f'if {RK(b)} {"==" if a == 0 else "~="} {RK(c)} then')
+
+            elif op in self.BINOP:
+                regs[a] = f'({RK(b)} {self.BINOP[op]} {RK(c)})'
+
+            elif op in self.UNOP:
+                regs[a] = f'({self.UNOP[op]}{R(b)})'
+
+            elif op == 21: # CONCAT
+                regs[a] = ' .. '.join(R(r) for r in range(b, c + 1))
+
+            elif op == 22: # JMP (only reaches here if not in skip_pcs)
+                if sbx > 0:
+                    self._emit(f'-- jmp -> {i + 1 + sbx}')
+                # backward JMPs not in skip_pcs are unreachable code or unusual
+                # structure; emit a comment so output is still readable.
+                elif sbx < 0:
+                    self._emit(f'-- jmp back -> {i + 1 + sbx}')
+
+            elif op == 23: # EQ
+                cond = '==' if a == 0 else '~='
+                if i in while_pcs:
+                    self._emit(f'while {RK(b)} {cond} {RK(c)} do')
+                else:
+                    self._emit(f'if {RK(b)} {cond} {RK(c)} then')
                 self.indent += 1
-            elif op == 24:
-                self._emit(f'if {RK(b)} {"<" if a == 0 else ">="} {RK(c)} then')
+
+            elif op == 24: # LT
+                cond = '<' if a == 0 else '>='
+                if i in while_pcs:
+                    self._emit(f'while {RK(b)} {cond} {RK(c)} do')
+                else:
+                    self._emit(f'if {RK(b)} {cond} {RK(c)} then')
                 self.indent += 1
-            elif op == 25:
-                self._emit(f'if {RK(b)} {"<=" if a == 0 else ">"} {RK(c)} then')
+
+            elif op == 25: # LE
+                cond = '<=' if a == 0 else '>'
+                if i in while_pcs:
+                    self._emit(f'while {RK(b)} {cond} {RK(c)} do')
+                else:
+                    self._emit(f'if {RK(b)} {cond} {RK(c)} then')
                 self.indent += 1
-            elif op == 26:
-                self._emit(f'if {"not " if c == 0 else ""}{R(a)} then')
+
+            elif op == 26: # TEST
+                cond = 'not ' if c == 0 else ''
+                if i in while_pcs:
+                    self._emit(f'while {cond}{R(a)} do')
+                else:
+                    self._emit(f'if {cond}{R(a)} then')
                 self.indent += 1
-            elif op == 27:
+
+            elif op == 27: # TESTSET
                 regs[a] = R(b)
-                self._emit(f'if {"not " if c == 0 else ""}{R(b)} then')
+                cond = 'not ' if c == 0 else ''
+                if i in while_pcs:
+                    self._emit(f'while {cond}{R(b)} do')
+                else:
+                    self._emit(f'if {cond}{R(b)} then')
                 self.indent += 1
-            elif op == 28:
+
+            elif op == 28: # CALL
                 fn   = R(a)
                 args = '...' if b == 0 else ('' if b == 1 else ', '.join(R(a + k) for k in range(1, b)))
                 call = f'{fn}({args})'
-                if c == 0:   regs[a] = call
+                if   c == 0: regs[a] = call
                 elif c == 1: self._emit(call)
                 elif c == 2:
                     t = self._t(); self._emit(f'local {t} = {call}'); regs[a] = t
@@ -285,47 +443,64 @@ class Lua51Decompiler:
                     rets = [self._t() for _ in range(c - 1)]
                     self._emit(f'local {", ".join(rets)} = {call}')
                     for k, t in enumerate(rets): regs[a + k] = t
-            elif op == 29:
+
+            elif op == 29: # TAILCALL
                 args = '' if b == 1 else ', '.join(R(a + k) for k in range(1, b))
                 self._emit(f'return {R(a)}({args})')
-            elif op == 30:
-                if b == 1:   self._emit('return')
+
+            elif op == 30: # RETURN
+                if   b == 1: self._emit('return')
                 elif b == 0: self._emit(f'return {R(a)}')
                 else:        self._emit(f'return {", ".join(R(a + k) for k in range(b - 1))}')
-            elif op == 31:
+
+            elif op == 31: # FORLOOP — loop-back; emits 'end' and decrements indent
                 self.indent = max(0, self.indent - 1)
                 self._emit('end')
-            elif op == 32:
+
+            elif op == 32: # FORPREP — numeric for setup
                 lv = f'i_{a}'; regs[a + 3] = lv
-                self._emit(f'for {lv} = {R(a)}, {R(a+1)}, {R(a+2)} do')
+                self._emit(f'for {lv} = {R(a)}, {R(a + 1)}, {R(a + 2)} do')
                 self.indent += 1
-            elif op == 33:
-                vs = [self._t() for _ in range(c)]
-                for k, v in enumerate(vs): regs[a + 3 + k] = v
-                self._emit(f'for {", ".join(vs)} in {R(a)} do')
-                self.indent += 1
-            elif op == 34:
-                obj = R(a); base = (c - 1) * 50; cnt = b if b != 0 else func['maxstack'] - a - 1
-                for k in range(1, cnt + 1): self._emit(f'{obj}[{base + k}] = {R(a + k)}')
-            elif op == 35: pass
-            elif op == 36:
+
+            elif op == 33: # TFORLOOP — handled by block_map pre-pass (in skip_pcs)
+                pass       # should never reach here; skip_pcs catches it above
+
+            elif op == 34: # SETLIST
+                obj = R(a); base = (c - 1) * 50 if c != 0 else 0
+                cnt = b if b != 0 else func['maxstack'] - a - 1
+                for k in range(1, cnt + 1):
+                    self._emit(f'{obj}[{base + k}] = {R(a + k)}')
+
+            elif op == 35: pass  # CLOSE
+
+            elif op == 36: # CLOSURE
                 pname = f'func_{bx}'
                 if bx < len(protos):
-                    sv = self.indent; self._func(protos[bx], pname, False); self.indent = sv
+                    sv = self.indent
+                    self._func(protos[bx], pname, False)
+                    self.indent = sv
                 regs[a] = pname
-            elif op == 37:
+
+            elif op == 37: # VARARG
                 if b == 0: regs[a] = '...'
                 else:
                     vs = [self._t() for _ in range(b - 1)]
                     self._emit(f'local {", ".join(vs)} = ...')
                     for k, v in enumerate(vs): regs[a + k] = v
+
             else:
                 self._emit(f'-- {self.OPCODES.get(op, f"OP_{op}")} A={a} B={b} C={c}')
+
             i += 1
+
         if not is_main:
             self.indent -= 1
             self._emit('end')
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  WeAreDevs lifter
+# ─────────────────────────────────────────────────────────────────────────────
 
 class WeAreDevsLifter(Transformer):
     def transform(self, code):
@@ -334,7 +509,8 @@ class WeAreDevsLifter(Transformer):
 
     def _try_lift(self, source):
         char_map = self._find_char_map(source)
-        if not char_map or len(char_map) < 40:
+        # BUG FIX: threshold was < 40; lowered to < 30 to catch more variants
+        if not char_map or len(char_map) < 30:
             return None
         data_strings = self._find_data_table(source)
         if not data_strings:
@@ -357,14 +533,12 @@ class WeAreDevsLifter(Transformer):
         for m in re.finditer(r'\{([^{}]{200,})\}', source, re.DOTALL):
             body = m.group(1)
             pairs = re.findall(r'\["(.)"\]\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
-            if len(pairs) < 40:
+            if len(pairs) < 30:
                 continue
             cmap = {}
             for key, expr in pairs:
-                try:
-                    cmap[key] = eval(expr.replace(' ', '')) & 0x3F
-                except Exception:
-                    pass
+                try: cmap[key] = eval(expr.replace(' ', '')) & 0x3F
+                except Exception: pass
             if len(cmap) > len(best):
                 best = cmap
         return best
@@ -379,14 +553,14 @@ class WeAreDevsLifter(Transformer):
 
     def _find_shuffle_pairs(self, source):
         pairs = []
-        for a_s, b_s in re.findall(r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}', source):
+        for a_s, b_s in re.findall(
+            r'\{(-?\d+(?:\s*[+\-]\s*\d+)*)\s*,\s*(-?\d+(?:\s*[+\-]\s*\d+)*)\}', source
+        ):
             try:
                 a = eval(a_s.replace(' ', ''))
                 b = eval(b_s.replace(' ', ''))
-                if a > 0 and b > 0:
-                    pairs.append((a, b))
-            except Exception:
-                pass
+                if a > 0 and b > 0: pairs.append((a, b))
+            except Exception: pass
         return pairs
 
     def _unshuffle(self, strings, pairs):
@@ -420,4 +594,8 @@ class WeAreDevsLifter(Transformer):
             func   = parser.parse_function()
             return Lua51Decompiler(func).decompile()
         except Exception as exc:
-            return f'-- static decompile failed: {exc}\n-- bytecode length: {len(bc)}\n-- header: {bc[:16].hex()}\n'
+            return (
+                f'-- static decompile failed: {exc}\n'
+                f'-- bytecode length: {len(bc)}\n'
+                f'-- header: {bc[:16].hex()}\n'
+            )

@@ -8,6 +8,8 @@ from transformers import (
 )
 from sandbox import execute_sandbox
 
+_DIAG_PREFIXES = ('__SANDBOX_ERROR__', '__SANDBOX_DIAG__', '__LUA_STDERR__')
+
 
 class StaticPipeline:
     def __init__(self):
@@ -96,20 +98,19 @@ class Ranker:
         if not code or len(code) < 10:
             return -1
 
+        if any(code.startswith(p) for p in _DIAG_PREFIXES):
+            return -1
+
         lines = code.split('\n')
         max_line = max((len(l) for l in lines), default=0)
 
-        # Only reject truly raw blobs — single-line scripts over 10k chars
-        # with almost no newlines are almost certainly unprocessed obfuscated source
         if max_line > 10000 and code.count('\n') < 5:
             return -1
 
         score = 0
-
         code_lower = code.lower()
         for kw in self.LUA_KEYWORDS:
-            count = code_lower.count(kw)
-            score += count * 3
+            score += code_lower.count(kw) * 3
 
         alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
         ratio = alpha / max(len(code), 1)
@@ -155,6 +156,8 @@ class DeobfEngine:
 
         for cap in all_captures:
             if isinstance(cap, str):
+                if any(cap.startswith(p) for p in _DIAG_PREFIXES):
+                    continue
                 if cap.startswith('\x1bLua'):
                     lifted = self._lift_bc(cap.encode('latin-1'))
                     if lifted:
@@ -162,7 +165,6 @@ class DeobfEngine:
                 elif len(cap) > 20:
                     candidates.append(cap)
 
-        # Always include the static-transformed source as a fallback candidate
         if static_out and static_out not in candidates:
             candidates.append(static_out)
 
@@ -179,8 +181,6 @@ class DeobfEngine:
                 method = 'sandbox' if best != static_out else 'static'
                 if score > 0:
                     return self._beautify(best), method, f'Best candidate selected (score: {score})'
-                # Score <= 0 but it's the best we have — return it anyway
-                # Pick the longest non-source candidate if available
                 non_source = [c for c in ranked if isinstance(c, str) and c != static_out and len(c) > 20]
                 if non_source:
                     pick = max(non_source, key=len)

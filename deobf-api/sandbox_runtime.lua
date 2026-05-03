@@ -80,6 +80,7 @@ local _env = {
     Color3 = { new = function() return _dummy("Color3") end, fromRGB = function() return _dummy("Color3") end },
     UDim2 = { new = function() return _dummy("UDim2") end },
     Enum = setmetatable({}, {__index = function(_,k) return k end}),
+    newproxy = function() return {} end,
     tick = function() return 0 end,
     time = function() return 0 end,
     wait = function() end,
@@ -109,9 +110,6 @@ local _env = {
 }
 
 setmetatable(_env, {__index = _G})
-
-debug.sethook(function()
-end, "", 20000000)
 
 local f = io.open(_inp, "r")
 if f then

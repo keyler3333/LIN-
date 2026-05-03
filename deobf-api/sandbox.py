@@ -72,7 +72,7 @@ def execute_sandbox(source, use_emulator=False, timeout=35):
                     if len(s) > 20:
                         caps.append(s)
 
-        # Surface sandbox errors as diagnostic captures
+        # Surface sandbox errors as diagnostic captures🥸
         errf = os.path.join(d, 'error.txt')
         if os.path.exists(errf):
             with open(errf, encoding='utf-8', errors='replace') as f:

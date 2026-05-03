@@ -42,7 +42,7 @@ class DeobfEngine:
             if isinstance(cap, str) and len(cap) > 100 and self._looks_decoded(cap):
                 return self._beautify(cap), 'sandbox', 'Captured payload'
 
-        return self._beautify(current), 'sandbox', 'No decrypted payload found – environment incomplete'
+        return self._beautify(current), 'sandbox', 'No decrypted payload found'
 
     def _lift_bc(self, bc):
         try:

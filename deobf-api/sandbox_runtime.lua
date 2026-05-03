@@ -110,6 +110,9 @@ local _env = {
 
 setmetatable(_env, {__index = _G})
 
+debug.sethook(function()
+end, "", 20000000)
+
 local f = io.open(_inp, "r")
 if f then
     local src = f:read("*a")

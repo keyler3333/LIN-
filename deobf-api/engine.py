@@ -93,13 +93,15 @@ class Ranker:
             return -1
 
         code = candidate
-        if not code or len(code) < 20:
+        if not code or len(code) < 10:
             return -1
 
         lines = code.split('\n')
         max_line = max((len(l) for l in lines), default=0)
 
-        if max_line > 5000:
+        # Only reject truly raw blobs — single-line scripts over 10k chars
+        # with almost no newlines are almost certainly unprocessed obfuscated source
+        if max_line > 10000 and code.count('\n') < 5:
             return -1
 
         score = 0
@@ -160,7 +162,8 @@ class DeobfEngine:
                 elif len(cap) > 20:
                     candidates.append(cap)
 
-        if changed and static_out not in candidates:
+        # Always include the static-transformed source as a fallback candidate
+        if static_out and static_out not in candidates:
             candidates.append(static_out)
 
         ranked = self.ranker.rank(candidates)
@@ -172,10 +175,19 @@ class DeobfEngine:
                 if lifted:
                     return self._beautify(lifted), 'bytecode', 'Bytecode lifted'
             if isinstance(best, str):
+                score = self.ranker._score(best)
                 method = 'sandbox' if best != static_out else 'static'
-                return self._beautify(best), method, f'Best candidate selected (score: {self.ranker._score(best)})'
+                if score > 0:
+                    return self._beautify(best), method, f'Best candidate selected (score: {score})'
+                # Score <= 0 but it's the best we have — return it anyway
+                # Pick the longest non-source candidate if available
+                non_source = [c for c in ranked if isinstance(c, str) and c != static_out and len(c) > 20]
+                if non_source:
+                    pick = max(non_source, key=len)
+                    return self._beautify(pick), 'fallback', f'Best available (score: {self.ranker._score(pick)})'
+                return self._beautify(best), 'fallback', 'Returning best available output'
 
-        return self._beautify(static_out if changed else source), 'fallback', 'Returning best available output'
+        return self._beautify(static_out if changed else source), 'fallback', 'No candidates produced'
 
     def _is_clean(self, code):
         if not code or len(code) < 20:

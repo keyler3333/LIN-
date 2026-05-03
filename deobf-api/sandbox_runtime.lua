@@ -30,7 +30,6 @@ local function _zero(...) return 0 end
 local function _true(...) return true end
 local function _false(...) return false end
 local function _identity(v) return v end
-local function _table() return {} end
 local function _string() return "" end
 
 local _dummy_mt = {

@@ -1,10 +1,7 @@
 local _out = "OUTDIR_PLACEHOLDER"
 local _inp = "INPATH_PLACEHOLDER"
-local _dumped = {}
 
 local function _save(tag, data)
-    if _dumped[tag] then return end
-    _dumped[tag] = true
     local f = io.open(_out .. "/cap.txt", "a")
     if f then
         f:write("--- " .. tag .. " ---\n")
@@ -23,6 +20,7 @@ local function _hook_loadstring(src)
 end
 loadstring = _hook_loadstring
 _G.loadstring = _hook_loadstring
+_G.load = _hook_loadstring
 
 local _orig_concat = table.concat
 table.concat = function(t, sep)
@@ -60,7 +58,6 @@ end
 
 local _game = _dummy("game")
 _game.GetService = function(_,s) return _dummy(s) end
-_game.HttpService = { Base64Decode = function(_,s) return s end }
 
 local _env = {
     _G = _G,
@@ -72,7 +69,7 @@ local _env = {
     RunService = _dummy("RunService"),
     UserInputService = _dummy("UserInputService"),
     TweenService = _dummy("TweenService"),
-    HttpService = _game.HttpService,
+    HttpService = { Base64Decode = function(_,s) return s end },
     Instance = { new = function(_,n) return _dummy(n) end },
     Vector3 = { new = function() return _dummy("Vector3") end },
     Vector2 = { new = function() return _dummy("Vector2") end },
@@ -88,6 +85,8 @@ local _env = {
     delay = function(t,f) if type(f)=="function" then pcall(f) end end,
     print = function() end,
     warn = function() end,
+    getfenv = function() return _G end,
+    setfenv = function() end,
     os = { time = function() return 1000000 end, clock = function() return 0 end, date = function() return "2024-01-01" end },
     math = math,
     string = string,
@@ -102,7 +101,7 @@ local _env = {
     select = select,
     unpack = unpack or table.unpack,
     setmetatable = setmetatable,
-    getmetatable = getmetatable,
+    getmetatable = function() return nil end,
     rawget = rawget,
     rawset = rawset,
     loadstring = _hook_loadstring,

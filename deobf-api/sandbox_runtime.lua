@@ -7,16 +7,14 @@ local function _L(s) _log[#_log+1] = s end
 
 debug.sethook(function()
     _step = _step + 5000
-    if _step > 2000000 then
+    if _step > 8000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
 end, "", 5000)
 
-local _seen = {}
 local function _capture(v)
-    if type(v) == "string" and #v > 3 and not _seen[v] then
-        _seen[v] = true
+    if type(v) == "string" and #v > 3 then
         _cap[#_cap+1] = v
     end
 end
@@ -240,8 +238,7 @@ local _WebSocket = {
     connect = function(url)
         _L("WebSocket.connect: " .. tostring(url))
         return {
-            Send = _noop,
-            Close = _noop,
+            Send = _noop, Close = _noop,
             OnMessage = {Connect = function(_, fn) return {Disconnect = _noop} end},
             OnClose   = {Connect = function(_, fn) return {Disconnect = _noop} end},
         }
@@ -296,79 +293,79 @@ local function _fire_stub(name)
 end
 
 local _stubs = {
-    game                 = _game,
-    workspace            = _inst("Workspace"),
-    RunService           = _RunService,
-    WebSocket            = _WebSocket,
-    getgenv              = function() return _G end,
-    getrenv              = function() return _G end,
-    getsenv              = function() return _G end,
-    gettenv              = function() return _G end,
-    getgc                = function() return {} end,
-    setidentity          = _noop,
-    getidentity          = function() return 8 end,
-    setthreadidentity    = _noop,
-    getthreadidentity    = function() return 8 end,
-    setreadonly          = _noop,
-    isreadonly           = _retfalse,
-    makereadonly         = function(t) return t end,
-    makewriteable        = function(t) return t end,
-    cloneref             = function(v) return v end,
-    checkcaller          = _retfalse,
-    islclosure           = _rettrue,
-    iscclosure           = _retfalse,
-    hookfunction         = function(a, b) return a end,
-    newcclosure          = function(f) return f end,
-    getcustomasset       = function(p) return "rbxasset://" .. tostring(p) end,
-    getrawmetatable      = _orig_getmetatable,
-    setrawmetatable      = _orig_setmetatable,
-    identifyexecutor     = function() return "Executor", "1.0" end,
-    getexecutorname      = function() return "Executor" end,
-    isluau               = _rettrue,
-    tick                 = _retrand,
-    wait                 = _noop,
-    delay                = function(t, fn) if _orig_type(fn) == "function" then _orig_pcall(fn) end end,
-    spawn                = function(fn) if _orig_type(fn) == "function" then _orig_pcall(fn) end end,
-    task                 = {
-        spawn            = function(fn, ...) if _orig_type(fn) == "function" then _orig_pcall(fn, ...) end end,
-        defer            = function(fn, ...) if _orig_type(fn) == "function" then _orig_pcall(fn, ...) end end,
-        wait             = _noop,
-        delay            = function(t, fn) if _orig_type(fn) == "function" then _orig_pcall(fn) end end,
-        cancel           = _noop,
+    game                  = _game,
+    workspace             = _inst("Workspace"),
+    RunService            = _RunService,
+    WebSocket             = _WebSocket,
+    getgenv               = function() return _G end,
+    getrenv               = function() return _G end,
+    getsenv               = function() return _G end,
+    gettenv               = function() return _G end,
+    getgc                 = function() return {} end,
+    setidentity           = _noop,
+    getidentity           = function() return 8 end,
+    setthreadidentity     = _noop,
+    getthreadidentity     = function() return 8 end,
+    setreadonly           = _noop,
+    isreadonly            = _retfalse,
+    makereadonly          = function(t) return t end,
+    makewriteable         = function(t) return t end,
+    cloneref              = function(v) return v end,
+    checkcaller           = _retfalse,
+    islclosure            = _rettrue,
+    iscclosure            = _retfalse,
+    hookfunction          = function(a, b) return a end,
+    newcclosure           = function(f) return f end,
+    getcustomasset        = function(p) return "rbxasset://" .. tostring(p) end,
+    getrawmetatable       = _orig_getmetatable,
+    setrawmetatable       = _orig_setmetatable,
+    identifyexecutor      = function() return "Executor", "1.0" end,
+    getexecutorname       = function() return "Executor" end,
+    isluau                = _rettrue,
+    tick                  = _retrand,
+    wait                  = _noop,
+    delay                 = function(t, fn) if _orig_type(fn) == "function" then _orig_pcall(fn) end end,
+    spawn                 = function(fn) if _orig_type(fn) == "function" then _orig_pcall(fn) end end,
+    task                  = {
+        spawn   = function(fn, ...) if _orig_type(fn) == "function" then _orig_pcall(fn, ...) end end,
+        defer   = function(fn, ...) if _orig_type(fn) == "function" then _orig_pcall(fn, ...) end end,
+        wait    = _noop,
+        delay   = function(t, fn) if _orig_type(fn) == "function" then _orig_pcall(fn) end end,
+        cancel  = _noop,
     },
-    version              = function() return "0.600.0.6650407" end,
-    warn                 = print,
-    _g                   = _G,
-    arg                  = nil,
-    KRNL_LOADED          = true,
-    SENTINEL_V2          = true,
-    syn                  = setmetatable({}, {__index = function() return _noop end}),
-    fluxus               = setmetatable({}, {__index = function() return _noop end}),
-    fireclickdetector    = _fire_stub("fireclickdetector"),
-    firesignal           = _fire_stub("firesignal"),
-    fireproximityprompt  = _fire_stub("fireproximityprompt"),
-    firetouchinterest    = _fire_stub("firetouchinterest"),
-    Vector3              = {new = function(x,y,z) return {X=x or 0,Y=y or 0,Z=z or 0} end},
-    Vector2              = {new = function(x,y)   return {X=x or 0,Y=y or 0} end},
-    CFrame               = {new = function(...) return {} end, Angles = function(...) return {} end},
-    Color3               = {new = function(r,g,b) return {R=r,G=g,B=b} end, fromRGB = function(r,g,b) return {R=r/255,G=g/255,B=b/255} end},
-    UDim2                = {new = function(xs,xo,ys,yo) return {X={Scale=xs,Offset=xo},Y={Scale=ys,Offset=yo}} end, fromScale = function(x,y) return {X={Scale=x,Offset=0},Y={Scale=y,Offset=0}} end},
-    UDim                 = {new = function(s,o) return {Scale=s,Offset=o} end},
-    BrickColor           = {new = function(n) return {Name=n or "Medium stone grey"} end, Random = function() return {Name="Bright red"} end},
-    TweenInfo            = {new = function(t,...) return {Time=t or 1} end},
-    Instance             = {new = function(cn, parent) return _inst(cn) end},
-    Enum                 = setmetatable({}, {__index = function(_, k)
+    version               = function() return "0.600.0.6650407" end,
+    warn                  = print,
+    _g                    = _G,
+    arg                   = nil,
+    KRNL_LOADED           = true,
+    SENTINEL_V2           = true,
+    syn                   = setmetatable({}, {__index = function() return _noop end}),
+    fluxus                = setmetatable({}, {__index = function() return _noop end}),
+    fireclickdetector     = _fire_stub("fireclickdetector"),
+    firesignal            = _fire_stub("firesignal"),
+    fireproximityprompt   = _fire_stub("fireproximityprompt"),
+    firetouchinterest     = _fire_stub("firetouchinterest"),
+    Vector3               = {new = function(x,y,z) return {X=x or 0,Y=y or 0,Z=z or 0} end},
+    Vector2               = {new = function(x,y) return {X=x or 0,Y=y or 0} end},
+    CFrame                = {new = function(...) return {} end, Angles = function(...) return {} end},
+    Color3                = {new = function(r,g,b) return {R=r,G=g,B=b} end, fromRGB = function(r,g,b) return {R=r/255,G=g/255,B=b/255} end},
+    UDim2                 = {new = function(xs,xo,ys,yo) return {X={Scale=xs,Offset=xo},Y={Scale=ys,Offset=yo}} end, fromScale = function(x,y) return {X={Scale=x,Offset=0},Y={Scale=y,Offset=0}} end},
+    UDim                  = {new = function(s,o) return {Scale=s,Offset=o} end},
+    BrickColor            = {new = function(n) return {Name=n or "Medium stone grey"} end, Random = function() return {Name="Bright red"} end},
+    TweenInfo             = {new = function(t,...) return {Time=t or 1} end},
+    Instance              = {new = function(cn, parent) return _inst(cn) end},
+    Enum                  = setmetatable({}, {__index = function(_, k)
         return setmetatable({}, {__index = function(_, v) return {Name=v, Value=0} end})
     end}),
-    typeof               = function(v)
+    typeof                = function(v)
         local t = _orig_type(v)
         if t == "table" and v.ClassName then return "Instance" end
         return t
     end,
-    printidentity        = function() print(8) end,
-    Drawing              = setmetatable({}, {__index = function() return function() return {Remove=_noop} end end}),
-    HttpGet              = function(_, url) _L("HttpGet:" .. tostring(url)); return "" end,
-    HttpPost             = function(_, url) _L("HttpPost:" .. tostring(url)); return "" end,
+    printidentity         = function() print(8) end,
+    Drawing               = setmetatable({}, {__index = function() return function() return {Remove=_noop} end end}),
+    HttpGet               = function(_, url) _L("HttpGet:" .. tostring(url)); return "" end,
+    HttpPost              = function(_, url) _L("HttpPost:" .. tostring(url)); return "" end,
 }
 
 for k, v in _orig_pairs(_stubs) do
@@ -391,7 +388,10 @@ if not chunk then
     local ef = io.open(_out .. "/error.txt", "w")
     if ef then ef:write("parse error: " .. tostring(err)); ef:close() end
 else
-    local env = _orig_setmetatable({}, {__index = _G})
+    local env = _orig_setmetatable({}, {
+        __index    = _G,
+        __newindex = function(t, k, v) _orig_rawset(_G, k, v) end,
+    })
     _orig_rawset(env, "loadstring", _hooked_load)
     _orig_rawset(env, "load",       _hooked_load)
     local ok, res = _orig_pcall(_orig_setfenv(chunk, env))

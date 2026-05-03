@@ -1,4 +1,4 @@
-import discord, io, os, httpx, re
+import discord, io, os, httpx
 from discord.ext import commands
 from discord import app_commands
 
@@ -57,6 +57,9 @@ async def run_deobf(text, filename):
     result     = data.get('result', '')
     detected   = data.get('detected', 'unknown')
     diagnostic = data.get('diagnostic', '')
+
+    if len(result.encode()) > 7_500_000:
+        result = result[:1_000_000] + "\n-- Output truncated (too large for Discord)"
 
     peeled = 'sandbox' in detected or 'layer' in diagnostic.lower()
     color  = 0x2ecc71 if peeled else 0xe67e22

@@ -8,7 +8,7 @@ end
 
 debug.sethook(function()
     _step = _step + 1000
-    if _step > 30000000 then
+    if _step > 50000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
@@ -24,19 +24,11 @@ end
 
 local _orig_loadstring = loadstring
 local _orig_pcall = pcall
-local _orig_rawget = rawget
 local _orig_rawset = rawset
 
-rawget = function(t, k)
-    if type(t) ~= "table" then
-        return nil
-    end
-    return _orig_rawget(t, k)
-end
-
 rawset = function(t, k, v)
-    if type(t) ~= "table" then
-        return t
+    if type(v) == "string" and #v > 10 then
+        _capture(v)
     end
     return _orig_rawset(t, k, v)
 end

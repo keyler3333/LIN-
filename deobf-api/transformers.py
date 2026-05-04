@@ -402,7 +402,7 @@ class WeAreDevsLifter(Transformer):
             decoded = [self._decode_b64(s, cmap) for s in working]
             decoded = [c for c in decoded if c]
 
-            for idx, chunk in enumerate(decoded):
+            for chunk in decoded:
                 if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                     parser = Lua51Parser(chunk)
                     func = parser.parse_function()
@@ -437,11 +437,9 @@ class WeAreDevsLifter(Transformer):
         return None
 
     def _build_char_map(self, source):
-        # Locate the start of the Base64 decoder table
         start_marker = "local b={"
         idx = source.find(start_marker)
         if idx == -1:
-            # try other patterns
             m = re.search(r'local\s+b\s*=\s*\{', source)
             if m:
                 idx = m.start()
@@ -449,8 +447,7 @@ class WeAreDevsLifter(Transformer):
             else:
                 return None
 
-        # Find the matching closing brace
-        brace_start = idx + len(start_marker) - 1  # position of the opening {
+        brace_start = idx + len(start_marker) - 1
         depth = 0
         end_pos = -1
         for i in range(brace_start, len(source)):
@@ -467,14 +464,24 @@ class WeAreDevsLifter(Transformer):
 
         body = source[brace_start + 1:end_pos]
         cmap = {}
-        for key, expr in re.findall(
-            r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)',
-            body
-        ):
+        pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
+        for key, expr in pairs:
             try:
                 cmap[key.strip()] = eval(expr.replace(' ', '')) & 0x3F
             except:
                 pass
+        if len(cmap) < 40:
+            cmap = {}
+            fragments = re.split(r'(?<!\d)[;,](?!\d)', body)
+            for frag in fragments:
+                if '=' not in frag:
+                    continue
+                kpart, vpart = frag.split('=', 1)
+                kpart = kpart.strip().strip('"').strip("'").strip('[').strip(']')
+                try:
+                    cmap[kpart] = eval(vpart.strip().replace(' ', '')) & 0x3F
+                except:
+                    pass
         return cmap
 
     def _extract_n_strings(self, source):

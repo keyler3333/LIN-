@@ -402,10 +402,12 @@ class WeAreDevsLifter(Transformer):
             decoded = [c for c in decoded if c]
 
             for chunk in decoded:
-                if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
-                    parser = Lua51Parser(chunk)
-                    func = parser.parse_function()
-                    return Lua51Decompiler(func).decompile()
+                try:
+                    text = chunk.decode('utf-8', errors='replace')
+                    if len(text) > 50 and ('function' in text or 'local' in text):
+                        return text
+                except:
+                    pass
 
             full = bytearray()
             for c in decoded:
@@ -419,13 +421,13 @@ class WeAreDevsLifter(Transformer):
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-            for chunk in decoded:
-                try:
-                    text = chunk.decode('latin-1', errors='replace')
-                    if len(text) > 50 and ('function' in text or 'local' in text):
-                        return text
-                except:
-                    pass
+            try:
+                text = data.decode('utf-8', errors='replace')
+                if len(text) > 50 and ('function' in text or 'local' in text):
+                    return text
+            except:
+                pass
+
             return None
 
         result = attempt(False)
@@ -435,7 +437,7 @@ class WeAreDevsLifter(Transformer):
         if result:
             return result
 
-        self.diagnostic = "Decoded all strings but did not find Lua bytecode – obfuscator version may be too new."
+        self.diagnostic = "Decoded all strings but found neither plain Lua source nor bytecode."
         return None
 
     def _build_char_map(self, source):

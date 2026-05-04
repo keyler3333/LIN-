@@ -1,21 +1,12 @@
-from transformers import (
-    Lua51Parser,
-    Lua51Decompiler,
-    WeAreDevsLifter,
-    EscapeSequenceTransformer,
-    MathTransformer,
-    HexNameRenamer,
-)
+from transformers import Lua51Parser, Lua51Decompiler, EscapeSequenceTransformer, MathTransformer, HexNameRenamer
 from sandbox import execute_sandbox
 
 
 class DeobfEngine:
     def __init__(self):
-        self.lifter = WeAreDevsLifter()
         self.cleaners = [
             EscapeSequenceTransformer(),
             MathTransformer(),
-            self.lifter,
             HexNameRenamer(),
         ]
         self.max_depth = 5
@@ -31,31 +22,28 @@ class DeobfEngine:
             except:
                 pass
 
-        if current != source and self._looks_decoded(current):
-            return self._beautify(current), 'static_lift', 'Static lift succeeded'
-
-        layers, captures, diag = execute_sandbox(current, timeout=60)
+        layers, captures, diag = execute_sandbox(current, timeout=90)
 
         for item in layers:
             if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
                 lifted = self._lift_bc(item)
                 if lifted:
-                    return self._beautify(lifted), 'sandbox_dump', 'Bytecode dump decompiled'
+                    return self._beautify(lifted), 'sandbox_bytecode', 'Decompiled from bytecode dump'
 
-        best = ""
+        best = ''
         for cap in captures:
             if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
                 best = cap
 
         if best:
-            return self._beautify(best), 'sandbox_capture', 'Captured payload'
+            return self._beautify(best), 'sandbox_capture', 'Decrypted payload captured from memory'
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
-                    return self._beautify(layer), 'sandbox_layer', 'Captured layer'
+                    return self._beautify(layer), 'sandbox_layer', 'Layer captured'
 
-        reason = diag or self.lifter.diagnostic or 'No payload produced.'
+        reason = diag if diag else 'Sandbox executed but produced no recognisable output.'
         return source, 'unable', reason
 
     def _lift_bc(self, bc):
@@ -65,16 +53,6 @@ class DeobfEngine:
             return Lua51Decompiler(func).decompile()
         except Exception:
             return None
-
-    @staticmethod
-    def _looks_decoded(code):
-        if not code or len(code) < 20:
-            return False
-        lines = code.split('\n')
-        if max((len(l) for l in lines), default=0) > 500:
-            return False
-        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.25
 
     def _beautify(self, code):
         try:

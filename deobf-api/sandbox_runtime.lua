@@ -1,17 +1,18 @@
 local _out = "OUTDIR_PLACEHOLDER"
 local _inp = "INPATH_PLACEHOLDER"
-local _layer = 0
 local _cap, _log, _step = {}, {}, 0
 
-local function _L(s) _log[#_log+1] = s end
+local function _L(s)
+    _log[#_log+1] = s
+end
 
 debug.sethook(function()
-    _step = _step + 5000
+    _step = _step + 1000
     if _step > 10000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
-end, "", 5000)
+end, "", 1000)
 
 local _captured = {}
 local function _capture(v)
@@ -21,19 +22,16 @@ local function _capture(v)
     end
 end
 
-local _orig_loadstring   = loadstring
-local _orig_pcall        = pcall
-local _orig_table_concat = table.concat
-local _orig_type         = type
+local _orig_loadstring = loadstring
+local _orig_pcall = pcall
 
-local _dummy_mt = {
+local _safe_mt = {
     __index = function(t, k)
-        local child = {}
-        setmetatable(child, _dummy_mt)
+        local child = setmetatable({}, _safe_mt)
         rawset(t, k, child)
         return child
     end,
-    __call = function() return setmetatable({}, _dummy_mt) end,
+    __call = function() return setmetatable({}, _safe_mt) end,
     __add = function() return 0 end,
     __sub = function() return 0 end,
     __mul = function() return 0 end,
@@ -49,15 +47,21 @@ local _dummy_mt = {
     __tostring = function() return "0" end,
 }
 
-local function _dummy()
-    return setmetatable({}, _dummy_mt)
+local function _safe()
+    return setmetatable({}, _safe_mt)
 end
 
-local _zero = _dummy
+local env = setmetatable({}, {
+    __index = function(_, k)
+        local v = rawget(env, k)
+        if v ~= nil then
+            return v
+        end
+        return _safe()
+    end
+})
 
-local env = {
-    _G = nil,
-    _VERSION = "Luau",
+for name, func in pairs({
     assert = function(v) return v end,
     error = function() end,
     ipairs = ipairs,
@@ -70,13 +74,10 @@ local env = {
     rawset = rawset,
     select = select,
     setmetatable = setmetatable,
-    getmetatable = function(obj)
-        if _orig_type(obj) == "string" then return nil end
-        return getmetatable(obj)
-    end,
+    getmetatable = getmetatable,
     tonumber = tonumber,
     tostring = tostring,
-    type = _orig_type,
+    type = type,
     xpcall = xpcall,
     string = {
         byte = string.byte, char = string.char, find = string.find,
@@ -102,136 +103,24 @@ local env = {
         clock = function() return 0 end,
         date = function() return "2024-01-01" end,
         difftime = function() return 0 end,
-        time = function() return 1680000000 + math.random(0, 30000000) end,
+        time = function() return math.random(1680000000, 1710000000) end,
     },
     coroutine = {
         create = coroutine.create, resume = coroutine.resume,
         running = coroutine.running, status = coroutine.status,
         wrap = coroutine.wrap, yield = coroutine.yield,
     },
-    debug = {
-        getinfo = function() return { short_src = "input", currentline = 0, what = "Lua" } end,
-        traceback = function() return "" end,
-        sethook = function() end,
-        getupvalue = function() return nil end,
-        setupvalue = function() end,
-    },
-    getfenv = function() return env end,
-    setfenv = function(fn, e) return fn end,
-    print = function() end,
-    warn = function() end,
-    delay = function(_, f) if type(f) == "function" then pcall(f) end return _zero() end,
-    spawn = function(f) if type(f) == "function" then pcall(f) end return _zero() end,
-    wait = function() return _zero() end,
-    tick = function() return 0 end,
-    time = function() return 0 end,
-    elapsedTime = function() return 0 end,
-    typeof = _orig_type,
-    Instance = { new = function(cn) return setmetatable({ ClassName = cn }, _dummy_mt) end },
-    Enum = setmetatable({}, { __index = function(_, k) return setmetatable({}, { __index = function(_, v) return { Name = v, Value = 0 } end }) end }),
-    Vector3 = { new = function(x, y, z) return { X = x or 0, Y = y or 0, Z = z or 0 } end },
-    Vector2 = { new = function(x, y) return { X = x or 0, Y = y or 0 } end },
-    CFrame = { new = function(...) return {} end, Angles = function(...) return {} end },
-    Color3 = { new = function(r,g,b) return { R=r,G=g,B=b } end, fromRGB = function(r,g,b) return { R=r/255,G=g/255,B=b/255 } end },
-    UDim2 = { new = function(xs, xo, ys, yo) return { X={Scale=xs,Offset=xo}, Y={Scale=ys,Offset=yo} } end },
-    UDim = { new = function(s, o) return { Scale=s,Offset=o } end },
-    BrickColor = { new = function() return { Name="Medium stone grey" } end, Random = function() return { Name="Bright red" } end },
-    TweenInfo = { new = function(t) return { Time=t } end },
-    Region3 = { new = function() return {} end },
-    Ray = { new = function() return {} end },
-    NumberRange = { new = function(min, max) return { Min=min, Max=max } end },
-    NumberSequence = { new = function(...) return {} end },
-    ColorSequence = { new = function(...) return {} end },
-    PhysicalProperties = { new = function(...) return {} end },
-    Region3int16 = { new = function() return {} end },
-    Vector3int16 = { new = function(x,y,z) return { X=x,Y=y,Z=z } end },
-    PathWaypoint = { new = function() return {} end },
-    RaycastResult = { new = function() return {} end },
-    RBXScriptSignal = { Connect = function() return { Disconnect = function() end } end, Wait = function() return _zero() end },
-    RBXScriptConnection = { Disconnect = function() end, Connected = true },
-    DockWidgetPluginGuiInfo = { new = function() return {} end },
-    Content = { new = function() return {} end },
-    Axes = { new = function() return {} end },
-    require = function() return setmetatable({}, _dummy_mt) end,
-    game = setmetatable({ ClassName = "DataModel" }, _dummy_mt),
-    workspace = setmetatable({ ClassName = "Workspace" }, _dummy_mt),
-    script = setmetatable({ ClassName = "Script" }, _dummy_mt),
-    shared = {},
-    task = {
-        wait = function() return _zero() end,
-        spawn = function(f) if type(f) == "function" then pcall(f) end return _zero() end,
-        defer = function(f) if type(f) == "function" then pcall(f) end return _zero() end,
-        delay = function(_, f) if type(f) == "function" then pcall(f) end return _zero() end,
-        cancel = function() end,
-    },
-    getgenv = function() return env end,
-    getrenv = function() return env end,
-    getsenv = function() return env end,
-    gettenv = function() return env end,
-    getgc = function() return {} end,
-    setidentity = function() end,
-    getidentity = function() return 8 end,
-    setthreadidentity = function() end,
-    getthreadidentity = function() return 8 end,
-    setreadonly = function() end,
-    isreadonly = function() return false end,
-    makereadonly = function(t) return t end,
-    makewriteable = function(t) return t end,
-    cloneref = function(v) return v end,
-    checkcaller = function() return false end,
-    islclosure = function() return true end,
-    iscclosure = function() return false end,
-    hookfunction = function(a, b) return a end,
-    newcclosure = function(f) return f end,
-    getcustomasset = function(p) return "rbxasset://" .. tostring(p) end,
-    getrawmetatable = function() return nil end,
-    setrawmetatable = function() end,
-    identifyexecutor = function() return "Executor", "1.0" end,
-    getexecutorname = function() return "Executor" end,
-    isluau = function() return true end,
-    queue_on_teleport = function() end,
-    syn = _dummy(),
-    fluxus = _dummy(),
-    fireclickdetector = function() return _zero() end,
-    firesignal = function() return _zero() end,
-    fireproximityprompt = function() return _zero() end,
-    firetouchinterest = function() return _zero() end,
-    gethui = function() return setmetatable({}, _dummy_mt) end,
-    getconnections = function() return {} end,
-    getsignal = function() return { Connect = function() return { Disconnect = function() end } end } end,
-    WebSocket = { connect = function() return { Send = function() end, Close = function() end, OnMessage = { Connect = function() return { Disconnect = function() end } end } } end },
-    Drawing = setmetatable({}, { __index = function() return function() return { Remove = function() end } end end }),
-    KRNL_LOADED = true,
-}
-
-env._G = env
-
-local services = {
-    "Players", "TweenService", "HttpService", "Workspace", "Lighting", "ReplicatedStorage",
-    "ServerStorage", "ServerScriptService", "StarterGui", "StarterPlayer", "StarterPack",
-    "Chat", "SoundService", "Debris", "Teams", "InsertService", "MarketplaceService",
-    "TeleportService", "RunService", "UserInputService", "ContextActionService",
-    "CollectionService", "PathfindingService", "BadgeService", "PointsService",
-    "SocialService", "GroupService", "DataStoreService", "MessagingService",
-    "ScriptContext", "LogService", "TestService", "AnalyticsService",
-    "AvatarEditorService", "AccountService", "AssetService", "BrowserService",
-    "VRService", "HapticService", "TouchInputService", "NotificationService",
-    "PolicyService", "GamepadService", "GuiService", "NetworkClient",
-    "PhysicsService", "ScriptService", "StudioService", "MouseService",
-    "WebService", "DataModelPatchService", "MemoryStoreService", "TextChatService",
-    "KeyframeSequenceProvider", "ExperienceAuthService", "AssetDeliveryService",
-    "OmniRecommendationsService", "PackageService",
-}
-for _, s in ipairs(services) do
-    env[s] = setmetatable({ ClassName = s }, _dummy_mt)
+}) do
+    rawset(env, name, func)
 end
 
-setmetatable(env, { __index = function() return _zero() end })
-
-os.time  = function() return 1680000000 + math.random(0, 30000000) end
-os.clock = function() return os.time() + math.random() end
-
-local function _hooked_load(code, name)
+rawset(env, "_G", env)
+rawset(env, "_VERSION", "Luau")
+rawset(env, "getfenv", function() return env end)
+rawset(env, "setfenv", function(fn, e) return fn end)
+rawset(env, "print", function() end)
+rawset(env, "warn", function() end)
+rawset(env, "loadstring", function(code, name)
     if type(code) == "function" then
         local parts = {}
         while true do
@@ -244,20 +133,18 @@ local function _hooked_load(code, name)
     end
     if type(code) == "string" and #code > 5 then
         _capture(code)
-        _layer = _layer + 1
-        local f = io.open(_out .. "/layer_" .. _layer .. ".lua", "w")
+        local f = io.open(_out .. "/layer_1.lua", "w")
         if f then f:write(code) f:close() end
-        _L("layer " .. _layer .. " captured (" .. #code .. " bytes)")
+        _L("CAPTURED: " .. string.sub(code, 1, 80))
     end
     return _orig_loadstring(code, name)
-end
-env.loadstring = _hooked_load
-env.load = _hooked_load
+end)
+rawset(env, "load", rawget(env, "loadstring"))
 
 local fh = io.open(_inp, "r")
 if not fh then
     local ef = io.open(_out .. "/error.txt", "w")
-    if ef then ef:write("cannot open input: " .. _inp) ef:close() end
+    if ef then ef:write("cannot open input") ef:close() end
     return
 end
 local source = fh:read("*a")
@@ -270,15 +157,18 @@ if not chunk then
 else
     setfenv(chunk, env)
     local ok, res = _orig_pcall(chunk)
-    if not ok then _L("runtime error: " .. tostring(res)) end
-    if ok and type(res) == "function" then
-        local ok2, bc = _orig_pcall(string.dump, res)
-        if ok2 then
-            local df = io.open(_out .. "/dump.bin", "wb")
-            if df then df:write(bc) df:close() end
+    if not ok then
+        _L("RUNTIME ERROR: " .. tostring(res))
+    else
+        if type(res) == "string" then
+            _capture(res)
+        elseif type(res) == "function" then
+            local ok2, bc = _orig_pcall(string.dump, res)
+            if ok2 then
+                local df = io.open(_out .. "/dump.bin", "wb")
+                if df then df:write(bc) df:close() end
+            end
         end
-    elseif ok and type(res) == "string" then
-        _capture(res)
     end
 end
 

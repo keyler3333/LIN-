@@ -1,5 +1,15 @@
+import os
 from transformers import Lua51Parser, Lua51Decompiler, EscapeSequenceTransformer, MathTransformer, HexNameRenamer
 from sandbox import execute_sandbox
+
+GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
+GROQ_AVAILABLE = False
+if GROQ_KEY:
+    try:
+        from groq import Groq
+        GROQ_AVAILABLE = True
+    except ImportError:
+        pass
 
 
 class DeobfEngine:
@@ -31,7 +41,7 @@ class DeobfEngine:
                         bc = cap[offset:].encode('latin-1')
                         lifted = self._lift_bc(bc)
                         if lifted:
-                            return self._beautify(lifted), 'rawset_bytcode', 'Bytecode captured via rawset hook'
+                            return self._beautify(lifted), 'table_concat_bytecode', 'Bytecode captured via table.concat / string.char'
 
         for item in layers:
             if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
@@ -45,7 +55,7 @@ class DeobfEngine:
                 best = cap
 
         if best:
-            return self._beautify(best), 'rawset_string', 'Readable source captured via rawset'
+            return self._beautify(best), 'table_concat_source', 'Readable source captured via table.concat / string.char'
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
@@ -53,6 +63,10 @@ class DeobfEngine:
                     return self._beautify(layer), 'sandbox_layer', 'Layer captured'
 
         reason = diag if diag else 'Sandbox executed but no bytecode or source was captured.'
+        if GROQ_AVAILABLE and GROQ_KEY:
+            ai_note = self._ai_analysis(source, reason)
+            if ai_note:
+                reason = f"{reason}\n\n--- AI Analysis ---\n{ai_note}"
         return source, 'unable', reason
 
     def _lift_bc(self, bc):
@@ -60,6 +74,30 @@ class DeobfEngine:
             parser = Lua51Parser(bc)
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
+        except Exception:
+            return None
+
+    def _ai_analysis(self, source, diag):
+        try:
+            client = Groq(api_key=GROQ_KEY)
+            prompt = (
+                "A Lua obfuscation deobfuscator failed to capture any decrypted payload from a WeAreDevs script. "
+                "The script uses a custom Base64 decoder, a shuffled string table, and a VM‑based executor. "
+                "The sandbox executed without errors but produced no captured bytecode or readable source.\n\n"
+                f"Sandbox diagnostic: {diag}\n\n"
+                "Source code (first 4000 chars):\n```lua\n" +
+                source[:4000] +
+                "\n```\n\n"
+                "Explain the most likely reason for the failure and suggest exactly what to change in the sandbox or engine to capture the payload. "
+                "Be concise and technical."
+            )
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.2,
+            )
+            return response.choices[0].message.content.strip()
         except Exception:
             return None
 

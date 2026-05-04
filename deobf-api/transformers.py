@@ -402,12 +402,10 @@ class WeAreDevsLifter(Transformer):
             decoded = [c for c in decoded if c]
 
             for chunk in decoded:
-                try:
-                    text = chunk.decode('utf-8', errors='replace')
-                    if len(text) > 50 and ('function' in text or 'local' in text):
-                        return text
-                except:
-                    pass
+                if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
+                    parser = Lua51Parser(chunk)
+                    func = parser.parse_function()
+                    return Lua51Decompiler(func).decompile()
 
             full = bytearray()
             for c in decoded:
@@ -421,13 +419,13 @@ class WeAreDevsLifter(Transformer):
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-            try:
-                text = data.decode('utf-8', errors='replace')
-                if len(text) > 50 and ('function' in text or 'local' in text):
-                    return text
-            except:
-                pass
-
+            for chunk in decoded:
+                try:
+                    text = chunk.decode('utf-8', errors='replace')
+                    if len(text) > 50 and ('function' in text or 'local' in text):
+                        return text
+                except:
+                    pass
             return None
 
         result = attempt(False)

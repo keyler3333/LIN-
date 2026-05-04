@@ -22,11 +22,19 @@ local function _capture(v)
     end
 end
 
-local _orig_loadstring = loadstring
-local _orig_pcall = pcall
-local _orig_rawset = rawset
+local _orig_loadstring   = loadstring
+local _orig_pcall        = pcall
+local _orig_rawget       = rawget
+local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
-local _orig_string_char = string.char
+local _orig_string_char  = string.char
+
+rawget = function(t, k)
+    if type(t) ~= "table" then
+        return nil
+    end
+    return _orig_rawget(t, k)
+end
 
 rawset = function(t, k, v)
     if type(v) == "string" and #v > 5 then

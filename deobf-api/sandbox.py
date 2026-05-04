@@ -11,7 +11,7 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def execute_sandbox(source, use_emulator=False, timeout=60):
+def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 

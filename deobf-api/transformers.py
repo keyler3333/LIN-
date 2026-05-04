@@ -370,21 +370,25 @@ class WeAreDevsLifter(Transformer):
         return lifted if lifted else code
 
     def _try_lift(self, source):
-        char_map = self._build_char_map(source)
-        if not char_map or len(char_map) < 40:
+        # 1. build character map (Base64 decoding table)
+        cmap = self._build_char_map(source)
+        if not cmap or len(cmap) < 40:
             return None
 
-        data_strings = self._get_strings(source)
-        if not data_strings:
+        # 2. extract all strings from the N table
+        strings = self._extract_n_strings(source)
+        if not strings:
             return None
 
-        shuffle_pairs = self._get_shuffles(source)
-        if shuffle_pairs:
-            data_strings = self._apply_shuffle(data_strings, shuffle_pairs)
+        # 3. extract shuffle pairs and apply un-shuffle
+        pairs = self._extract_shuffle_pairs(source)
+        if pairs and len(pairs) == 3:
+            strings = self._apply_unshuffle(strings, pairs)
 
+        # 4. decode every string and concatenate
         payload = bytearray()
-        for s in data_strings:
-            chunk = self._decode_b64(s, char_map)
+        for s in strings:
+            chunk = self._decode_b64(s, cmap)
             if chunk:
                 payload.extend(chunk)
 
@@ -393,7 +397,6 @@ class WeAreDevsLifter(Transformer):
             parser = Lua51Parser(data)
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
-
         return None
 
     def _build_char_map(self, source):
@@ -402,23 +405,29 @@ class WeAreDevsLifter(Transformer):
             return None
         body = m.group(1)
         cmap = {}
-        for key, expr in re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body):
+        for key, expr in re.findall(
+            r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)',
+            body
+        ):
             try:
                 cmap[key.strip()] = eval(expr.replace(' ', '')) & 0x3F
             except:
                 pass
         return cmap
 
-    def _get_strings(self, source):
-        m = re.search(r'local\s+N\s*=\s*\{(.*?)\}', source, re.DOTALL)
+    def _extract_n_strings(self, source):
+        m = re.search(r'local\s+N\s*=\s*\{((?:\s*"[^"]*"\s*[;,]?\s*)+)\}', source, re.DOTALL)
         if not m:
             return None
-        body = m.group(1)
-        return re.findall(r'"((?:\\.|[^"\\])*)"', body)
+        raw = m.group(1)
+        return re.findall(r'"([^"]*)"', raw)
 
-    def _get_shuffles(self, source):
+    def _extract_shuffle_pairs(self, source):
         pairs = []
-        for a_s, b_s in re.findall(r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[,;]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}', source):
+        for a_s, b_s in re.findall(
+            r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
+            source
+        ):
             try:
                 a = eval(a_s.replace(' ', ''))
                 b = eval(b_s.replace(' ', ''))
@@ -426,9 +435,9 @@ class WeAreDevsLifter(Transformer):
                     pairs.append((a, b))
             except:
                 pass
-        return pairs if len(pairs) == 3 else None
+        return pairs
 
-    def _apply_shuffle(self, strings, pairs):
+    def _apply_unshuffle(self, strings, pairs):
         lst = list(strings)
         for a, b in reversed(pairs):
             lo, hi = a - 1, b - 1
@@ -438,8 +447,7 @@ class WeAreDevsLifter(Transformer):
 
     def _decode_b64(self, s, cmap):
         buf = bytearray()
-        acc = 0
-        cnt = 0
+        acc = cnt = 0
         for ch in s:
             if ch == '=':
                 if cnt == 3:

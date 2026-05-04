@@ -8,7 +8,7 @@ end
 
 debug.sethook(function()
     _step = _step + 1000
-    if _step > 15000000 then
+    if _step > 30000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
@@ -24,6 +24,22 @@ end
 
 local _orig_loadstring = loadstring
 local _orig_pcall = pcall
+local _orig_rawget = rawget
+local _orig_rawset = rawset
+
+rawget = function(t, k)
+    if type(t) ~= "table" then
+        return nil
+    end
+    return _orig_rawget(t, k)
+end
+
+rawset = function(t, k, v)
+    if type(t) ~= "table" then
+        return t
+    end
+    return _orig_rawset(t, k, v)
+end
 
 local _safe_mt = {
     __index = function(t, k)
@@ -124,7 +140,7 @@ rawset(env, "loadstring", function(code, name)
         _capture(code)
         local f = io.open(_out .. "/layer_1.lua", "w")
         if f then f:write(code) f:close() end
-        _L("CAPTURED " .. #code .. " bytes: " .. string.sub(code, 1, 120))
+        _L("CAPTURED " .. #code .. " bytes")
     end
     return _orig_loadstring(code, name)
 end)
@@ -156,6 +172,7 @@ else
             if ok2 then
                 local df = io.open(_out .. "/dump.bin", "wb")
                 if df then df:write(bc) df:close() end
+                _L("DUMPED")
             end
         end
     end

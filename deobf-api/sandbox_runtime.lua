@@ -27,7 +27,6 @@ end
 local _orig_loadstring   = loadstring
 local _orig_pcall        = pcall
 local _orig_xpcall       = xpcall
-local _orig_rawget       = rawget
 local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char  = string.char
@@ -54,12 +53,9 @@ local _safe_mt = {
     __tostring = function() return "0" end,
 }
 
-local function _protect_table(t)
-    if type(t) == "table" then
-        local mt = getmetatable(t)
-        if mt == nil then
-            setmetatable(t, _safe_mt)
-        end
+function _protect(t)
+    if type(t) == "table" and getmetatable(t) == nil then
+        setmetatable(t, _safe_mt)
     end
     return t
 end
@@ -68,14 +64,14 @@ rawget = function(t, k)
     if type(t) ~= "table" then
         return nil
     end
-    return _orig_rawget(t, k)
+    return (rawget or _G.rawget)(t, k)
 end
 
 rawset = function(t, k, v)
     if type(v) == "string" and #v > 5 then
         _capture(v)
     end
-    v = _protect_table(v)
+    v = _protect(v)
     return _orig_rawset(t, k, v)
 end
 
@@ -120,7 +116,7 @@ local env = setmetatable({}, {
         return _safe()
     end,
     __newindex = function(_, k, v)
-        rawset(env, k, _protect_table(v))
+        rawset(env, k, _protect(v))
     end,
 })
 

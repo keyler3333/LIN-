@@ -412,8 +412,11 @@ class WeAreDevsLifter(Transformer):
             for c in decoded:
                 full.extend(c)
             data = bytes(full)
-            if len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51:
-                parser = Lua51Parser(data)
+
+            pos = data.find(b'\x1bLua')
+            if pos != -1 and pos + 5 <= len(data) and data[pos + 4] == 0x51:
+                bc = data[pos:]
+                parser = Lua51Parser(bc)
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 

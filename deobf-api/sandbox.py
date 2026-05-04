@@ -16,17 +16,11 @@ def _repair_malformed(source):
     return re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', source)
 
 
-def _protect_empty_tables(source):
-    """Replace {} with _protect({}) so every table literal gets our safe metatable."""
-    return re.sub(r'\{\s*\}', '_protect({})', source)
-
-
 def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 
     source = _repair_malformed(source)
-    source = _protect_empty_tables(source)
 
     with tempfile.TemporaryDirectory() as d:
         inp = os.path.join(d, 'input.lua')

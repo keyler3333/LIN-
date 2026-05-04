@@ -28,7 +28,6 @@ end
 local _orig_loadstring   = loadstring
 local _orig_pcall        = pcall
 local _orig_xpcall       = xpcall
-local _orig_rawget       = rawget
 local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char  = string.char
@@ -66,7 +65,7 @@ rawget = function(t, k)
     if type(t) ~= "table" then
         return nil
     end
-    return _orig_rawget(t, k)
+    return (rawget or _G.rawget)(t, k)
 end
 
 rawset = function(t, k, v)
@@ -171,7 +170,6 @@ rawset(env, "loadstring", function(code, name)
         _capture(code)
         local f = io.open(_out .. "/layer_1.lua", "w")
         if f then f:write(code) f:close() end
-        _L("LOADSTRING " .. #code .. " bytes")
     end
     return _orig_loadstring(code, name)
 end)
@@ -217,8 +215,6 @@ else
                 if type(ret) == "string" and #ret > 1 then
                     _capture(ret)
                 end
-            elseif type(res) == "table" then
-                _L("MAIN RETURNED TABLE (keys: " .. table.concat(_orig_debug.getinfo and {} or {}, ", ") .. ")")
             end
         end
     end

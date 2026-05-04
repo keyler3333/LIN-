@@ -11,7 +11,7 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def execute_sandbox(source, use_emulator=False, timeout=45):
+def execute_sandbox(source, use_emulator=False, timeout=60):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 
@@ -69,4 +69,10 @@ def execute_sandbox(source, use_emulator=False, timeout=45):
                     if len(s) > 20:
                         caps.append(s)
 
-        return layers, caps
+        diag = ''
+        diagf = os.path.join(d, 'diag.txt')
+        if os.path.exists(diagf):
+            with open(diagf, encoding='utf-8', errors='replace') as f:
+                diag = f.read()
+
+        return layers, caps, diag

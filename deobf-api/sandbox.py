@@ -11,7 +11,7 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def execute_sandbox(source, use_emulator=False, timeout=30):
+def execute_sandbox(source, use_emulator=False, timeout=45):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 
@@ -26,8 +26,8 @@ def execute_sandbox(source, use_emulator=False, timeout=30):
             runtime = f.read()
 
         driver = (runtime
-            .replace('"OUTDIR_PLACEHOLDER"', _lua_str(d.replace('\\', '/')))
-            .replace('"INPATH_PLACEHOLDER"', _lua_str(inp.replace('\\', '/'))))
+                  .replace('"OUTDIR_PLACEHOLDER"', _lua_str(d.replace('\\', '/')))
+                  .replace('"INPATH_PLACEHOLDER"', _lua_str(inp.replace('\\', '/'))))
 
         with open(drv, 'w', encoding='utf-8') as f:
             f.write(driver)

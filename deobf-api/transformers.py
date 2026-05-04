@@ -437,10 +437,35 @@ class WeAreDevsLifter(Transformer):
         return None
 
     def _build_char_map(self, source):
-        m = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
-        if not m:
+        # Locate the start of the Base64 decoder table
+        start_marker = "local b={"
+        idx = source.find(start_marker)
+        if idx == -1:
+            # try other patterns
+            m = re.search(r'local\s+b\s*=\s*\{', source)
+            if m:
+                idx = m.start()
+                start_marker = m.group()
+            else:
+                return None
+
+        # Find the matching closing brace
+        brace_start = idx + len(start_marker) - 1  # position of the opening {
+        depth = 0
+        end_pos = -1
+        for i in range(brace_start, len(source)):
+            ch = source[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end_pos = i
+                    break
+        if end_pos == -1:
             return None
-        body = m.group(1)
+
+        body = source[brace_start + 1:end_pos]
         cmap = {}
         for key, expr in re.findall(
             r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)',

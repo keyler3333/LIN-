@@ -8,7 +8,7 @@ end
 
 debug.sethook(function()
     _step = _step + 1000
-    if _step > 50000000 then
+    if _step > 80000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
@@ -25,12 +25,30 @@ end
 local _orig_loadstring = loadstring
 local _orig_pcall = pcall
 local _orig_rawset = rawset
+local _orig_table_concat = table.concat
+local _orig_string_char = string.char
 
 rawset = function(t, k, v)
     if type(v) == "string" and #v > 10 then
         _capture(v)
     end
     return _orig_rawset(t, k, v)
+end
+
+table.concat = function(t, sep, i, j)
+    local r = _orig_table_concat(t, sep, i, j)
+    if type(r) == "string" and #r > 10 then
+        _capture(r)
+    end
+    return r
+end
+
+string.char = function(...)
+    local r = _orig_string_char(...)
+    if #r > 10 then
+        _capture(r)
+    end
+    return r
 end
 
 local _safe_mt = {

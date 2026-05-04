@@ -1,16 +1,41 @@
+from transformers import (
+    WeAreDevsLifter,
+    EscapeSequenceTransformer,
+    MathTransformer,
+    HexNameRenamer,
+    Lua51Parser,
+    Lua51Decompiler,
+)
 from sandbox import execute_sandbox
+
 
 class DeobfEngine:
     def __init__(self):
+        self.cleaners = [
+            EscapeSequenceTransformer(),
+            MathTransformer(),
+            WeAreDevsLifter(),
+            HexNameRenamer(),
+        ]
         self.max_depth = 5
 
     def process(self, source, depth=0):
         if depth >= self.max_depth:
-            return source, 'max_depth', 'Max recursion depth reached'
+            return self._beautify(source), 'max_depth', 'Max recursion depth reached'
 
-        layers, captures = execute_sandbox(source, timeout=60)
+        current = source
+        for t in self.cleaners:
+            try:
+                current = t.transform(current)
+            except:
+                pass
 
-        best = ""
+        if current != source and self._looks_decoded(current):
+            return self._beautify(current), 'static_lift', 'Static lift succeeded'
+
+        layers, captures = execute_sandbox(current, timeout=45)
+
+        best = ''
         for cap in captures:
             if len(cap) > len(best) and ('function' in cap or 'local' in cap):
                 best = cap
@@ -20,13 +45,20 @@ class DeobfEngine:
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
-                best = layer
-                break
+                if 'function' in layer or 'local' in layer:
+                    return self._beautify(layer), 'layer', 'Layer captured'
 
-        if best:
-            return self._beautify(best), 'layer', 'Layer captured'
+        return self._beautify(current), 'done', 'No further payload found'
 
-        return source, 'no_capture', 'No payload captured'
+    @staticmethod
+    def _looks_decoded(code):
+        if not code or len(code) < 20:
+            return False
+        lines = code.split('\n')
+        if max((len(l) for l in lines), default=0) > 500:
+            return False
+        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
+        return (alpha / max(len(code), 1)) > 0.25
 
     def _beautify(self, code):
         try:

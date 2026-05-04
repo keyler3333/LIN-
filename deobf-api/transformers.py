@@ -378,10 +378,10 @@ class WeAreDevsLifter(Transformer):
     def _try_lift(self, source):
         cmap = self._build_char_map(source)
         if not cmap:
-            self.diagnostic = "Base64 table not found."
+            self.diagnostic = "Base64 table not found or incomplete."
             return None
         if len(cmap) < 40:
-            self.diagnostic = f"Base64 table has only {len(cmap)} entries (needs 40+)."
+            self.diagnostic = f"Base64 table has {len(cmap)} entries (needs 64)."
             return None
 
         strings = self._extract_n_strings(source)
@@ -390,16 +390,25 @@ class WeAreDevsLifter(Transformer):
             return None
 
         pairs = self._extract_shuffle_pairs(source)
-        if pairs is None or len(pairs) != 3:
-            self.diagnostic = f"Shuffle pairs missing or wrong count (got {len(pairs) if pairs else 0}, need 3)."
+        if pairs is None:
+            self.diagnostic = f"Found {len(pairs) if pairs else 0} shuffle pairs (expected 3)."
+            pairs = None
+        elif len(pairs) != 3:
+            self.diagnostic = f"Found {len(pairs)} shuffle pairs (expected 3)."
             pairs = None
 
         def attempt(reverse):
             working = list(strings)
             if pairs:
                 self._apply_shuffle(working, pairs, reverse=reverse)
-            decoded = [self._decode_b64(s, cmap) for s in working]
-            decoded = [c for c in decoded if c]
+            decoded = []
+            for s in working:
+                buf = self._decode_b64(s, cmap)
+                if buf:
+                    decoded.append(buf)
+            if not decoded:
+                self.diagnostic = "All strings decoded to zero bytes – Base64 map is wrong."
+                return None
 
             for chunk in decoded:
                 if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
@@ -422,10 +431,20 @@ class WeAreDevsLifter(Transformer):
             for chunk in decoded:
                 try:
                     text = chunk.decode('utf-8', errors='replace')
-                    if len(text) > 50 and ('function' in text or 'local' in text):
+                    if len(text) > 50 and ('function' in text or 'local' in text or 'print' in text):
                         return text
                 except:
                     pass
+
+            if len(data) > 0:
+                self.diagnostic = (
+                    f"Decoded {len(strings)} strings, {len(data)} bytes. "
+                    f"Shuffle pairs: {pairs}. "
+                    f"First 40 bytes (hex): {data[:40].hex()}. "
+                    f"First 40 bytes (ascii): {data[:40].decode('latin-1', errors='replace')}"
+                )
+            else:
+                self.diagnostic = f"Decoded {len(strings)} strings but produced zero bytes."
             return None
 
         result = attempt(False)
@@ -435,7 +454,6 @@ class WeAreDevsLifter(Transformer):
         if result:
             return result
 
-        self.diagnostic = "Decoded all strings but found neither plain Lua source nor bytecode."
         return None
 
     def _build_char_map(self, source):

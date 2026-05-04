@@ -1,4 +1,6 @@
 from transformers import (
+    Lua51Parser,
+    Lua51Decompiler,
     WeAreDevsLifter,
     EscapeSequenceTransformer,
     MathTransformer,
@@ -34,21 +36,35 @@ class DeobfEngine:
 
         layers, captures, diag = execute_sandbox(current, timeout=60)
 
+        for item in layers:
+            if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
+                lifted = self._lift_bc(item)
+                if lifted:
+                    return self._beautify(lifted), 'sandbox_dump', 'Bytecode dump decompiled'
+
         best = ""
         for cap in captures:
             if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
                 best = cap
 
         if best:
-            return self._beautify(best), 'sandbox', 'Decrypted payload captured'
+            return self._beautify(best), 'sandbox_capture', 'Captured payload'
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
                     return self._beautify(layer), 'sandbox_layer', 'Captured layer'
 
-        reason = self.lifter.diagnostic or diag or 'Sandbox produced no output and no errors were logged.'
+        reason = diag or self.lifter.diagnostic or 'No payload produced.'
         return source, 'unable', reason
+
+    def _lift_bc(self, bc):
+        try:
+            parser = Lua51Parser(bc)
+            func = parser.parse_function()
+            return Lua51Decompiler(func).decompile()
+        except Exception:
+            return None
 
     @staticmethod
     def _looks_decoded(code):

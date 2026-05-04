@@ -1,3 +1,5 @@
+import os
+import traceback
 from transformers import (
     WeAreDevsLifter,
     EscapeSequenceTransformer,
@@ -5,6 +7,15 @@ from transformers import (
     HexNameRenamer,
 )
 from sandbox import execute_sandbox
+
+GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
+GROQ_AVAILABLE = False
+if GROQ_KEY:
+    try:
+        from groq import Groq
+        GROQ_AVAILABLE = True
+    except ImportError:
+        pass
 
 
 class DeobfEngine:
@@ -33,7 +44,37 @@ class DeobfEngine:
             return self._beautify(current), 'static_lift', 'Static lift succeeded'
 
         diag = self.lifter.diagnostic or 'Could not identify or decode the constant table.'
+
+        if GROQ_AVAILABLE and GROQ_KEY:
+            ai_note = self._ai_analysis(source, diag)
+            if ai_note:
+                diag = f"{diag}\n\n--- AI Analysis ---\n{ai_note}"
+
         return self._beautify(current), 'unable', diag
+
+    def _ai_analysis(self, source, diag):
+        try:
+            client = Groq(api_key=GROQ_KEY)
+            prompt = (
+                "A Lua obfuscation deobfuscator failed to lift a WeAreDevs script. "
+                "The obfuscator works by decoding a custom Base64 table, unshuffling a string constant table, "
+                "and then decompiling the recovered Lua 5.1 bytecode.\n\n"
+                f"Lifter diagnostic: {diag}\n\n"
+                "Source code (first 4000 chars):\n```lua\n" +
+                source[:4000] +
+                "\n```\n\n"
+                "Explain why the deobfuscation likely failed and what specific improvements would help. "
+                "Be concise and technical."
+            )
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+                temperature=0.2,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return None
 
     @staticmethod
     def _looks_decoded(code):

@@ -24,6 +24,15 @@ class DeobfEngine:
 
         layers, captures, diag = execute_sandbox(current, timeout=90)
 
+        for cap in captures:
+            for offset in range(len(cap)):
+                if cap[offset:offset+4] == '\x1bLua':
+                    if offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
+                        bc = cap[offset:].encode('latin-1')
+                        lifted = self._lift_bc(bc)
+                        if lifted:
+                            return self._beautify(lifted), 'rawset_bytcode', 'Bytecode captured via rawset hook'
+
         for item in layers:
             if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
                 lifted = self._lift_bc(item)
@@ -36,14 +45,14 @@ class DeobfEngine:
                 best = cap
 
         if best:
-            return self._beautify(best), 'sandbox_capture', 'Decrypted payload captured from memory'
+            return self._beautify(best), 'rawset_string', 'Readable source captured via rawset'
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
                     return self._beautify(layer), 'sandbox_layer', 'Layer captured'
 
-        reason = diag if diag else 'Sandbox executed but produced no recognisable output.'
+        reason = diag if diag else 'Sandbox executed but no bytecode or source was captured.'
         return source, 'unable', reason
 
     def _lift_bc(self, bc):

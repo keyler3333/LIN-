@@ -1,5 +1,2 @@
 flask
 luaparser
-httpx
-discord.py
-groq

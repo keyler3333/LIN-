@@ -6,6 +6,8 @@ local function _L(s)
     _log[#_log+1] = s
 end
 
+local _orig_debug = debug
+
 debug.sethook(function()
     _step = _step + 1000
     if _step > 80000000 then
@@ -24,40 +26,11 @@ end
 
 local _orig_loadstring   = loadstring
 local _orig_pcall        = pcall
+local _orig_xpcall       = xpcall
 local _orig_rawget       = rawget
 local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char  = string.char
-
-rawget = function(t, k)
-    if type(t) ~= "table" then
-        return nil
-    end
-    return _orig_rawget(t, k)
-end
-
-rawset = function(t, k, v)
-    if type(v) == "string" and #v > 5 then
-        _capture(v)
-    end
-    return _orig_rawset(t, k, v)
-end
-
-table.concat = function(t, sep, i, j)
-    local r = _orig_table_concat(t, sep, i, j)
-    if type(r) == "string" and #r > 5 then
-        _capture(r)
-    end
-    return r
-end
-
-string.char = function(...)
-    local r = _orig_string_char(...)
-    if #r > 5 then
-        _capture(r)
-    end
-    return r
-end
 
 local _safe_mt = {
     __index = function(t, k)
@@ -80,6 +53,47 @@ local _safe_mt = {
     __concat = function(a, b) return tostring(a) .. tostring(b) end,
     __tostring = function() return "0" end,
 }
+
+local function _protect_table(t)
+    if type(t) == "table" then
+        local mt = getmetatable(t)
+        if mt == nil then
+            setmetatable(t, _safe_mt)
+        end
+    end
+    return t
+end
+
+rawget = function(t, k)
+    if type(t) ~= "table" then
+        return nil
+    end
+    return _orig_rawget(t, k)
+end
+
+rawset = function(t, k, v)
+    if type(v) == "string" and #v > 5 then
+        _capture(v)
+    end
+    v = _protect_table(v)
+    return _orig_rawset(t, k, v)
+end
+
+table.concat = function(t, sep, i, j)
+    local r = _orig_table_concat(t, sep, i, j)
+    if type(r) == "string" and #r > 5 then
+        _capture(r)
+    end
+    return r
+end
+
+string.char = function(...)
+    local r = _orig_string_char(...)
+    if #r > 5 then
+        _capture(r)
+    end
+    return r
+end
 
 local function _safe()
     return setmetatable({}, _safe_mt)
@@ -104,7 +118,10 @@ local env = setmetatable({}, {
             return v
         end
         return _safe()
-    end
+    end,
+    __newindex = function(_, k, v)
+        rawset(env, k, _protect_table(v))
+    end,
 })
 
 rawset(env, "_G", env)
@@ -131,16 +148,14 @@ rawset(env, "math", _safe_library(math))
 rawset(env, "table", _safe_library(table))
 rawset(env, "os", _safe_library(os))
 rawset(env, "coroutine", _safe_library(coroutine))
-rawset(env, "debug", _safe_library(debug))
+rawset(env, "debug", _orig_debug)
 rawset(env, "getfenv", function() return env end)
 rawset(env, "setfenv", function(fn, e) return fn end)
 rawset(env, "print", function() end)
 rawset(env, "warn", function() end)
 rawset(env, "newproxy", function(add)
     local u = {}
-    if add then
-        setmetatable(u, {})
-    end
+    setmetatable(u, _safe_mt)
     return u
 end)
 rawset(env, "loadstring", function(code, name)
@@ -180,7 +195,10 @@ else
         if ef then ef:write("parse error: " .. tostring(err)) ef:close() end
     else
         setfenv(chunk, env)
-        local ok, res = _orig_pcall(chunk)
+        local function error_handler(e)
+            return _orig_debug.traceback(tostring(e), 2)
+        end
+        local ok, res = _orig_xpcall(chunk, error_handler)
         if not ok then
             _L("RUNTIME ERROR: " .. tostring(res))
         else
@@ -193,7 +211,7 @@ else
                     if df then df:write(bc) df:close() end
                     _L("DUMPED")
                 end
-                local ok3, ret = _orig_pcall(res)
+                local ok3, ret = _orig_xpcall(res, error_handler)
                 _L("VM RETURNED: " .. tostring(ok3) .. " " .. tostring(ret))
                 if type(ret) == "string" and #ret > 3 then
                     _capture(ret)

@@ -420,101 +420,74 @@ class WeAreDevsLifter(Transformer):
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-            return None, data, decoded
+            return None
 
         result = attempt(False)
         if isinstance(result, str):
             return result
-        _, payload, samples = result
-
         result = attempt(True)
         if isinstance(result, str):
             return result
-        _, payload, samples = result
 
-        hex_preview = payload[:60].hex() if payload else "(empty)"
-        sample_text = ""
-        for s in samples[:3]:
-            try:
-                text = s.decode('latin-1', errors='replace')
-                if any(c.isprintable() for c in text):
-                    sample_text += text[:40] + " | "
-            except:
-                pass
-
-        self.diagnostic = (
-            f"Decoded {len(strings)} strings, {len(payload)} bytes total. "
-            f"First bytes: {hex_preview}. "
-            f"First decoded strings: {sample_text.strip()}"
-        )
+        self.diagnostic = "String table decoded but no valid Lua 5.1 bytecode found – check obfuscator version."
         return None
 
-    def _extract_table_body(self, source, prefix):
-        idx = source.find(prefix)
-        if idx == -1:
+    def _build_char_map(self, source):
+        # Locate the 'b' table
+        b_match = re.search(r'local\s+b\s*=\s*\{', source)
+        if not b_match:
             return None
-        brace_start = idx + len(prefix) - 1
+
+        start = b_match.end() - 1  # position of '{'
         depth = 0
-        for i in range(brace_start, len(source)):
+        end = -1
+        for i in range(start, len(source)):
             ch = source[i]
             if ch == '{':
                 depth += 1
             elif ch == '}':
                 depth -= 1
                 if depth == 0:
-                    return source[brace_start + 1:i]
-        return None
-
-    def _build_char_map(self, source):
-        body = self._extract_table_body(source, "local b={")
-        if not body:
-            body = self._extract_table_body(source, "local b ={")
-        if not body:
-            m = re.search(r'local\s+b\s*=\s*\{', source)
-            if m:
-                body = self._extract_table_body(source, m.group())
-        if not body:
+                    end = i
+                    break
+        if end == -1:
             return None
 
-        cmap = {}
-        pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
-        for key, expr in pairs:
-            try:
-                cmap[key.strip()] = eval(expr.replace(' ', '')) & 0x3F
-            except:
-                pass
-        if len(cmap) >= 40:
-            return cmap
+        body = source[start + 1:end]
 
-        assignments = self._split_assignments(body)
-        for assign in assignments:
-            if '=' not in assign:
-                continue
-            kpart, vpart = assign.split('=', 1)
-            kpart = kpart.strip().strip('"').strip("'").strip('[').strip(']')
-            try:
-                cmap[kpart] = eval(vpart.strip().replace(' ', '')) & 0x3F
-            except:
-                pass
-        return cmap
-
-    def _split_assignments(self, body):
-        parts = []
+        # Split into assignments, respecting parentheses
+        assignments = []
         current = []
-        depth = 0
+        paren_depth = 0
         for ch in body:
             if ch == '(':
-                depth += 1
+                paren_depth += 1
             elif ch == ')':
-                depth -= 1
-            if ch in (',', ';') and depth == 0:
-                parts.append(''.join(current).strip())
+                paren_depth -= 1
+            if ch in (',', ';') and paren_depth == 0:
+                assignments.append(''.join(current).strip())
                 current = []
             else:
                 current.append(ch)
         if current:
-            parts.append(''.join(current).strip())
-        return parts
+            assignments.append(''.join(current).strip())
+
+        cmap = {}
+        for assign in assignments:
+            if '=' not in assign:
+                continue
+            kpart, vpart = assign.split('=', 1)
+            # Clean key
+            key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
+            # Evaluate value
+            expr = vpart.strip().replace(' ', '')
+            try:
+                val = eval(expr) & 0x3F
+                cmap[key] = val
+            except:
+                pass
+
+        return cmap
 
     def _extract_n_strings(self, source):
         m = re.search(r'local\s+N\s*=\s*\{((?:\s*"[^"]*"\s*[;,]?\s*)+)\}', source, re.DOTALL)

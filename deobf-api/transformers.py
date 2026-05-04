@@ -420,23 +420,33 @@ class WeAreDevsLifter(Transformer):
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-            for chunk in decoded:
-                try:
-                    text = chunk.decode('latin-1', errors='replace')
-                    if len(text) > 50 and ('function' in text or 'local' in text):
-                        return text
-                except:
-                    pass
-            return None
+            return None, data, decoded
 
         result = attempt(False)
         if isinstance(result, str):
             return result
+        _, payload, samples = result
+
         result = attempt(True)
         if isinstance(result, str):
             return result
+        _, payload, samples = result
 
-        self.diagnostic = "String table decoded but no valid Lua 5.1 bytecode found – check obfuscator version."
+        hex_preview = payload[:60].hex() if payload else "(empty)"
+        sample_text = ""
+        for s in samples[:3]:
+            try:
+                text = s.decode('latin-1', errors='replace')
+                if any(c.isprintable() for c in text):
+                    sample_text += text[:40] + " | "
+            except:
+                pass
+
+        self.diagnostic = (
+            f"Decoded {len(strings)} strings, {len(payload)} bytes total. "
+            f"First bytes: {hex_preview}. "
+            f"First decoded strings: {sample_text.strip()}"
+        )
         return None
 
     def _extract_table_body(self, source, prefix):

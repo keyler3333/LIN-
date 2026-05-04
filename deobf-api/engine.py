@@ -3,8 +3,6 @@ from transformers import (
     EscapeSequenceTransformer,
     MathTransformer,
     HexNameRenamer,
-    Lua51Parser,
-    Lua51Decompiler,
 )
 from sandbox import execute_sandbox
 
@@ -33,22 +31,8 @@ class DeobfEngine:
         if current != source and self._looks_decoded(current):
             return self._beautify(current), 'static_lift', 'Static lift succeeded'
 
-        layers, captures = execute_sandbox(current, timeout=45)
-
-        best = ''
-        for cap in captures:
-            if len(cap) > len(best) and ('function' in cap or 'local' in cap):
-                best = cap
-
-        if best:
-            return self._beautify(best), 'sandbox_capture', 'Decrypted payload captured'
-
-        for layer in layers:
-            if isinstance(layer, str) and len(layer) > 50:
-                if 'function' in layer or 'local' in layer:
-                    return self._beautify(layer), 'layer', 'Layer captured'
-
-        return self._beautify(current), 'done', 'No further payload found'
+        # If static lift failed, return a helpful message
+        return self._beautify(current), 'unable', 'Could not deobfuscate – the script may use a new WeAreDevs version or non-standard structure. Please upload the file again.'
 
     @staticmethod
     def _looks_decoded(code):

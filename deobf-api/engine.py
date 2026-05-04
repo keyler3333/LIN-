@@ -41,13 +41,13 @@ class DeobfEngine:
                         bc = cap[offset:].encode('latin-1')
                         lifted = self._lift_bc(bc)
                         if lifted:
-                            return self._beautify(lifted), 'table_concat_bytecode', 'Bytecode captured via table.concat / string.char'
+                            return self._beautify(lifted), 'captured_bytecode', 'Bytecode captured via sandbox hook'
 
         for item in layers:
             if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
                 lifted = self._lift_bc(item)
                 if lifted:
-                    return self._beautify(lifted), 'sandbox_bytecode', 'Decompiled from bytecode dump'
+                    return self._beautify(lifted), 'dump_bytecode', 'Decompiled from bytecode dump'
 
         best = ''
         for cap in captures:
@@ -55,14 +55,14 @@ class DeobfEngine:
                 best = cap
 
         if best:
-            return self._beautify(best), 'table_concat_source', 'Readable source captured via table.concat / string.char'
+            return self._beautify(best), 'captured_source', 'Readable source captured via sandbox hook'
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
-                    return self._beautify(layer), 'sandbox_layer', 'Layer captured'
+                    return self._beautify(layer), 'layer_source', 'Layer captured'
 
-        reason = diag if diag else 'Sandbox executed but no bytecode or source was captured.'
+        reason = diag if diag else 'Sandbox executed but no payload captured. No errors were logged.'
         if GROQ_AVAILABLE and GROQ_KEY:
             ai_note = self._ai_analysis(source, reason)
             if ai_note:

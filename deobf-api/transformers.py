@@ -365,29 +365,44 @@ class Lua51Decompiler:
 
 
 class WeAreDevsLifter(Transformer):
+    def __init__(self):
+        self.diagnostic = ""
+
     def transform(self, code):
+        self.diagnostic = ""
         lifted = self._try_lift(code)
-        return lifted if lifted else code
+        if lifted:
+            return lifted
+        return code
 
     def _try_lift(self, source):
         cmap = self._build_char_map(source)
-        if not cmap or len(cmap) < 40:
+        if not cmap:
+            self.diagnostic = "Custom Base64 table (local b = {...}) not found or incomplete."
+            return None
+        if len(cmap) < 40:
+            self.diagnostic = f"Custom Base64 table only has {len(cmap)} entries (needs 40+)."
             return None
 
         strings = self._extract_n_strings(source)
         if not strings:
+            self.diagnostic = "Constant table N not found."
             return None
 
         pairs = self._extract_shuffle_pairs(source)
+        if pairs is None:
+            self.diagnostic = "Shuffle pairs not found (expected three range‑reversal pairs)."
+        elif len(pairs) != 3:
+            self.diagnostic = f"Found {len(pairs)} shuffle pairs (expected 3)."
 
         def attempt(apply_reverse):
             working = list(strings)
-            if pairs:
+            if pairs and len(pairs) == 3:
                 self._apply_shuffle(working, pairs, reverse=apply_reverse)
             decoded = [self._decode_b64(s, cmap) for s in working]
             decoded = [c for c in decoded if c]
 
-            for chunk in decoded:
+            for idx, chunk in enumerate(decoded):
                 if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                     parser = Lua51Parser(chunk)
                     func = parser.parse_function()
@@ -411,12 +426,15 @@ class WeAreDevsLifter(Transformer):
                     pass
             return None
 
-        # Try forward order (as in runtime)
         result = attempt(False)
         if result:
             return result
-        # Try reverse order (fallback)
-        return attempt(True)
+        result = attempt(True)
+        if result:
+            return result
+
+        self.diagnostic = "String table decoded but no valid Lua 5.1 bytecode found – check obfuscator version."
+        return None
 
     def _build_char_map(self, source):
         m = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
@@ -457,7 +475,6 @@ class WeAreDevsLifter(Transformer):
         return pairs if len(pairs) == 3 else None
 
     def _apply_shuffle(self, lst, pairs, reverse=True):
-        """reverse=True: apply pairs in reversed order (inverse of runtime)."""
         order = reversed(pairs) if reverse else pairs
         for a, b in order:
             lo, hi = a - 1, b - 1

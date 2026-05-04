@@ -8,7 +8,7 @@ class DeobfEngine:
         if depth >= self.max_depth:
             return source, 'max_depth', 'Max recursion depth reached'
 
-        layers, captures = execute_sandbox(source, timeout=45)
+        layers, captures = execute_sandbox(source, timeout=60)
 
         best = ""
         for cap in captures:
@@ -16,14 +16,17 @@ class DeobfEngine:
                 best = cap
 
         if best:
-            return self._beautify(best), 'loadstring_capture', 'Decrypted payload captured'
+            return self._beautify(best), 'sandbox_capture', 'Decrypted payload captured'
 
         for layer in layers:
             if isinstance(layer, str) and len(layer) > 50:
-                if 'function' in layer or 'local' in layer:
-                    return self._beautify(layer), 'layer', 'Layer captured'
+                best = layer
+                break
 
-        return source, 'no_capture', 'No payload captured – the script may have executed but did not call loadstring or return a string'
+        if best:
+            return self._beautify(best), 'layer', 'Layer captured'
+
+        return source, 'no_capture', 'No payload captured'
 
     def _beautify(self, code):
         try:

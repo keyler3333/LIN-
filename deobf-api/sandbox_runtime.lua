@@ -29,7 +29,7 @@ local _orig_table_concat = table.concat
 local _orig_string_char = string.char
 
 rawset = function(t, k, v)
-    if type(v) == "string" and #v > 10 then
+    if type(v) == "string" and #v > 5 then
         _capture(v)
     end
     return _orig_rawset(t, k, v)
@@ -37,7 +37,7 @@ end
 
 table.concat = function(t, sep, i, j)
     local r = _orig_table_concat(t, sep, i, j)
-    if type(r) == "string" and #r > 10 then
+    if type(r) == "string" and #r > 5 then
         _capture(r)
     end
     return r
@@ -45,7 +45,7 @@ end
 
 string.char = function(...)
     local r = _orig_string_char(...)
-    if #r > 10 then
+    if #r > 5 then
         _capture(r)
     end
     return r
@@ -158,31 +158,38 @@ rawset(env, "load", rawget(env, "loadstring"))
 
 local fh = io.open(_inp, "r")
 if not fh then
+    _L("cannot open input")
     local ef = io.open(_out .. "/error.txt", "w")
     if ef then ef:write("cannot open input") ef:close() end
-    return
-end
-local source = fh:read("*a")
-fh:close()
-
-local chunk, err = _orig_loadstring(source, "@input")
-if not chunk then
-    local ef = io.open(_out .. "/error.txt", "w")
-    if ef then ef:write("parse error: " .. tostring(err)) ef:close() end
 else
-    setfenv(chunk, env)
-    local ok, res = _orig_pcall(chunk)
-    if not ok then
-        _L("RUNTIME ERROR: " .. tostring(res))
+    local source = fh:read("*a")
+    fh:close()
+
+    local chunk, err = _orig_loadstring(source, "@input")
+    if not chunk then
+        _L("PARSE ERROR: " .. tostring(err))
+        local ef = io.open(_out .. "/error.txt", "w")
+        if ef then ef:write("parse error: " .. tostring(err)) ef:close() end
     else
-        if type(res) == "string" then
-            _capture(res)
-        elseif type(res) == "function" then
-            local ok2, bc = _orig_pcall(string.dump, res)
-            if ok2 then
-                local df = io.open(_out .. "/dump.bin", "wb")
-                if df then df:write(bc) df:close() end
-                _L("DUMPED")
+        setfenv(chunk, env)
+        local ok, res = _orig_pcall(chunk)
+        if not ok then
+            _L("RUNTIME ERROR: " .. tostring(res))
+        else
+            if type(res) == "string" and #res > 3 then
+                _capture(res)
+            elseif type(res) == "function" then
+                local ok2, bc = _orig_pcall(string.dump, res)
+                if ok2 then
+                    local df = io.open(_out .. "/dump.bin", "wb")
+                    if df then df:write(bc) df:close() end
+                    _L("DUMPED")
+                end
+                local ok3, ret = _orig_pcall(res)
+                _L("VM RETURNED: " .. tostring(ok3) .. " " .. tostring(ret))
+                if type(ret) == "string" and #ret > 3 then
+                    _capture(ret)
+                end
             end
         end
     end

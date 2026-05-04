@@ -7,7 +7,7 @@ local function _L(s) _log[#_log+1] = s end
 
 debug.sethook(function()
     _step = _step + 5000
-    if _step > 20000000 then
+    if _step > 10000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
@@ -270,18 +270,15 @@ if not chunk then
 else
     setfenv(chunk, env)
     local ok, res = _orig_pcall(chunk)
-    if not ok then
-        _L("runtime error: " .. tostring(res))
-    else
-        if type(res) == "string" then
-            _capture(res)
-        elseif type(res) == "function" then
-            local ok2, bc = _orig_pcall(string.dump, res)
-            if ok2 then
-                local df = io.open(_out .. "/dump.bin", "wb")
-                if df then df:write(bc) df:close() end
-            end
+    if not ok then _L("runtime error: " .. tostring(res)) end
+    if ok and type(res) == "function" then
+        local ok2, bc = _orig_pcall(string.dump, res)
+        if ok2 then
+            local df = io.open(_out .. "/dump.bin", "wb")
+            if df then df:write(bc) df:close() end
         end
+    elseif ok and type(res) == "string" then
+        _capture(res)
     end
 end
 

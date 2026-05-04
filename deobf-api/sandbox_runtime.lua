@@ -18,15 +18,17 @@ end, "", 1000)
 
 local _captured = {}
 local function _capture(v)
-    if type(v) == "string" and #v > 3 and not _captured[v] then
+    if type(v) == "string" and #v > 1 and not _captured[v] then
         _captured[v] = true
         _cap[#_cap+1] = v
+        _L("CAPTURED " .. #v .. " bytes: " .. string.sub(v, 1, 40):gsub("%c","."))
     end
 end
 
 local _orig_loadstring   = loadstring
 local _orig_pcall        = pcall
 local _orig_xpcall       = xpcall
+local _orig_rawget       = rawget
 local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char  = string.char
@@ -64,11 +66,11 @@ rawget = function(t, k)
     if type(t) ~= "table" then
         return nil
     end
-    return (rawget or _G.rawget)(t, k)
+    return _orig_rawget(t, k)
 end
 
 rawset = function(t, k, v)
-    if type(v) == "string" and #v > 5 then
+    if type(v) == "string" and #v > 1 then
         _capture(v)
     end
     v = _protect(v)
@@ -77,7 +79,7 @@ end
 
 table.concat = function(t, sep, i, j)
     local r = _orig_table_concat(t, sep, i, j)
-    if type(r) == "string" and #r > 5 then
+    if type(r) == "string" and #r > 1 then
         _capture(r)
     end
     return r
@@ -85,7 +87,7 @@ end
 
 string.char = function(...)
     local r = _orig_string_char(...)
-    if #r > 5 then
+    if #r > 1 then
         _capture(r)
     end
     return r
@@ -165,11 +167,11 @@ rawset(env, "loadstring", function(code, name)
         end
         code = table.concat(parts)
     end
-    if type(code) == "string" and #code > 5 then
+    if type(code) == "string" and #code > 1 then
         _capture(code)
         local f = io.open(_out .. "/layer_1.lua", "w")
         if f then f:write(code) f:close() end
-        _L("CAPTURED " .. #code .. " bytes")
+        _L("LOADSTRING " .. #code .. " bytes")
     end
     return _orig_loadstring(code, name)
 end)
@@ -198,20 +200,25 @@ else
         if not ok then
             _L("RUNTIME ERROR: " .. tostring(res))
         else
-            if type(res) == "string" and #res > 3 then
+            _L("MAIN RETURNED: type=" .. type(res) .. " value=" .. tostring(res):sub(1, 200))
+            if type(res) == "string" and #res > 1 then
                 _capture(res)
             elseif type(res) == "function" then
                 local ok2, bc = _orig_pcall(string.dump, res)
                 if ok2 then
                     local df = io.open(_out .. "/dump.bin", "wb")
                     if df then df:write(bc) df:close() end
-                    _L("DUMPED")
+                    _L("DUMPED " .. #bc .. " bytes")
+                else
+                    _L("DUMP FAILED: " .. tostring(bc))
                 end
                 local ok3, ret = _orig_xpcall(res, error_handler)
-                _L("VM RETURNED: " .. tostring(ok3) .. " " .. tostring(ret))
-                if type(ret) == "string" and #ret > 3 then
+                _L("VM RETURNED: ok=" .. tostring(ok3) .. " ret=" .. tostring(ret):sub(1, 200))
+                if type(ret) == "string" and #ret > 1 then
                     _capture(ret)
                 end
+            elseif type(res) == "table" then
+                _L("MAIN RETURNED TABLE (keys: " .. table.concat(_orig_debug.getinfo and {} or {}, ", ") .. ")")
             end
         end
     end

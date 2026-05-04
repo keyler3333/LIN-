@@ -1,89 +1,29 @@
-import os
-from transformers import (
-    WeAreDevsLifter,
-    EscapeSequenceTransformer,
-    MathTransformer,
-    HexNameRenamer,
-)
 from sandbox import execute_sandbox
-
-GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
-GROQ_AVAILABLE = False
-if GROQ_KEY:
-    try:
-        from groq import Groq
-        GROQ_AVAILABLE = True
-    except ImportError:
-        pass
-
 
 class DeobfEngine:
     def __init__(self):
-        self.lifter = WeAreDevsLifter()
-        self.cleaners = [
-            EscapeSequenceTransformer(),
-            MathTransformer(),
-            self.lifter,
-            HexNameRenamer(),
-        ]
         self.max_depth = 5
 
     def process(self, source, depth=0):
         if depth >= self.max_depth:
-            return self._beautify(source), 'max_depth', 'Max recursion depth reached'
+            return source, 'max_depth', 'Max recursion depth reached'
 
-        current = source
-        for t in self.cleaners:
-            try:
-                current = t.transform(current)
-            except:
-                pass
+        layers, captures = execute_sandbox(source, timeout=45)
 
-        if isinstance(current, str) and current != source and self._looks_decoded(current):
-            return self._beautify(current), 'static_lift', 'Static lift succeeded'
+        best = ""
+        for cap in captures:
+            if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
+                best = cap
 
-        diag = self.lifter.diagnostic or 'Could not identify or decode the constant table.'
+        if best:
+            return self._beautify(best), 'sandbox', 'Decrypted payload captured'
 
-        if GROQ_AVAILABLE and GROQ_KEY:
-            ai_note = self._ai_analysis(source, diag)
-            if ai_note:
-                diag = f"{diag}\n\n--- AI Analysis ---\n{ai_note}"
+        for layer in layers:
+            if isinstance(layer, str) and len(layer) > 50:
+                if 'function' in layer or 'local' in layer or 'print' in layer:
+                    return self._beautify(layer), 'sandbox_layer', 'Captured layer'
 
-        return self._beautify(current), 'unable', diag
-
-    def _ai_analysis(self, source, diag):
-        try:
-            client = Groq(api_key=GROQ_KEY)
-            prompt = (
-                "A Lua obfuscation deobfuscator failed to lift a WeAreDevs script. "
-                "The obfuscator works by decoding a custom Base64 table, unshuffling a string constant table, "
-                "and then decompiling the recovered Lua 5.1 bytecode.\n\n"
-                f"Lifter diagnostic: {diag}\n\n"
-                "Source code (first 4000 chars):\n```lua\n" +
-                source[:4000] +
-                "\n```\n\n"
-                "Explain why the deobfuscation likely failed and what specific improvements would help. "
-                "Be concise and technical."
-            )
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
-                temperature=0.2,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception:
-            return None
-
-    @staticmethod
-    def _looks_decoded(code):
-        if not isinstance(code, str) or not code or len(code) < 20:
-            return False
-        lines = code.split('\n')
-        if max((len(l) for l in lines), default=0) > 500:
-            return False
-        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.25
+        return source, 'unable', 'Sandbox executed but no payload captured – the script may not have called loadstring.'
 
     def _beautify(self, code):
         try:

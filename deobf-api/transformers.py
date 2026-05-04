@@ -436,20 +436,12 @@ class WeAreDevsLifter(Transformer):
         self.diagnostic = "String table decoded but no valid Lua 5.1 bytecode found – check obfuscator version."
         return None
 
-    def _build_char_map(self, source):
-        start_marker = "local b={"
-        idx = source.find(start_marker)
+    def _extract_table_body(self, source, prefix):
+        idx = source.find(prefix)
         if idx == -1:
-            m = re.search(r'local\s+b\s*=\s*\{', source)
-            if m:
-                idx = m.start()
-                start_marker = m.group()
-            else:
-                return None
-
-        brace_start = idx + len(start_marker) - 1
+            return None
+        brace_start = idx + len(prefix) - 1
         depth = 0
-        end_pos = -1
         for i in range(brace_start, len(source)):
             ch = source[i]
             if ch == '{':
@@ -457,12 +449,20 @@ class WeAreDevsLifter(Transformer):
             elif ch == '}':
                 depth -= 1
                 if depth == 0:
-                    end_pos = i
-                    break
-        if end_pos == -1:
+                    return source[brace_start + 1:i]
+        return None
+
+    def _build_char_map(self, source):
+        body = self._extract_table_body(source, "local b={")
+        if not body:
+            body = self._extract_table_body(source, "local b ={")
+        if not body:
+            m = re.search(r'local\s+b\s*=\s*\{', source)
+            if m:
+                body = self._extract_table_body(source, m.group())
+        if not body:
             return None
 
-        body = source[brace_start + 1:end_pos]
         cmap = {}
         pairs = re.findall(r'\[?"?([^"\]]+)"?\]?\s*=\s*(-?\d+(?:\s*[+\-]\s*\d+)*)', body)
         for key, expr in pairs:
@@ -470,19 +470,38 @@ class WeAreDevsLifter(Transformer):
                 cmap[key.strip()] = eval(expr.replace(' ', '')) & 0x3F
             except:
                 pass
-        if len(cmap) < 40:
-            cmap = {}
-            fragments = re.split(r'(?<!\d)[;,](?!\d)', body)
-            for frag in fragments:
-                if '=' not in frag:
-                    continue
-                kpart, vpart = frag.split('=', 1)
-                kpart = kpart.strip().strip('"').strip("'").strip('[').strip(']')
-                try:
-                    cmap[kpart] = eval(vpart.strip().replace(' ', '')) & 0x3F
-                except:
-                    pass
+        if len(cmap) >= 40:
+            return cmap
+
+        assignments = self._split_assignments(body)
+        for assign in assignments:
+            if '=' not in assign:
+                continue
+            kpart, vpart = assign.split('=', 1)
+            kpart = kpart.strip().strip('"').strip("'").strip('[').strip(']')
+            try:
+                cmap[kpart] = eval(vpart.strip().replace(' ', '')) & 0x3F
+            except:
+                pass
         return cmap
+
+    def _split_assignments(self, body):
+        parts = []
+        current = []
+        depth = 0
+        for ch in body:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            if ch in (',', ';') and depth == 0:
+                parts.append(''.join(current).strip())
+                current = []
+            else:
+                current.append(ch)
+        if current:
+            parts.append(''.join(current).strip())
+        return parts
 
     def _extract_n_strings(self, source):
         m = re.search(r'local\s+N\s*=\s*\{((?:\s*"[^"]*"\s*[;,]?\s*)+)\}', source, re.DOTALL)

@@ -433,12 +433,11 @@ class WeAreDevsLifter(Transformer):
         return None
 
     def _build_char_map(self, source):
-        # Locate the 'b' table
         b_match = re.search(r'local\s+b\s*=\s*\{', source)
         if not b_match:
             return None
 
-        start = b_match.end() - 1  # position of '{'
+        start = b_match.end() - 1
         depth = 0
         end = -1
         for i in range(start, len(source)):
@@ -455,7 +454,6 @@ class WeAreDevsLifter(Transformer):
 
         body = source[start + 1:end]
 
-        # Split into assignments, respecting parentheses
         assignments = []
         current = []
         paren_depth = 0
@@ -477,9 +475,7 @@ class WeAreDevsLifter(Transformer):
             if '=' not in assign:
                 continue
             kpart, vpart = assign.split('=', 1)
-            # Clean key
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
-            # Evaluate value
             expr = vpart.strip().replace(' ', '')
             try:
                 val = eval(expr) & 0x3F

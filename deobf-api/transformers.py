@@ -370,33 +370,36 @@ class WeAreDevsLifter(Transformer):
         return lifted if lifted else code
 
     def _try_lift(self, source):
-        # 1. build character map (Base64 decoding table)
         cmap = self._build_char_map(source)
         if not cmap or len(cmap) < 40:
             return None
 
-        # 2. extract all strings from the N table
         strings = self._extract_n_strings(source)
         if not strings:
             return None
 
-        # 3. extract shuffle pairs and apply un-shuffle
         pairs = self._extract_shuffle_pairs(source)
         if pairs and len(pairs) == 3:
             strings = self._apply_unshuffle(strings, pairs)
 
-        # 4. decode every string and concatenate
-        payload = bytearray()
-        for s in strings:
-            chunk = self._decode_b64(s, cmap)
-            if chunk:
-                payload.extend(chunk)
+        decoded_chunks = [self._decode_b64(s, cmap) for s in strings]
+        decoded_chunks = [c for c in decoded_chunks if c]
 
+        for chunk in decoded_chunks:
+            if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
+                parser = Lua51Parser(chunk)
+                func = parser.parse_function()
+                return Lua51Decompiler(func).decompile()
+
+        payload = bytearray()
+        for c in decoded_chunks:
+            payload.extend(c)
         data = bytes(payload)
         if len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51:
             parser = Lua51Parser(data)
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
+
         return None
 
     def _build_char_map(self, source):

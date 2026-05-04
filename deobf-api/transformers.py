@@ -379,36 +379,44 @@ class WeAreDevsLifter(Transformer):
             return None
 
         pairs = self._extract_shuffle_pairs(source)
-        if pairs and len(pairs) == 3:
-            strings = self._apply_unshuffle(strings, pairs)
 
-        decoded_chunks = [self._decode_b64(s, cmap) for s in strings]
-        decoded_chunks = [c for c in decoded_chunks if c]
+        def attempt(apply_reverse):
+            working = list(strings)
+            if pairs:
+                self._apply_shuffle(working, pairs, reverse=apply_reverse)
+            decoded = [self._decode_b64(s, cmap) for s in working]
+            decoded = [c for c in decoded if c]
 
-        for chunk in decoded_chunks:
-            if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
-                parser = Lua51Parser(chunk)
+            for chunk in decoded:
+                if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
+                    parser = Lua51Parser(chunk)
+                    func = parser.parse_function()
+                    return Lua51Decompiler(func).decompile()
+
+            full = bytearray()
+            for c in decoded:
+                full.extend(c)
+            data = bytes(full)
+            if len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51:
+                parser = Lua51Parser(data)
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-        payload = bytearray()
-        for c in decoded_chunks:
-            payload.extend(c)
-        data = bytes(payload)
-        if len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51:
-            parser = Lua51Parser(data)
-            func = parser.parse_function()
-            return Lua51Decompiler(func).decompile()
+            for chunk in decoded:
+                try:
+                    text = chunk.decode('latin-1', errors='replace')
+                    if len(text) > 50 and ('function' in text or 'local' in text):
+                        return text
+                except:
+                    pass
+            return None
 
-        for chunk in decoded_chunks:
-            try:
-                text = chunk.decode('latin-1', errors='replace')
-                if len(text) > 50 and ('function' in text or 'local' in text):
-                    return text
-            except:
-                pass
-
-        return None
+        # Try forward order (as in runtime)
+        result = attempt(False)
+        if result:
+            return result
+        # Try reverse order (fallback)
+        return attempt(True)
 
     def _build_char_map(self, source):
         m = re.search(r'local\s+b\s*=\s*\{([^}]+)\}', source, re.DOTALL)
@@ -437,8 +445,7 @@ class WeAreDevsLifter(Transformer):
         pairs = []
         for a_s, b_s in re.findall(
             r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
-            source,
-            re.DOTALL
+            source
         ):
             try:
                 a = eval(a_s.replace(' ', ''))
@@ -447,15 +454,15 @@ class WeAreDevsLifter(Transformer):
                     pairs.append((a, b))
             except:
                 pass
-        return pairs
+        return pairs if len(pairs) == 3 else None
 
-    def _apply_unshuffle(self, strings, pairs):
-        lst = list(strings)
-        for a, b in reversed(pairs):
+    def _apply_shuffle(self, lst, pairs, reverse=True):
+        """reverse=True: apply pairs in reversed order (inverse of runtime)."""
+        order = reversed(pairs) if reverse else pairs
+        for a, b in order:
             lo, hi = a - 1, b - 1
             if 0 <= lo < len(lst) and 0 <= hi < len(lst) and lo < hi:
                 lst[lo:hi + 1] = lst[lo:hi + 1][::-1]
-        return lst
 
     def _decode_b64(self, s, cmap):
         buf = bytearray()

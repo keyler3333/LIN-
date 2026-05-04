@@ -1,6 +1,5 @@
 from sandbox import execute_sandbox
 
-
 class DeobfEngine:
     def __init__(self):
         self.max_depth = 5
@@ -9,35 +8,22 @@ class DeobfEngine:
         if depth >= self.max_depth:
             return source, 'max_depth', 'Max recursion depth reached'
 
-        layers, captures = execute_sandbox(source, timeout=30)
+        layers, captures = execute_sandbox(source, timeout=45)
 
+        best = ""
         for cap in captures:
-            if cap.startswith('\x1bLua') and len(cap) > 50:
-                lifted = self._lift_bc(cap.encode('latin-1'))
-                if lifted:
-                    return self._beautify(lifted), 'sandbox', 'Bytecode captured and lifted'
-            if len(cap) > 50 and ('function' in cap or 'local' in cap):
-                return self._beautify(cap), 'sandbox', 'Decoded string captured'
+            if len(cap) > len(best) and ('function' in cap or 'local' in cap):
+                best = cap
+
+        if best:
+            return self._beautify(best), 'loadstring_capture', 'Decrypted payload captured'
 
         for layer in layers:
-            if isinstance(layer, bytes) and layer[:4] == b'\x1bLua':
-                lifted = self._lift_bc(layer)
-                if lifted:
-                    return self._beautify(lifted), 'sandbox', 'Bytecode dump lifted'
             if isinstance(layer, str) and len(layer) > 50:
                 if 'function' in layer or 'local' in layer:
-                    return self._beautify(layer), 'sandbox', 'Decrypted layer captured'
+                    return self._beautify(layer), 'layer', 'Layer captured'
 
-        return source, 'sandbox', 'No payload captured'
-
-    def _lift_bc(self, bc):
-        try:
-            from transformers import Lua51Parser, Lua51Decompiler
-            parser = Lua51Parser(bc)
-            func = parser.parse_function()
-            return Lua51Decompiler(func).decompile()
-        except Exception:
-            return None
+        return source, 'no_capture', 'No payload captured – the script may have executed but did not call loadstring or return a string'
 
     def _beautify(self, code):
         try:

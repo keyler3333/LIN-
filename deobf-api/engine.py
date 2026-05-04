@@ -9,10 +9,11 @@ from sandbox import execute_sandbox
 
 class DeobfEngine:
     def __init__(self):
+        self.lifter = WeAreDevsLifter()
         self.cleaners = [
             EscapeSequenceTransformer(),
             MathTransformer(),
-            WeAreDevsLifter(),
+            self.lifter,
             HexNameRenamer(),
         ]
         self.max_depth = 5
@@ -31,8 +32,8 @@ class DeobfEngine:
         if current != source and self._looks_decoded(current):
             return self._beautify(current), 'static_lift', 'Static lift succeeded'
 
-        # If static lift failed, return a helpful message
-        return self._beautify(current), 'unable', 'Could not deobfuscate – the script may use a new WeAreDevs version or non-standard structure. Please upload the file again.'
+        diag = self.lifter.diagnostic or 'Could not identify or decode the constant table.'
+        return self._beautify(current), 'unable', diag
 
     @staticmethod
     def _looks_decoded(code):

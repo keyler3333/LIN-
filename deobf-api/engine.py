@@ -1,5 +1,4 @@
 import os
-import traceback
 from transformers import (
     WeAreDevsLifter,
     EscapeSequenceTransformer,
@@ -40,7 +39,7 @@ class DeobfEngine:
             except:
                 pass
 
-        if current != source and self._looks_decoded(current):
+        if isinstance(current, str) and current != source and self._looks_decoded(current):
             return self._beautify(current), 'static_lift', 'Static lift succeeded'
 
         diag = self.lifter.diagnostic or 'Could not identify or decode the constant table.'
@@ -78,7 +77,7 @@ class DeobfEngine:
 
     @staticmethod
     def _looks_decoded(code):
-        if not code or len(code) < 20:
+        if not isinstance(code, str) or not code or len(code) < 20:
             return False
         lines = code.split('\n')
         if max((len(l) for l in lines), default=0) > 500:

@@ -1,48 +1,34 @@
-from transformers import (
-    EscapeSequenceTransformer,
-    MathTransformer,
-    HexNameRenamer,
-)
 from sandbox import execute_sandbox
 
 
 class DeobfEngine:
     def __init__(self):
-        self.cleaners = [
-            EscapeSequenceTransformer(),
-            MathTransformer(),
-            HexNameRenamer(),
-        ]
         self.max_depth = 5
 
     def process(self, source, depth=0):
         if depth >= self.max_depth:
-            return self._beautify(source), 'max_depth', 'Max recursion depth reached'
+            return source, 'max_depth', 'Max recursion depth reached'
 
-        current = source
-        for t in self.cleaners:
-            try:
-                current = t.transform(current)
-            except Exception:
-                pass
-
-        layers, captures = execute_sandbox(current, timeout=45)
-
-        for layer in layers:
-            if isinstance(layer, bytes):
-                if layer[:4] == b'\x1bLua':
-                    lifted = self._lift_bc(layer)
-                    if lifted:
-                        return self._beautify(lifted), 'sandbox', 'Bytecode dump lifted'
-            elif isinstance(layer, str):
-                if len(layer) > 50 and self._looks_decoded(layer):
-                    return self._beautify(layer), 'sandbox', 'Decrypted layer captured'
+        layers, captures = execute_sandbox(source, timeout=30)
 
         for cap in captures:
-            if isinstance(cap, str) and len(cap) > 100 and self._looks_decoded(cap):
-                return self._beautify(cap), 'sandbox', 'Captured payload'
+            if cap.startswith('\x1bLua') and len(cap) > 50:
+                lifted = self._lift_bc(cap.encode('latin-1'))
+                if lifted:
+                    return self._beautify(lifted), 'sandbox', 'Bytecode captured and lifted'
+            if len(cap) > 50 and ('function' in cap or 'local' in cap):
+                return self._beautify(cap), 'sandbox', 'Decoded string captured'
 
-        return self._beautify(current), 'sandbox', 'No decrypted payload found'
+        for layer in layers:
+            if isinstance(layer, bytes) and layer[:4] == b'\x1bLua':
+                lifted = self._lift_bc(layer)
+                if lifted:
+                    return self._beautify(lifted), 'sandbox', 'Bytecode dump lifted'
+            if isinstance(layer, str) and len(layer) > 50:
+                if 'function' in layer or 'local' in layer:
+                    return self._beautify(layer), 'sandbox', 'Decrypted layer captured'
+
+        return source, 'sandbox', 'No payload captured'
 
     def _lift_bc(self, bc):
         try:
@@ -53,31 +39,19 @@ class DeobfEngine:
         except Exception:
             return None
 
-    @staticmethod
-    def _looks_decoded(code):
-        if not code or len(code) < 50:
-            return False
-        lines = code.split('\n')
-        if max((len(l) for l in lines), default=0) > 500:
-            return False
-        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.25
-
     def _beautify(self, code):
         try:
             from luaparser import ast as lua_ast
             return lua_ast.to_lua_source(lua_ast.parse(code))
         except Exception:
             out, ind = [], 0
-            openers = ('if ', 'for ', 'while ', 'repeat', 'function ', 'local function ')
-            closers = ('end', 'else', 'elseif ', 'until ')
             for raw in code.split('\n'):
                 line = raw.strip()
                 if not line:
                     continue
-                if any(line.startswith(c) for c in closers):
+                if any(line.startswith(w) for w in ('end', 'else', 'elseif', 'until', '}', ')')):
                     ind = max(0, ind - 1)
                 out.append('    ' * ind + line)
-                if any(line.startswith(o) for o in openers) and not line.endswith('end'):
+                if any(line.startswith(w) for w in ('if ', 'for ', 'while ', 'repeat', 'function ', 'local function ')) and not line.endswith('end'):
                     ind += 1
             return '\n'.join(out)

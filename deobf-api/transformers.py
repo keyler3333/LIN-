@@ -400,6 +400,14 @@ class WeAreDevsLifter(Transformer):
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
 
+        for chunk in decoded_chunks:
+            try:
+                text = chunk.decode('latin-1', errors='replace')
+                if len(text) > 50 and ('function' in text or 'local' in text):
+                    return text
+            except:
+                pass
+
         return None
 
     def _build_char_map(self, source):
@@ -429,7 +437,8 @@ class WeAreDevsLifter(Transformer):
         pairs = []
         for a_s, b_s in re.findall(
             r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
-            source
+            source,
+            re.DOTALL
         ):
             try:
                 a = eval(a_s.replace(' ', ''))

@@ -378,10 +378,10 @@ class WeAreDevsLifter(Transformer):
     def _try_lift(self, source):
         cmap = self._build_char_map(source)
         if not cmap:
-            self.diagnostic = "Custom Base64 table (local b = {...}) not found or incomplete."
+            self.diagnostic = "Base64 table not found."
             return None
         if len(cmap) < 40:
-            self.diagnostic = f"Custom Base64 table only has {len(cmap)} entries (needs 40+)."
+            self.diagnostic = f"Base64 table has only {len(cmap)} entries (needs 40+)."
             return None
 
         strings = self._extract_n_strings(source)
@@ -390,15 +390,14 @@ class WeAreDevsLifter(Transformer):
             return None
 
         pairs = self._extract_shuffle_pairs(source)
-        if pairs is None:
-            self.diagnostic = "Shuffle pairs not found (expected three range‑reversal pairs)."
-        elif len(pairs) != 3:
-            self.diagnostic = f"Found {len(pairs)} shuffle pairs (expected 3)."
+        if pairs is None or len(pairs) != 3:
+            self.diagnostic = f"Shuffle pairs missing or wrong count (got {len(pairs) if pairs else 0}, need 3)."
+            pairs = None
 
-        def attempt(apply_reverse):
+        def attempt(reverse):
             working = list(strings)
-            if pairs and len(pairs) == 3:
-                self._apply_shuffle(working, pairs, reverse=apply_reverse)
+            if pairs:
+                self._apply_shuffle(working, pairs, reverse=reverse)
             decoded = [self._decode_b64(s, cmap) for s in working]
             decoded = [c for c in decoded if c]
 
@@ -420,23 +419,29 @@ class WeAreDevsLifter(Transformer):
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
+            for chunk in decoded:
+                try:
+                    text = chunk.decode('latin-1', errors='replace')
+                    if len(text) > 50 and ('function' in text or 'local' in text):
+                        return text
+                except:
+                    pass
             return None
 
         result = attempt(False)
-        if isinstance(result, str):
+        if result:
             return result
         result = attempt(True)
-        if isinstance(result, str):
+        if result:
             return result
 
-        self.diagnostic = "String table decoded but no valid Lua 5.1 bytecode found – check obfuscator version."
+        self.diagnostic = "Decoded all strings but did not find Lua bytecode – obfuscator version may be too new."
         return None
 
     def _build_char_map(self, source):
         b_match = re.search(r'local\s+b\s*=\s*\{', source)
         if not b_match:
             return None
-
         start = b_match.end() - 1
         depth = 0
         end = -1
@@ -451,9 +456,7 @@ class WeAreDevsLifter(Transformer):
                     break
         if end == -1:
             return None
-
         body = source[start + 1:end]
-
         assignments = []
         current = []
         paren_depth = 0
@@ -469,7 +472,6 @@ class WeAreDevsLifter(Transformer):
                 current.append(ch)
         if current:
             assignments.append(''.join(current).strip())
-
         cmap = {}
         for assign in assignments:
             if '=' not in assign:
@@ -478,11 +480,9 @@ class WeAreDevsLifter(Transformer):
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             expr = vpart.strip().replace(' ', '')
             try:
-                val = eval(expr) & 0x3F
-                cmap[key] = val
+                cmap[key] = eval(expr) & 0x3F
             except:
                 pass
-
         return cmap
 
     def _extract_n_strings(self, source):

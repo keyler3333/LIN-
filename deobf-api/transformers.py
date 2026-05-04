@@ -427,16 +427,23 @@ class WeAreDevsLifter(Transformer):
                         return text
                 except:
                     pass
-            return None
+            return None, data
 
         result = attempt(False)
         if result:
             return result
-        result = attempt(True)
+        result, payload = attempt(True)
         if result:
             return result
 
-        self.diagnostic = "String table decoded but no valid Lua 5.1 bytecode found – check obfuscator version."
+        if payload:
+            hex_preview = payload[:40].hex()
+            self.diagnostic = (
+                f"String table decoded ({len(strings)} strings, {len(payload)} bytes). "
+                f"No valid Lua 5.1 bytecode found. First bytes: {hex_preview}"
+            )
+        else:
+            self.diagnostic = "String table decoded but no payload produced."
         return None
 
     def _extract_table_body(self, source, prefix):

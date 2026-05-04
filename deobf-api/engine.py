@@ -1,14 +1,38 @@
+from transformers import (
+    WeAreDevsLifter,
+    EscapeSequenceTransformer,
+    MathTransformer,
+    HexNameRenamer,
+)
 from sandbox import execute_sandbox
+
 
 class DeobfEngine:
     def __init__(self):
+        self.lifter = WeAreDevsLifter()
+        self.cleaners = [
+            EscapeSequenceTransformer(),
+            MathTransformer(),
+            self.lifter,
+            HexNameRenamer(),
+        ]
         self.max_depth = 5
 
     def process(self, source, depth=0):
         if depth >= self.max_depth:
             return source, 'max_depth', 'Max recursion depth reached'
 
-        layers, captures, diag = execute_sandbox(source, timeout=60)
+        current = source
+        for t in self.cleaners:
+            try:
+                current = t.transform(current)
+            except:
+                pass
+
+        if current != source and self._looks_decoded(current):
+            return self._beautify(current), 'static_lift', 'Static lift succeeded'
+
+        layers, captures, diag = execute_sandbox(current, timeout=60)
 
         best = ""
         for cap in captures:
@@ -23,8 +47,18 @@ class DeobfEngine:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
                     return self._beautify(layer), 'sandbox_layer', 'Captured layer'
 
-        reason = diag if diag else 'Sandbox produced no output and no errors were logged.'
+        reason = self.lifter.diagnostic or diag or 'Sandbox produced no output and no errors were logged.'
         return source, 'unable', reason
+
+    @staticmethod
+    def _looks_decoded(code):
+        if not code or len(code) < 20:
+            return False
+        lines = code.split('\n')
+        if max((len(l) for l in lines), default=0) > 500:
+            return False
+        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
+        return (alpha / max(len(code), 1)) > 0.25
 
     def _beautify(self, code):
         try:

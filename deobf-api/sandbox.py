@@ -75,4 +75,13 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
             with open(diagf, encoding='utf-8', errors='replace') as f:
                 diag = f.read()
 
+        errf = os.path.join(d, 'error.txt')
+        if os.path.exists(errf):
+            with open(errf, encoding='utf-8', errors='replace') as f:
+                err_msg = f.read()
+            if diag:
+                diag = err_msg + "\n" + diag
+            else:
+                diag = err_msg
+
         return layers, caps, diag

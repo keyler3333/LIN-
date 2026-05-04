@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import tempfile
 import shutil
@@ -11,9 +12,16 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def _repair_malformed(source):
+    """Insert a space between a digit and a following letter, fixing `1end` etc."""
+    return re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', source)
+
+
 def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
+
+    source = _repair_malformed(source)
 
     with tempfile.TemporaryDirectory() as d:
         inp = os.path.join(d, 'input.lua')

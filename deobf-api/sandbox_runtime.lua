@@ -8,7 +8,7 @@ end
 
 debug.sethook(function()
     _step = _step + 1000
-    if _step > 10000000 then
+    if _step > 15000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
@@ -51,6 +51,18 @@ local function _safe()
     return setmetatable({}, _safe_mt)
 end
 
+local function _safe_library(lib)
+    local t = {}
+    for k, v in pairs(lib) do
+        t[k] = v
+    end
+    return setmetatable(t, {
+        __index = function(_, k)
+            return _safe()
+        end,
+    })
+end
+
 local env = setmetatable({}, {
     __index = function(_, k)
         local v = rawget(env, k)
@@ -61,65 +73,42 @@ local env = setmetatable({}, {
     end
 })
 
-for name, func in pairs({
-    assert = function(v) return v end,
-    error = function() end,
-    ipairs = ipairs,
-    next = next,
-    pairs = pairs,
-    pcall = pcall,
-    rawequal = rawequal,
-    rawget = rawget,
-    rawlen = rawlen,
-    rawset = rawset,
-    select = select,
-    setmetatable = setmetatable,
-    getmetatable = getmetatable,
-    tonumber = tonumber,
-    tostring = tostring,
-    type = type,
-    xpcall = xpcall,
-    string = {
-        byte = string.byte, char = string.char, find = string.find,
-        format = string.format, gmatch = string.gmatch, gsub = string.gsub,
-        len = string.len, lower = string.lower, match = string.match,
-        rep = string.rep, reverse = string.reverse, sub = string.sub,
-        upper = string.upper,
-    },
-    math = {
-        abs = math.abs, acos = math.acos, asin = math.asin, atan = math.atan,
-        ceil = math.ceil, cos = math.cos, cosh = math.cosh, deg = math.deg,
-        exp = math.exp, floor = math.floor, fmod = math.fmod, huge = math.huge,
-        log = math.log, max = math.max, min = math.min, modf = math.modf,
-        pi = math.pi, pow = math.pow, rad = math.rad, random = math.random,
-        randomseed = math.randomseed, sin = math.sin, sinh = math.sinh,
-        sqrt = math.sqrt, tan = math.tan, tanh = math.tanh,
-    },
-    table = {
-        concat = table.concat, insert = table.insert, maxn = table.maxn,
-        remove = table.remove, sort = table.sort,
-    },
-    os = {
-        clock = function() return 0 end,
-        date = function() return "2024-01-01" end,
-        difftime = function() return 0 end,
-        time = function() return math.random(1680000000, 1710000000) end,
-    },
-    coroutine = {
-        create = coroutine.create, resume = coroutine.resume,
-        running = coroutine.running, status = coroutine.status,
-        wrap = coroutine.wrap, yield = coroutine.yield,
-    },
-}) do
-    rawset(env, name, func)
-end
-
 rawset(env, "_G", env)
 rawset(env, "_VERSION", "Luau")
+rawset(env, "assert", function(v) return v end)
+rawset(env, "error", function() end)
+rawset(env, "ipairs", ipairs)
+rawset(env, "next", next)
+rawset(env, "pairs", pairs)
+rawset(env, "pcall", pcall)
+rawset(env, "rawequal", rawequal)
+rawset(env, "rawget", rawget)
+rawset(env, "rawlen", rawlen)
+rawset(env, "rawset", rawset)
+rawset(env, "select", select)
+rawset(env, "setmetatable", setmetatable)
+rawset(env, "getmetatable", getmetatable)
+rawset(env, "tonumber", tonumber)
+rawset(env, "tostring", tostring)
+rawset(env, "type", type)
+rawset(env, "xpcall", xpcall)
+rawset(env, "string", _safe_library(string))
+rawset(env, "math", _safe_library(math))
+rawset(env, "table", _safe_library(table))
+rawset(env, "os", _safe_library(os))
+rawset(env, "coroutine", _safe_library(coroutine))
+rawset(env, "debug", _safe_library(debug))
 rawset(env, "getfenv", function() return env end)
 rawset(env, "setfenv", function(fn, e) return fn end)
 rawset(env, "print", function() end)
 rawset(env, "warn", function() end)
+rawset(env, "newproxy", function(add)
+    local u = {}
+    if add then
+        setmetatable(u, {})
+    end
+    return u
+end)
 rawset(env, "loadstring", function(code, name)
     if type(code) == "function" then
         local parts = {}
@@ -135,7 +124,7 @@ rawset(env, "loadstring", function(code, name)
         _capture(code)
         local f = io.open(_out .. "/layer_1.lua", "w")
         if f then f:write(code) f:close() end
-        _L("CAPTURED: " .. string.sub(code, 1, 80))
+        _L("CAPTURED " .. #code .. " bytes: " .. string.sub(code, 1, 120))
     end
     return _orig_loadstring(code, name)
 end)

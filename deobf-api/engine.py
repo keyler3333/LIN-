@@ -4,10 +4,8 @@ from transformers import (
     EscapeSequenceTransformer,
     MathTransformer,
     HexNameRenamer,
-    Lua51Parser,
-    Lua51Decompiler,
 )
-from sandbox import execute_sandbox
+
 
 GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
 GROQ_AVAILABLE = False
@@ -28,10 +26,9 @@ class DeobfEngine:
             self.lifter,
             HexNameRenamer(),
         ]
-        self.max_depth = 5
 
     def process(self, source, depth=0):
-        if depth >= self.max_depth:
+        if depth > 5:
             return source, 'max_depth', 'Max recursion depth reached'
 
         current = source
@@ -42,52 +39,14 @@ class DeobfEngine:
                 pass
 
         if current != source and self._looks_decoded(current):
-            return self._beautify(current), 'static_lift', 'Static lift succeeded'
+            return self._beautify(current), 'static_lift', 'Successfully deobfuscated'
 
-        layers, captures, diag = execute_sandbox(current, timeout=90)
-
-        for cap in captures:
-            for offset in range(len(cap)):
-                if cap[offset:offset+4] == '\x1bLua':
-                    if offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
-                        bc = cap[offset:].encode('latin-1')
-                        lifted = self._lift_bc(bc)
-                        if lifted:
-                            return self._beautify(lifted), 'sandbox_bytecode', 'Bytecode captured via sandbox hook'
-
-        for item in layers:
-            if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
-                lifted = self._lift_bc(item)
-                if lifted:
-                    return self._beautify(lifted), 'sandbox_dump', 'Decompiled from bytecode dump'
-
-        best = ''
-        for cap in captures:
-            if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
-                best = cap
-
-        if best:
-            return self._beautify(best), 'sandbox_capture', 'Readable source captured via sandbox hook'
-
-        for layer in layers:
-            if isinstance(layer, str) and len(layer) > 50:
-                if 'function' in layer or 'local' in layer or 'print' in layer:
-                    return self._beautify(layer), 'sandbox_layer', 'Layer captured'
-
-        reason = diag if diag else 'Sandbox executed but no payload captured.'
+        diag = self.lifter.diagnostic or 'Unknown error – no diagnostic available.'
         if GROQ_AVAILABLE and GROQ_KEY:
-            ai_note = self._ai_analysis(source, reason)
+            ai_note = self._ai_analysis(source, diag)
             if ai_note:
-                reason = f"{reason}\n\n--- AI Analysis ---\n{ai_note}"
-        return source, 'unable', reason
-
-    def _lift_bc(self, bc):
-        try:
-            parser = Lua51Parser(bc)
-            func = parser.parse_function()
-            return Lua51Decompiler(func).decompile()
-        except Exception:
-            return None
+                diag = f"{diag}\n\n--- AI Analysis ---\n{ai_note}"
+        return source, 'unable', diag
 
     @staticmethod
     def _looks_decoded(code):
@@ -103,15 +62,14 @@ class DeobfEngine:
         try:
             client = Groq(api_key=GROQ_KEY)
             prompt = (
-                "A Lua obfuscation deobfuscator failed to capture any decrypted payload from a WeAreDevs script. "
-                "The script uses a custom Base64 decoder, a shuffled string table, and a VM‑based executor. "
-                "The sandbox executed without errors but produced no captured bytecode or readable source.\n\n"
-                f"Sandbox diagnostic: {diag}\n\n"
+                "A Lua obfuscation deobfuscator failed to lift a WeAreDevs script. "
+                "The obfuscator uses a custom Base64 table, a shuffled string constant table, "
+                "and then the original Lua source is hidden among the decoded strings.\n\n"
+                f"Lifter diagnostic: {diag}\n\n"
                 "Source code (first 4000 chars):\n```lua\n" +
                 source[:4000] +
                 "\n```\n\n"
-                "Explain the most likely reason for the failure and suggest exactly what to change in the sandbox or engine to capture the payload. "
-                "Be concise and technical."
+                "Explain why the deobfuscation likely failed and what specific fix should be applied."
             )
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",

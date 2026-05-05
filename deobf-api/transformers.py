@@ -397,15 +397,15 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = f"Shuffle pairs missing or wrong count (found {len(pairs) if pairs else 0}, need 3)."
             pairs = None
 
-        # Apply the shuffle in the correct order, then decode all strings
+        # Apply the shuffle in the *same direction* the VM uses to decode
         working = list(strings)
         if pairs:
-            # The VM reverses the ranges in reverse order, so we must apply them in forward order
             for a, b in pairs:
                 lo, hi = a - 1, b - 1
                 if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
                     working[lo:hi + 1] = working[lo:hi + 1][::-1]
 
+        # Decode all strings
         decoded_chunks = []
         for s in working:
             buf = self._decode_b64(s, cmap)
@@ -416,14 +416,14 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = "All strings decoded to zero bytes – the Base64 map is incorrect."
             return None
 
-        # Check each decoded chunk for Lua 5.1 bytecode
+        # Check each chunk for Lua 5.1 bytecode
         for chunk in decoded_chunks:
             if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                 parser = Lua51Parser(chunk)
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-        # Concatenate all chunks and search for the Lua header
+        # Concatenate and search for header
         full = bytearray()
         for c in decoded_chunks:
             full.extend(c)
@@ -435,7 +435,7 @@ class WeAreDevsLifter(Transformer):
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
 
-        # No bytecode found – return the longest chunk that looks like readable Lua
+        # Look for readable Lua source
         best = ""
         for chunk in decoded_chunks:
             try:
@@ -457,11 +457,10 @@ class WeAreDevsLifter(Transformer):
         return None
 
     def _build_char_map(self, source):
-        # Locate the 'b' table body using brace matching
         m = re.search(r'local\s+b\s*=\s*\{', source)
         if not m:
             return None
-        start = m.end() - 1  # position of '{'
+        start = m.end() - 1
         depth = 0
         end = -1
         for i in range(start, len(source)):
@@ -476,7 +475,6 @@ class WeAreDevsLifter(Transformer):
             return None
         body = source[start + 1:end]
 
-        # Split the body into individual assignments, while protecting parentheses
         assignments = []
         current = []
         paren_depth = 0
@@ -498,12 +496,10 @@ class WeAreDevsLifter(Transformer):
             if '=' not in assign:
                 continue
             kpart, vpart = assign.split('=', 1)
-            # Clean the key (remove quotes, brackets, whitespace)
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             expr = vpart.strip().replace(' ', '')
             try:
-                val = eval(expr) & 0x3F
-                cmap[key] = val
+                cmap[key] = eval(expr) & 0x3F
             except:
                 pass
 
@@ -517,10 +513,13 @@ class WeAreDevsLifter(Transformer):
         return re.findall(r'"([^"]*)"', raw)
 
     def _extract_shuffle_pairs(self, source):
+        # Remove parentheses around isolated numbers to allow uniform regex matching
+        cleaned = re.sub(r'\((-?\d+)\)', r'\1', source)
+
         pairs = []
         for a_s, b_s in re.findall(
             r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
-            source
+            cleaned
         ):
             try:
                 a = eval(a_s.replace(' ', ''))

@@ -376,98 +376,98 @@ class WeAreDevsLifter(Transformer):
         return code
 
     def _try_lift(self, source):
+        # Build the Base64 character map
         cmap = self._build_char_map(source)
         if not cmap:
             self.diagnostic = "Base64 table not found or incomplete."
             return None
-        if len(cmap) < 40:
+        if len(cmap) < 60:
             self.diagnostic = f"Base64 table has {len(cmap)} entries (needs 64)."
             return None
 
+        # Extract all strings from the N table
         strings = self._extract_n_strings(source)
         if not strings:
             self.diagnostic = "Constant table N not found."
             return None
 
+        # Extract shuffle pairs (must be exactly 3)
         pairs = self._extract_shuffle_pairs(source)
-        if pairs is None:
-            self.diagnostic = f"Found {len(pairs) if pairs else 0} shuffle pairs (expected 3)."
-            pairs = None
-        elif len(pairs) != 3:
-            self.diagnostic = f"Found {len(pairs)} shuffle pairs (expected 3)."
+        if pairs is None or len(pairs) != 3:
+            self.diagnostic = f"Shuffle pairs missing or wrong count (found {len(pairs) if pairs else 0}, need 3)."
             pairs = None
 
-        def attempt(reverse):
-            working = list(strings)
-            if pairs:
-                self._apply_shuffle(working, pairs, reverse=reverse)
-            decoded = []
-            for s in working:
-                buf = self._decode_b64(s, cmap)
-                if buf:
-                    decoded.append(buf)
-            if not decoded:
-                self.diagnostic = "All strings decoded to zero bytes – Base64 map is wrong."
-                return None
+        # Apply the shuffle in the correct order, then decode all strings
+        working = list(strings)
+        if pairs:
+            # The VM reverses the ranges in reverse order, so we must apply them in forward order
+            for a, b in pairs:
+                lo, hi = a - 1, b - 1
+                if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
+                    working[lo:hi + 1] = working[lo:hi + 1][::-1]
 
-            for chunk in decoded:
-                if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
-                    parser = Lua51Parser(chunk)
-                    func = parser.parse_function()
-                    return Lua51Decompiler(func).decompile()
+        decoded_chunks = []
+        for s in working:
+            buf = self._decode_b64(s, cmap)
+            if buf:
+                decoded_chunks.append(buf)
 
-            full = bytearray()
-            for c in decoded:
-                full.extend(c)
-            data = bytes(full)
+        if not decoded_chunks:
+            self.diagnostic = "All strings decoded to zero bytes – the Base64 map is incorrect."
+            return None
 
-            pos = data.find(b'\x1bLua')
-            if pos != -1 and pos + 5 <= len(data) and data[pos + 4] == 0x51:
-                bc = data[pos:]
-                parser = Lua51Parser(bc)
+        # Check each decoded chunk for Lua 5.1 bytecode
+        for chunk in decoded_chunks:
+            if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
+                parser = Lua51Parser(chunk)
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-            for chunk in decoded:
-                try:
-                    text = chunk.decode('utf-8', errors='replace')
-                    if len(text) > 50 and ('function' in text or 'local' in text or 'print' in text):
-                        return text
-                except:
-                    pass
+        # Concatenate all chunks and search for the Lua header
+        full = bytearray()
+        for c in decoded_chunks:
+            full.extend(c)
+        data = bytes(full)
+        pos = data.find(b'\x1bLua')
+        if pos != -1 and pos + 5 <= len(data) and data[pos + 4] == 0x51:
+            bc = data[pos:]
+            parser = Lua51Parser(bc)
+            func = parser.parse_function()
+            return Lua51Decompiler(func).decompile()
 
-            if len(data) > 0:
-                self.diagnostic = (
-                    f"Decoded {len(strings)} strings, {len(data)} bytes. "
-                    f"Shuffle pairs: {pairs}. "
-                    f"First 40 bytes (hex): {data[:40].hex()}. "
-                    f"First 40 bytes (ascii): {data[:40].decode('latin-1', errors='replace')}"
-                )
-            else:
-                self.diagnostic = f"Decoded {len(strings)} strings but produced zero bytes."
-            return None
+        # No bytecode found – return the longest chunk that looks like readable Lua
+        best = ""
+        for chunk in decoded_chunks:
+            try:
+                text = chunk.decode('utf-8', errors='replace')
+                if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text):
+                    best = text
+            except:
+                pass
 
-        result = attempt(False)
-        if result:
-            return result
-        result = attempt(True)
-        if result:
-            return result
+        if best:
+            return best
 
+        self.diagnostic = (
+            f"Decoded {len(strings)} strings, {len(data)} bytes total. "
+            f"Base64 map has {len(cmap)} entries. "
+            f"Shuffle pairs: {pairs}. "
+            f"First 40 bytes (hex): {data[:40].hex() if data else 'empty'}"
+        )
         return None
 
     def _build_char_map(self, source):
-        b_match = re.search(r'local\s+b\s*=\s*\{', source)
-        if not b_match:
+        # Locate the 'b' table body using brace matching
+        m = re.search(r'local\s+b\s*=\s*\{', source)
+        if not m:
             return None
-        start = b_match.end() - 1
+        start = m.end() - 1  # position of '{'
         depth = 0
         end = -1
         for i in range(start, len(source)):
-            ch = source[i]
-            if ch == '{':
+            if source[i] == '{':
                 depth += 1
-            elif ch == '}':
+            elif source[i] == '}':
                 depth -= 1
                 if depth == 0:
                     end = i
@@ -475,6 +475,8 @@ class WeAreDevsLifter(Transformer):
         if end == -1:
             return None
         body = source[start + 1:end]
+
+        # Split the body into individual assignments, while protecting parentheses
         assignments = []
         current = []
         paren_depth = 0
@@ -490,17 +492,21 @@ class WeAreDevsLifter(Transformer):
                 current.append(ch)
         if current:
             assignments.append(''.join(current).strip())
+
         cmap = {}
         for assign in assignments:
             if '=' not in assign:
                 continue
             kpart, vpart = assign.split('=', 1)
+            # Clean the key (remove quotes, brackets, whitespace)
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             expr = vpart.strip().replace(' ', '')
             try:
-                cmap[key] = eval(expr) & 0x3F
+                val = eval(expr) & 0x3F
+                cmap[key] = val
             except:
                 pass
+
         return cmap
 
     def _extract_n_strings(self, source):
@@ -524,13 +530,6 @@ class WeAreDevsLifter(Transformer):
             except:
                 pass
         return pairs if len(pairs) == 3 else None
-
-    def _apply_shuffle(self, lst, pairs, reverse=True):
-        order = reversed(pairs) if reverse else pairs
-        for a, b in order:
-            lo, hi = a - 1, b - 1
-            if 0 <= lo < len(lst) and 0 <= hi < len(lst) and lo < hi:
-                lst[lo:hi + 1] = lst[lo:hi + 1][::-1]
 
     def _decode_b64(self, s, cmap):
         buf = bytearray()

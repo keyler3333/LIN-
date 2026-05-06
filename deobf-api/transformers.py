@@ -428,12 +428,15 @@ class WeAreDevsLifter(Transformer):
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
 
+        # Look for readable Lua source among decoded chunks
         best = ""
         for chunk in decoded_chunks:
             try:
                 text = chunk.decode('utf-8', errors='replace')
-                if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text):
-                    best = text
+                printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t ')
+                if len(text) > 10 and (printable / max(len(text), 1)) > 0.6:
+                    if len(text) > len(best):
+                        best = text
             except:
                 pass
 
@@ -447,12 +450,15 @@ class WeAreDevsLifter(Transformer):
             except:
                 sample_strings.append(repr(chunk[:40]))
 
+        map_sample = dict(list(cmap.items())[:15])
+
         self.diagnostic = (
             f"Decoded {len(strings)} strings, {len(data)} bytes total. "
             f"Base64 map has {len(cmap)} entries. "
             f"Shuffle pairs: {pairs}. "
             f"First bytes (hex): {data[:40].hex() if data else 'empty'}. "
-            f"Sample chunks: {' | '.join(sample_strings)}"
+            f"Sample chunks: {' | '.join(sample_strings)}. "
+            f"Map sample: {map_sample}"
         )
         return None
 

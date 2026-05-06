@@ -376,7 +376,6 @@ class WeAreDevsLifter(Transformer):
         return code
 
     def _try_lift(self, source):
-        # Build the Base64 character map
         cmap = self._build_char_map(source)
         if not cmap:
             self.diagnostic = "Base64 table not found or incomplete."
@@ -385,19 +384,16 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = f"Base64 table has {len(cmap)} entries (needs 64)."
             return None
 
-        # Extract all strings from the N table
         strings = self._extract_n_strings(source)
         if not strings:
             self.diagnostic = "Constant table N not found."
             return None
 
-        # Extract shuffle pairs (must be exactly 3)
         pairs = self._extract_shuffle_pairs(source)
         if pairs is None or len(pairs) != 3:
             self.diagnostic = f"Shuffle pairs missing or wrong count (found {len(pairs) if pairs else 0}, need 3)."
             pairs = None
 
-        # Apply the shuffle in the *same direction* the VM uses to decode
         working = list(strings)
         if pairs:
             for a, b in pairs:
@@ -405,7 +401,6 @@ class WeAreDevsLifter(Transformer):
                 if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
                     working[lo:hi + 1] = working[lo:hi + 1][::-1]
 
-        # Decode all strings
         decoded_chunks = []
         for s in working:
             buf = self._decode_b64(s, cmap)
@@ -416,14 +411,12 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = "All strings decoded to zero bytes – the Base64 map is incorrect."
             return None
 
-        # Check each chunk for Lua 5.1 bytecode
         for chunk in decoded_chunks:
             if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                 parser = Lua51Parser(chunk)
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-        # Concatenate and search for header
         full = bytearray()
         for c in decoded_chunks:
             full.extend(c)
@@ -435,7 +428,6 @@ class WeAreDevsLifter(Transformer):
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
 
-        # Look for readable Lua source
         best = ""
         for chunk in decoded_chunks:
             try:
@@ -448,11 +440,19 @@ class WeAreDevsLifter(Transformer):
         if best:
             return best
 
+        sample_strings = []
+        for chunk in decoded_chunks[:5]:
+            try:
+                sample_strings.append(chunk.decode('latin-1', errors='replace')[:80])
+            except:
+                sample_strings.append(repr(chunk[:40]))
+
         self.diagnostic = (
             f"Decoded {len(strings)} strings, {len(data)} bytes total. "
             f"Base64 map has {len(cmap)} entries. "
             f"Shuffle pairs: {pairs}. "
-            f"First 40 bytes (hex): {data[:40].hex() if data else 'empty'}"
+            f"First bytes (hex): {data[:40].hex() if data else 'empty'}. "
+            f"Sample chunks: {' | '.join(sample_strings)}"
         )
         return None
 
@@ -513,9 +513,7 @@ class WeAreDevsLifter(Transformer):
         return re.findall(r'"([^"]*)"', raw)
 
     def _extract_shuffle_pairs(self, source):
-        # Remove parentheses around isolated numbers to allow uniform regex matching
         cleaned = re.sub(r'\((-?\d+)\)', r'\1', source)
-
         pairs = []
         for a_s, b_s in re.findall(
             r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',

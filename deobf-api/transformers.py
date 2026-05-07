@@ -367,19 +367,24 @@ class Lua51Decompiler:
 class WeAreDevsLifter(Transformer):
     def __init__(self):
         self.diagnostic = ""
+        self.stage = ""
 
     def transform(self, code):
         self.diagnostic = ""
+        self.stage = ""
         try:
             lifted = self._try_lift(code)
         except Exception as e:
-            self.diagnostic = f"Lifter crashed: {e}"
+            self.diagnostic = f"Lifter crashed at stage '{self.stage}': {e}"
             return code
         if lifted and isinstance(lifted, str) and len(lifted) > 10:
             return lifted
+        if not self.diagnostic:
+            self.diagnostic = "Lifter returned no result but did not set a diagnostic."
         return code
 
     def _try_lift(self, source):
+        self.stage = "building Base64 map"
         cmap = self._build_char_map(source)
         if not cmap:
             self.diagnostic = "Base64 table not found or incomplete."
@@ -388,16 +393,19 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = f"Base64 table has {len(cmap)} entries (needs 64)."
             return None
 
+        self.stage = "extracting N strings"
         strings = self._extract_n_strings(source)
         if not strings:
             self.diagnostic = "Constant table N not found."
             return None
 
+        self.stage = "extracting shuffle pairs"
         pairs = self._extract_shuffle_pairs(source)
         if pairs is None or len(pairs) != 3:
             self.diagnostic = f"Shuffle pairs missing or wrong count (found {len(pairs) if pairs else 0}, need 3)."
             pairs = None
 
+        self.stage = "decoding strings"
         working = list(strings)
         if pairs:
             for a, b in pairs:
@@ -415,6 +423,7 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = "All strings decoded to zero bytes – the Base64 map is incorrect."
             return None
 
+        self.stage = "looking for bytecode or source"
         for chunk in decoded_chunks:
             if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                 parser = Lua51Parser(chunk)
@@ -522,91 +531,22 @@ class WeAreDevsLifter(Transformer):
         return re.findall(r'"([^"]*)"', raw)
 
     def _extract_shuffle_pairs(self, source):
-        # Locate the for loop: for V,d in ipairs({{...},{...},{...}})
-        idx = source.find('for V,d in ipairs(')
-        if idx == -1:
-            idx = source.find('for V,d in ipairs(')
-        if idx == -1:
-            return None
-
-        # Find the opening double brace
-        brace_start = source.find('{{', idx)
-        if brace_start == -1:
-            return None
-
-        # Find the matching closing double brace
-        depth = 0
-        end = -1
-        for i in range(brace_start, len(source)):
-            if source[i] == '{':
-                depth += 1
-            elif source[i] == '}':
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
-        if end == -1:
-            return None
-
-        # Extract the content between the outer braces
-        content = source[brace_start + 1:end]  # remove outer '{'
-
-        # Split into three pairs by finding each inner {...}
-        pairs_list = []
-        depth = 0
-        start_inner = 0
-        for i, ch in enumerate(content):
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    inner = content[start_inner:i + 1]
-                    # Remove outer braces and split by , or ;
-                    inner_body = inner[1:-1]
-                    parts = re.split(r'[;,]', inner_body)
-                    if len(parts) == 2:
-                        try:
-                            a = eval(parts[0].replace(' ', ''))
-                            b = eval(parts[1].replace(' ', ''))
-                            pairs_list.append((a, b))
-                        except:
-                            pass
-                    # Move to next after the comma/semicolon separator
-                    start_inner = i + 1
-                elif source[start_inner + brace_start + 1] == ',':
-                    start_inner += 1
-
-        # Simple manual extraction: split content by '},{' but careful with nested braces (none here)
-        # Actually easier: manually parse the three known pairs
-        # Let's just use the regex with cleaned parentheses and handle double negative manually.
-        # Fallback: compute known pairs from the obfuscator: always [1,102],[1,58],[59,102]
-        # We can hardcode if extraction fails.
-        if len(pairs_list) != 3:
-            # Attempt the old method with fix for double negative
-            cleaned = source
-            # remove parentheses around numbers
-            cleaned = re.sub(r'\((-?\d+)\)', r'\1', cleaned)
-            pairs = []
-            for a_s, b_s in re.findall(
-                r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
-                cleaned
-            ):
-                try:
-                    # handle double negative by converting '--' to '+'
-                    a_s = a_s.replace('--', '+')
-                    b_s = b_s.replace('--', '+')
-                    a = eval(a_s.replace(' ', ''))
-                    b = eval(b_s.replace(' ', ''))
-                    if a > 0 and b > 0:
-                        pairs.append((a, b))
-                except:
-                    pass
-            if len(pairs) == 3:
-                return pairs
-            return None
-
-        return pairs_list
+        cleaned = re.sub(r'\((-?\d+)\)', r'\1', source)
+        pairs = []
+        for a_s, b_s in re.findall(
+            r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
+            cleaned
+        ):
+            try:
+                a_s = a_s.replace('--', '+')
+                b_s = b_s.replace('--', '+')
+                a = eval(a_s.replace(' ', ''))
+                b = eval(b_s.replace(' ', ''))
+                if a > 0 and b > 0:
+                    pairs.append((a, b))
+            except:
+                pass
+        return pairs if len(pairs) == 3 else None
 
     def _decode_b64(self, s, cmap):
         buf = bytearray()

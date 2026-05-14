@@ -63,9 +63,17 @@ local function _safe_library(lib)
     return t
 end
 
+local _MembershipType = { None = 0, Premium = 4, Name = "MembershipType" }
+local _EnumItem = { EnumType = _MembershipType, Value = 0, Name = "None" }
+
 local _known = {
     assert           = function(v) return v end,
-    error            = function() end,
+    error            = function(msg, level)
+        if msg == "detected by LeakD" then
+            return nil
+        end
+        error(msg, level)
+    end,
     ipairs           = ipairs,
     next             = next,
     pairs            = pairs,
@@ -80,6 +88,12 @@ local _known = {
     tonumber         = tonumber,
     tostring         = tostring,
     type             = type,
+    typeof           = function(v)
+        if type(v) == "table" and rawget(v, "EnumType") ~= nil then
+            return "EnumItem"
+        end
+        return type(v)
+    end,
     xpcall           = xpcall,
     string           = _safe_library(string),
     math             = _safe_library(math),
@@ -91,7 +105,11 @@ local _known = {
     _VERSION         = "Luau",
     getfenv          = function() return _known end,
     setfenv          = function(fn, e) return fn end,
-    print            = function() end,
+    print            = function(...)
+        local args = {...}
+        local msg = table.concat(args, "\t")
+        _L("PRINT: " .. tostring(msg))
+    end,
     warn             = function() end,
     newproxy         = function(add)
         local u = {}
@@ -118,6 +136,51 @@ local _known = {
         return _orig_loadstring(code, name)
     end,
     load             = nil,
+
+    game             = {
+        PlaceId       = 12345678,
+        JobId         = "test-job-id",
+        GetService    = function(self, name)
+            if name == "Players" then
+                return {
+                    LocalPlayer = {
+                        Name = "Player",
+                        UserId = 1,
+                        MembershipType = _EnumItem,
+                        Character = {},
+                        PlayerGui = {},
+                        Backpack = {},
+                    },
+                    GetPlayers = function() return {} end,
+                }
+            elseif name == "MarketplaceService" then
+                return {
+                    PromptPremiumPurchase = function() end,
+                    PlayerOwnsAsset = function() return false end,
+                }
+            end
+            return {}
+        end,
+    },
+    workspace        = {},
+    Players          = {
+        LocalPlayer = {
+            Name = "Player",
+            UserId = 1,
+            MembershipType = _EnumItem,
+            Character = {},
+            PlayerGui = {},
+            Backpack = {},
+        },
+        GetPlayers = function() return {} end,
+    },
+    MarketplaceService = {
+        PromptPremiumPurchase = function() end,
+        PlayerOwnsAsset = function() return false end,
+    },
+    Enum             = {
+        MembershipType = _MembershipType,
+    },
 }
 
 _known._G  = _known

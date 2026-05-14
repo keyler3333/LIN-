@@ -6,6 +6,7 @@ import shutil
 
 LUA_BIN = shutil.which('lua5.1') or shutil.which('lua51') or shutil.which('lua') or 'lua'
 RUNTIME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sandbox_runtime.lua')
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _lua_str(path):
@@ -39,6 +40,12 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         with open(drv, 'w', encoding='utf-8') as f:
             f.write(driver)
 
+        env = os.environ.copy()
+        current_lua_path = env.get('LUA_PATH', '')
+        app_lua_path = os.path.join(APP_DIR, '?.lua')
+        if app_lua_path not in current_lua_path:
+            env['LUA_PATH'] = app_lua_path + ';' + current_lua_path
+
         try:
             subprocess.run(
                 [LUA_BIN, drv],
@@ -46,6 +53,7 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
                 text=True,
                 timeout=timeout,
                 cwd=d,
+                env=env,
             )
         except Exception:
             pass

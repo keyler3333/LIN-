@@ -1,3 +1,5 @@
+package.path = package.path .. ";" .. (os.getenv("APP_DIR") or ".") .. "/?.lua"
+
 local _out = "OUTDIR_PLACEHOLDER"
 local _inp = "INPATH_PLACEHOLDER"
 local _cap, _log, _step = {}, {}, 0

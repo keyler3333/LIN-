@@ -32,9 +32,19 @@ local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char  = string.char
 
+local _proxy = require("proxy")
+local _proxy_meta = require("proxy_meta")
+local _scope = require("scope")
+local _identity = require("identity")
+
+local _global_scope = _scope.new(_L)
+
 rawset = function(t, k, v)
     if type(v) == "string" and #v > 1 then
         _capture(v)
+    end
+    if type(v) == "table" then
+        v = _proxy(v, "N[" .. tostring(k) .. "]", _L)
     end
     return _orig_rawset(t, k, v)
 end
@@ -186,16 +196,24 @@ local _known = {
 _known._G  = _known
 _known.load = _known.loadstring
 
+for name, value in pairs(_known) do
+    _global_scope:set(name, value)
+end
+
 local _env_mt = {
     __index = function(_, k)
         local v = rawget(_known, k)
         if v ~= nil then
             return v
         end
-        error("MISSING_GLOBAL: " .. tostring(k), 0)
+        local wrapped = _proxy({}, k, _L)
+        rawset(_known, k, wrapped)
+        _global_scope:set(k, wrapped)
+        return wrapped
     end,
     __newindex = function(_, k, v)
         rawset(_known, k, v)
+        _global_scope:set(k, v)
     end,
 }
 
@@ -228,6 +246,7 @@ else
             if type(res) == "string" and #res > 1 then
                 _capture(res)
             elseif type(res) == "function" then
+                _L("FUNCTION IDENTITY: " .. _identity.get_signature(res))
                 local ok2, bc = _orig_pcall(string.dump, res)
                 if ok2 then
                     local df = io.open(_out .. "/dump.bin", "wb")

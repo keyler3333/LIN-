@@ -16,6 +16,10 @@ local _orig_loadstring = loadstring
 local _orig_pcall = pcall
 local _orig_xpcall = xpcall
 
+local function _repair_malformed(code)
+    return (tostring(code or "")):gsub("(%d)([a-zA-Z_])", "%1 %2")
+end
+
 local function _hooked_loadstring(code, name)
     if type(code) == "function" then
         local parts = {}
@@ -28,6 +32,7 @@ local function _hooked_loadstring(code, name)
         code = table.concat(parts)
     end
     if type(code) == "string" and #code > 5 then
+        code = _repair_malformed(code)
         _L("LOADSTRING captured " .. #code .. " bytes")
         local f = io.open(_out .. "/layer_1.lua", "w")
         if f then f:write(code) f:close() end
@@ -104,11 +109,6 @@ local env = {
     Players = { LocalPlayer = { Name = "Player", UserId = 1 }, GetPlayers = function() return {} end },
     MarketplaceService = { PromptPremiumPurchase = function() end },
     Enum = { MembershipType = { None = 0, Premium = 4 } },
-    __LARRY_WRAP_DEFINED_FUNCTION = function(fn, snippet, name, name_list, value_map)
-        _L("WRAP_FUNCTION: " .. tostring(name))
-        FunctionTracer.wrap(fn, name, _L)
-        return fn
-    end,
 }
 
 env._G = env
@@ -120,6 +120,8 @@ if not fh then
 else
     local source = fh:read("*a")
     fh:close()
+
+    source = _repair_malformed(source)
 
     local chunk, err = _orig_loadstring(source, "@input")
     if not chunk then

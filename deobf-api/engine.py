@@ -4,7 +4,10 @@ from transformers import (
     EscapeSequenceTransformer,
     MathTransformer,
     HexNameRenamer,
+    Lua51Parser,
+    Lua51Decompiler,
 )
+from sandbox import execute_sandbox
 
 
 GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
@@ -41,12 +44,50 @@ class DeobfEngine:
         if current != source and self._looks_decoded(current):
             return self._beautify(current), 'static_lift', 'Successfully deobfuscated'
 
-        diag = self.lifter.diagnostic or 'Unknown error – no diagnostic available.'
+        layers, captures, diag = execute_sandbox(current, timeout=90)
+
+        for cap in captures:
+            for offset in range(len(cap)):
+                if cap[offset:offset+4] == '\x1bLua':
+                    if offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
+                        bc = cap[offset:].encode('latin-1')
+                        lifted = self._lift_bc(bc)
+                        if lifted:
+                            return self._beautify(lifted), 'sandbox_bytecode', 'Bytecode captured via sandbox'
+
+        for item in layers:
+            if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
+                lifted = self._lift_bc(item)
+                if lifted:
+                    return self._beautify(lifted), 'sandbox_dump', 'Decompiled from bytecode dump'
+
+        best = ''
+        for cap in captures:
+            if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
+                best = cap
+
+        if best:
+            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
+
+        for layer in layers:
+            if isinstance(layer, str) and len(layer) > 50:
+                if 'function' in layer or 'local' in layer or 'print' in layer:
+                    return self._beautify(layer), 'sandbox_layer', 'Layer captured'
+
+        reason = diag if diag else 'Sandbox produced no output and no errors were logged.'
         if GROQ_AVAILABLE and GROQ_KEY:
-            ai_note = self._ai_analysis(source, diag)
+            ai_note = self._ai_analysis(source, reason)
             if ai_note:
-                diag = f"{diag}\n\n--- AI Analysis ---\n{ai_note}"
-        return source, 'unable', diag
+                reason = f"{reason}\n\n--- AI Analysis ---\n{ai_note}"
+        return source, 'unable', reason
+
+    def _lift_bc(self, bc):
+        try:
+            parser = Lua51Parser(bc)
+            func = parser.parse_function()
+            return Lua51Decompiler(func).decompile()
+        except Exception:
+            return None
 
     @staticmethod
     def _looks_decoded(code):

@@ -10,7 +10,7 @@ local _orig_debug = debug
 
 debug.sethook(function()
     _step = _step + 1000
-    if _step > 80000000 then
+    if _step > 50000000 then
         _L("STEP_LIMIT")
         error("__LIMIT__")
     end
@@ -21,7 +21,7 @@ local function _capture(v)
     if type(v) == "string" and #v > 1 and not _captured[v] then
         _captured[v] = true
         _cap[#_cap+1] = v
-        _L("CAPTURED " .. #v .. " bytes: " .. string.sub(v, 1, 40):gsub("%c","."))
+        _L("CAPTURED " .. #v .. " bytes: " .. string.sub(v, 1, 80):gsub("%c","."))
     end
 end
 
@@ -32,47 +32,10 @@ local _orig_rawset       = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char  = string.char
 
-local _safe_mt = {
-    __index = function(t, k)
-        local child = setmetatable({}, _safe_mt)
-        rawset(t, k, child)
-        return child
-    end,
-    __call = function() return setmetatable({}, _safe_mt) end,
-    __add = function() return 0 end,
-    __sub = function() return 0 end,
-    __mul = function() return 0 end,
-    __div = function() return 0 end,
-    __mod = function() return 0 end,
-    __pow = function() return 0 end,
-    __unm = function() return 0 end,
-    __len = function() return 0 end,
-    __lt = function() return false end,
-    __le = function() return true end,
-    __eq = function() return false end,
-    __concat = function(a, b) return tostring(a) .. tostring(b) end,
-    __tostring = function() return "0" end,
-}
-
-function _protect(t)
-    if type(t) == "table" and getmetatable(t) == nil then
-        setmetatable(t, _safe_mt)
-    end
-    return t
-end
-
-rawget = function(t, k)
-    if type(t) ~= "table" then
-        return nil
-    end
-    return (rawget or _G.rawget)(t, k)
-end
-
 rawset = function(t, k, v)
     if type(v) == "string" and #v > 1 then
         _capture(v)
     end
-    v = _protect(v)
     return _orig_rawset(t, k, v)
 end
 
@@ -92,88 +55,88 @@ string.char = function(...)
     return r
 end
 
-local function _safe()
-    return setmetatable({}, _safe_mt)
-end
-
 local function _safe_library(lib)
     local t = {}
     for k, v in pairs(lib) do
         t[k] = v
     end
-    return setmetatable(t, {
-        __index = function(_, k)
-            return _safe()
-        end,
-    })
+    return t
 end
 
-local env = setmetatable({}, {
+local _known = {
+    assert           = function(v) return v end,
+    error            = function() end,
+    ipairs           = ipairs,
+    next             = next,
+    pairs            = pairs,
+    pcall            = pcall,
+    rawequal         = rawequal,
+    rawget           = rawget,
+    rawlen           = rawlen,
+    rawset           = rawset,
+    select           = select,
+    setmetatable     = setmetatable,
+    getmetatable     = getmetatable,
+    tonumber         = tonumber,
+    tostring         = tostring,
+    type             = type,
+    xpcall           = xpcall,
+    string           = _safe_library(string),
+    math             = _safe_library(math),
+    table            = _safe_library(table),
+    os               = _safe_library(os),
+    coroutine        = _safe_library(coroutine),
+    debug            = debug,
+    _G               = nil,
+    _VERSION         = "Luau",
+    getfenv          = function() return _known end,
+    setfenv          = function(fn, e) return fn end,
+    print            = function() end,
+    warn             = function() end,
+    newproxy         = function(add)
+        local u = {}
+        if add then setmetatable(u, {}) end
+        return u
+    end,
+    loadstring       = function(code, name)
+        if type(code) == "function" then
+            local parts = {}
+            while true do
+                local p = code()
+                if not p then break end
+                if type(p) == "string" then parts[#parts+1] = p end
+                if #parts > 5000 then break end
+            end
+            code = table.concat(parts)
+        end
+        if type(code) == "string" and #code > 1 then
+            _capture(code)
+            local f = io.open(_out .. "/layer_1.lua", "w")
+            if f then f:write(code) f:close() end
+            _L("LOADSTRING " .. #code .. " bytes")
+        end
+        return _orig_loadstring(code, name)
+    end,
+    load             = nil,
+}
+
+_known._G  = _known
+_known.load = _known.loadstring
+
+local _env_mt = {
     __index = function(_, k)
-        local v = rawget(env, k)
+        local v = rawget(_known, k)
         if v ~= nil then
             return v
         end
-        return _safe()
+        error("MISSING_GLOBAL: " .. tostring(k), 0)
     end,
     __newindex = function(_, k, v)
-        rawset(env, k, _protect(v))
+        rawset(_known, k, v)
     end,
-})
+}
 
-rawset(env, "_G", env)
-rawset(env, "_VERSION", "Luau")
-rawset(env, "assert", function(v) return v end)
-rawset(env, "error", function() end)
-rawset(env, "ipairs", ipairs)
-rawset(env, "next", next)
-rawset(env, "pairs", pairs)
-rawset(env, "pcall", pcall)
-rawset(env, "rawequal", rawequal)
-rawset(env, "rawget", rawget)
-rawset(env, "rawlen", rawlen)
-rawset(env, "rawset", rawset)
-rawset(env, "select", select)
-rawset(env, "setmetatable", setmetatable)
-rawset(env, "getmetatable", getmetatable)
-rawset(env, "tonumber", tonumber)
-rawset(env, "tostring", tostring)
-rawset(env, "type", type)
-rawset(env, "xpcall", xpcall)
-rawset(env, "string", _safe_library(string))
-rawset(env, "math", _safe_library(math))
-rawset(env, "table", _safe_library(table))
-rawset(env, "os", _safe_library(os))
-rawset(env, "coroutine", _safe_library(coroutine))
-rawset(env, "debug", _orig_debug)
-rawset(env, "getfenv", function() return env end)
-rawset(env, "setfenv", function(fn, e) return fn end)
-rawset(env, "print", function() end)
-rawset(env, "warn", function() end)
-rawset(env, "newproxy", function(add)
-    local u = {}
-    setmetatable(u, _safe_mt)
-    return u
-end)
-rawset(env, "loadstring", function(code, name)
-    if type(code) == "function" then
-        local parts = {}
-        while true do
-            local p = code()
-            if not p then break end
-            if type(p) == "string" then parts[#parts+1] = p end
-            if #parts > 5000 then break end
-        end
-        code = table.concat(parts)
-    end
-    if type(code) == "string" and #code > 1 then
-        _capture(code)
-        local f = io.open(_out .. "/layer_1.lua", "w")
-        if f then f:write(code) f:close() end
-    end
-    return _orig_loadstring(code, name)
-end)
-rawset(env, "load", rawget(env, "loadstring"))
+local env = setmetatable({}, _env_mt)
 
 local fh = io.open(_inp, "r")
 if not fh then
@@ -209,11 +172,6 @@ else
                     _L("DUMPED " .. #bc .. " bytes")
                 else
                     _L("DUMP FAILED: " .. tostring(bc))
-                end
-                local ok3, ret = _orig_xpcall(res, error_handler)
-                _L("VM RETURNED: ok=" .. tostring(ok3) .. " ret=" .. tostring(ret):sub(1, 200))
-                if type(ret) == "string" and #ret > 1 then
-                    _capture(ret)
                 end
             end
         end

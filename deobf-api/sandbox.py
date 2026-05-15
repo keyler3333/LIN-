@@ -14,7 +14,6 @@ def _lua_str(path):
 
 
 def _repair_malformed(source):
-    """Fix number-to-identifier issues like '1function' -> '1 function'"""
     return re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', source)
 
 
@@ -28,7 +27,6 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         inp = os.path.join(d, 'input.lua')
         drv = os.path.join(d, 'driver.lua')
 
-        # FIXED: Write as raw bytes to preserve all characters
         with open(inp, 'wb') as f:
             f.write(source.encode('latin-1', errors='replace'))
 

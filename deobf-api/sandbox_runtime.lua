@@ -36,18 +36,19 @@ end
 loadstring = _hooked_loadstring
 load = _hooked_loadstring
 
-local fh = io.open(_inp, "r")
+local fh = io.open(_inp, "rb")
 if not fh then
     _L("cannot open input")
 else
     local source = fh:read("*a")
     fh:close()
 
-    _L("RAW source first 500 bytes: " .. string.sub(source, 1, 500):gsub("%c", "."))
+    _L("File size: " .. #source .. " bytes")
+    _L("First 200 bytes (hex): " .. string.sub(source, 1, 200):gsub(".", function(c)
+        return string.format("%02X ", string.byte(c))
+    end))
 
     source = _repair_malformed(source)
-
-    _L("REPAIRED source first 500 bytes: " .. string.sub(source, 1, 500):gsub("%c", "."))
 
     local chunk, err = _orig_loadstring(source, "@input")
     if not chunk then

@@ -43,7 +43,11 @@ else
     local source = fh:read("*a")
     fh:close()
 
+    _L("RAW source first 500 bytes: " .. string.sub(source, 1, 500):gsub("%c", "."))
+
     source = _repair_malformed(source)
+
+    _L("REPAIRED source first 500 bytes: " .. string.sub(source, 1, 500):gsub("%c", "."))
 
     local chunk, err = _orig_loadstring(source, "@input")
     if not chunk then

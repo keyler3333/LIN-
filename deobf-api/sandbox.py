@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import tempfile
 import shutil
@@ -20,8 +21,8 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         inp = os.path.join(d, 'input.lua')
         drv = os.path.join(d, 'driver.lua')
 
-        with open(inp, 'w', encoding='utf-8') as f:
-            f.write(source)
+        with open(inp, 'wb') as f:
+            f.write(source.encode('latin-1', errors='replace'))
 
         with open(RUNTIME_PATH, 'r', encoding='utf-8') as f:
             runtime = f.read()
@@ -67,13 +68,6 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
                 bc = f.read()
             if bc[:4] == b'\x1bLua':
                 layers.append(bc)
-
-        output_path = os.path.join(d, 'output.lua')
-        if os.path.exists(output_path):
-            with open(output_path, encoding='utf-8', errors='replace') as f:
-                output_content = f.read()
-            if output_content.strip():
-                layers.append(output_content)
 
         caps = []
         capf = os.path.join(d, 'cap.txt')

@@ -13,14 +13,22 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def _repair_malformed(source):
+    """Fix number-to-identifier issues like '1function' -> '1 function'"""
+    return re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', source)
+
+
 def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
+
+    source = _repair_malformed(source)
 
     with tempfile.TemporaryDirectory() as d:
         inp = os.path.join(d, 'input.lua')
         drv = os.path.join(d, 'driver.lua')
 
+        # FIXED: Write as raw bytes to preserve all characters
         with open(inp, 'wb') as f:
             f.write(source.encode('latin-1', errors='replace'))
 

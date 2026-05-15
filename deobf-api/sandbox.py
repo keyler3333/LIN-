@@ -13,6 +13,13 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def _unescape_lua(source):
+    def repl(m):
+        val = int(m.group(1))
+        return chr(val) if val < 256 else m.group(0)
+    return re.sub(r'\\(\d{1,3})', repl, source)
+
+
 def _repair_malformed(source):
     return re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', source)
 
@@ -21,6 +28,7 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 
+    source = _unescape_lua(source)
     source = _repair_malformed(source)
 
     with tempfile.TemporaryDirectory() as d:

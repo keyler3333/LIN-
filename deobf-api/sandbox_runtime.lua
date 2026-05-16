@@ -31,10 +31,6 @@ local function _write_capture(data)
     end
 end
 
-local function _repair_malformed(code)
-    return (tostring(code or "")):gsub("(%d)([a-zA-Z_])", "%1 %2")
-end
-
 do
     local ok, err = pcall(function()
         debug.sethook(function()
@@ -71,8 +67,7 @@ table.concat = function(t, sep, i, j)
 end
 
 string.char = function(...)
-    local r = _orig_string_char(...)
-    return r
+    return _orig_string_char(...)
 end
 
 local function _hooked_loadstring(code, name)
@@ -87,7 +82,6 @@ local function _hooked_loadstring(code, name)
         code = table.concat(parts)
     end
     if type(code) == "string" and #code > 5 then
-        code = _repair_malformed(code)
         _write_layer(code)
     end
     return _orig_loadstring(code, name)
@@ -95,6 +89,24 @@ end
 
 loadstring = _hooked_loadstring
 load = _hooked_loadstring
+
+local function _dummy()
+    return function() end
+end
+
+local _roproxy = {}
+local _roproxy_mt = {
+    __index = function(_, k)
+        local v = rawget(_roproxy, k)
+        if v ~= nil then return v end
+        v = _dummy()
+        rawset(_roproxy, k, v)
+        return v
+    end,
+    __call = _dummy,
+    __newindex = function(_, k, v) rawset(_roproxy, k, v) end,
+    __gc = function() end,
+}
 
 local _safe_env = {
     assert = assert,
@@ -137,7 +149,14 @@ local _safe_env = {
     },
     table = {
         concat = table.concat, insert = table.insert,
-        maxn = function(t) return #t end, remove = table.remove, sort = table.sort,
+        maxn = function(t)
+            local n = 0
+            for k in pairs(t) do
+                if type(k) == "number" and k > n then n = k end
+            end
+            return n
+        end,
+        remove = table.remove, sort = table.sort,
         unpack = _orig_unpack or function(t, i, j) return t[i], t[i+1], t[i+2] end,
     },
     os = { clock = os.clock, date = os.date, difftime = os.difftime, time = os.time },
@@ -151,34 +170,39 @@ local _safe_env = {
     getfenv = function(f) return _safe_env end,
     setfenv = function(f, e) return f end,
     newproxy = function(add)
-        local u = _orig_newproxy(true)
+        local u = _orig_newproxy(add)
         if add then
             local mt = getmetatable(u)
             if mt then mt.__gc = function() end end
         end
         return u
     end,
-    game = {
+    game = setmetatable({
         PlaceId = 12345678,
         JobId = "00000000-0000-0000-0000-000000000000",
-        GetService = function(self, name) return _safe_env[name] or {} end,
-    },
-    workspace = {},
-    Players = {
-        LocalPlayer = {
-            Name = "Player", UserId = 1, Character = {},
-            PlayerGui = {}, Backpack = {},
-        },
+        GetService = function(_, name) return setmetatable({}, _roproxy_mt) end,
+    }, _roproxy_mt),
+    workspace = setmetatable({}, _roproxy_mt),
+    Players = setmetatable({
+        LocalPlayer = setmetatable({
+            Name = "Player", UserId = 1, Character = setmetatable({}, _roproxy_mt),
+            PlayerGui = setmetatable({}, _roproxy_mt), Backpack = setmetatable({}, _roproxy_mt),
+        }, _roproxy_mt),
         GetPlayers = function() return {} end,
-    },
-    MarketplaceService = {}, ReplicatedStorage = {},
-    ServerStorage = {}, ServerScriptService = {}, Lighting = {},
-    StarterGui = {}, StarterPack = {}, SoundService = {},
-    HttpService = {
+    }, _roproxy_mt),
+    MarketplaceService = setmetatable({}, _roproxy_mt),
+    ReplicatedStorage = setmetatable({}, _roproxy_mt),
+    ServerStorage = setmetatable({}, _roproxy_mt),
+    ServerScriptService = setmetatable({}, _roproxy_mt),
+    Lighting = setmetatable({}, _roproxy_mt),
+    StarterGui = setmetatable({}, _roproxy_mt),
+    StarterPack = setmetatable({}, _roproxy_mt),
+    SoundService = setmetatable({}, _roproxy_mt),
+    HttpService = setmetatable({
         GetAsync = function() return "" end,
         PostAsync = function() return "" end,
-    },
-    Enum = {},
+    }, _roproxy_mt),
+    Enum = setmetatable({}, _roproxy_mt),
 }
 
 _safe_env._G = _safe_env
@@ -189,7 +213,7 @@ local _env_mt = {
         local v = rawget(_safe_env, k)
         if v ~= nil then return v end
         _L("MISSING: " .. tostring(k))
-        return {}
+        return setmetatable({}, _roproxy_mt)
     end,
     __newindex = function(t, k, v)
         rawset(_safe_env, k, v)
@@ -210,7 +234,6 @@ else
         _write_file(_out .. "/error.txt", "cannot read input")
     else
         _L("SIZE: " .. #source .. " bytes")
-        source = _repair_malformed(source)
         local chunk, parse_err = _orig_loadstring(source, "@input")
         if not chunk then
             _L("PARSE: " .. tostring(parse_err))

@@ -13,11 +13,15 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def _unescape_lua(source):
-    def repl(m):
-        val = int(m.group(1))
-        return chr(val) if val < 256 else m.group(0)
-    return re.sub(r'\\(\d{1,3})', repl, source)
+def _escape_to_byte(match):
+    val = int(match.group(1))
+    return chr(val) if val < 256 else match.group(0)
+
+
+def _fix_lua_source(source):
+    source = re.sub(r'\\(\d{1,3})', _escape_to_byte, source)
+    source = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), source)
+    return source
 
 
 def _repair_malformed(source):
@@ -28,7 +32,7 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
 
-    source = _unescape_lua(source)
+    source = _fix_lua_source(source)
     source = _repair_malformed(source)
 
     with tempfile.TemporaryDirectory() as d:
@@ -36,7 +40,7 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         drv = os.path.join(d, 'driver.lua')
 
         with open(inp, 'wb') as f:
-            f.write(source.encode('latin-1', errors='replace'))
+            f.write(source.encode('latin-1'))
 
         with open(RUNTIME_PATH, 'r', encoding='utf-8') as f:
             runtime = f.read()

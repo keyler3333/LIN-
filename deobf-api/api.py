@@ -1,6 +1,7 @@
 import os
 import re
 import struct
+import base64
 from flask import Flask, request, jsonify
 from engine import DeobfEngine
 
@@ -14,13 +15,28 @@ def health():
 @app.route('/deobf', methods=['POST'])
 def deobf():
     data = request.get_json(silent=True)
-    if not data or not data.get('source', '').strip():
-        return jsonify({'error': 'No source provided'}), 400
-    source = data['source']
-    if len(source) > 4 * 1024 * 1024:
-        return jsonify({'error': 'Source exceeds 4MB limit'}), 413
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    source_b64 = data.get('source_b64', '')
+    if not source_b64:
+        return jsonify({'error': 'No source_b64 provided'}), 400
+
     try:
-        result, obf_type, diag = engine.process(source)
+        raw_bytes = base64.b64decode(source_b64)
+    except Exception:
+        return jsonify({'error': 'Invalid base64 data'}), 400
+
+    if len(raw_bytes) > 4 * 1024 * 1024:
+        return jsonify({'error': 'Source exceeds 4MB limit'}), 413
+
+    # Build a string where each character's code point is the same as the
+    # original byte value (0–255).  This is safe because we never attempt
+    # to interpret the string as text – it's only used to write the file.
+    source_str = ''.join(chr(b) for b in raw_bytes)
+
+    try:
+        result, obf_type, diag = engine.process(source_str)
         return jsonify({'result': result, 'detected': obf_type, 'diagnostic': diag})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

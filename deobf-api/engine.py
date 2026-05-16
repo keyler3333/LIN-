@@ -74,6 +74,11 @@ class DeobfEngine:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
                     return self._beautify(layer), 'sandbox_layer', 'Layer captured'
 
+        if self.lifter.diagnostic and 'Decoded' in self.lifter.diagnostic:
+            lifted = self.lifter._try_lift(source)
+            if lifted and self._looks_decoded(lifted):
+                return self._beautify(lifted), 'static_lift_fallback', 'Static lifter succeeded after sandbox'
+
         reason = diag if diag else 'Sandbox produced no output and no errors were logged.'
         if GROQ_AVAILABLE and GROQ_KEY:
             ai_note = self._ai_analysis(source, reason)

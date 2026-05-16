@@ -1,9 +1,5 @@
 import os
-from transformers import (
-    WeAreDevsLifter,
-    Lua51Parser,
-    Lua51Decompiler,
-)
+from transformers import WeAreDevsLifter, Lua51Parser, Lua51Decompiler
 from sandbox import execute_sandbox
 
 GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
@@ -27,7 +23,7 @@ class DeobfEngine:
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Static lifter extracted readable source'
 
-        lifter_diag = self.lifter.diagnostic
+        lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 

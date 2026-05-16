@@ -32,8 +32,6 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         inp = os.path.join(temp_dir, 'input.lua')
         drv = os.path.join(temp_dir, 'driver.lua')
 
-        # source is guaranteed to be a string where each character has ord < 256
-        # (built from raw bytes in api.py). Still, we protect against rare cases.
         try:
             raw_bytes = bytes((min(ord(c), 255) for c in source))
             with open(inp, 'wb') as f:

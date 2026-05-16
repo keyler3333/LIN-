@@ -1,3 +1,6 @@
+import os
+import re
+import struct
 from flask import Flask, request, jsonify
 from engine import DeobfEngine
 
@@ -16,8 +19,48 @@ def deobf():
     if len(data['source'].encode()) > 4 * 1024 * 1024:
         return jsonify({'error': 'Source exceeds 4MB limit'}), 413
     try:
-        result, obf_type, diag = engine.process(data['source'])
+        source = data['source']
+        if isinstance(source, bytes):
+            source = ''.join(chr(b) for b in source)
+        result, obf_type, diag = engine.process(source)
         return jsonify({'result': result, 'detected': obf_type, 'diagnostic': diag})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/debug_b64', methods=['POST'])
+def debug_b64():
+    data = request.get_json(silent=True)
+    if not data or not data.get('source', '').strip():
+        return jsonify({'error': 'No source provided'}), 400
+    source = data['source']
+    try:
+        from transformers import WeAreDevsLifter
+        lifter = WeAreDevsLifter()
+        cmap = lifter._build_char_map(source)
+        strings = lifter._extract_n_strings(source)
+        pairs = lifter._extract_shuffle_pairs(source)
+        working = list(strings) if strings else []
+        if pairs and len(pairs) == 3:
+            for a, b in pairs:
+                lo, hi = a - 1, b - 1
+                if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
+                    working[lo:hi+1] = working[lo:hi+1][::-1]
+        decoded = []
+        if cmap and working:
+            for s in working[:10]:
+                buf = lifter._decode_b64(s, cmap)
+                if buf:
+                    try:
+                        decoded.append(buf.decode('latin-1', errors='replace'))
+                    except:
+                        decoded.append(repr(buf))
+        return jsonify({
+            'map_size': len(cmap),
+            'map_sample': dict(list(cmap.items())[:20]),
+            'string_count': len(strings) if strings else 0,
+            'shuffle_pairs': pairs,
+            'sample_decoded': decoded
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

@@ -2,6 +2,7 @@ import discord
 import io
 import os
 import httpx
+import base64
 from discord.ext import commands
 
 TOKEN    = os.environ['DISCORD_BOT_TOKEN']
@@ -13,14 +14,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 tree = bot.tree
 
-async def call_api(source):
+async def call_api(source_b64):
     async with httpx.AsyncClient(timeout=120) as c:
-        r = await c.post(f'{API_URL}/deobf', json={'source': source})
+        r = await c.post(f'{API_URL}/deobf', json={'source_b64': source_b64})
         return r.json()
 
-async def run_deobf(text, filename):
+async def run_deobf(raw_bytes, filename):
     try:
-        data = await call_api(text)
+        source_b64 = base64.b64encode(raw_bytes).decode('ascii')
+        data = await call_api(source_b64)
     except Exception as e:
         em = discord.Embed(title='API Error', description=str(e), color=0xe74c3c)
         return {'embed': em, 'file': None}
@@ -43,9 +45,8 @@ async def prefix_deobf(ctx):
         return await ctx.send('Attach a `.lua` file with `!deobf`')
     att = ctx.message.attachments[0]
     raw = await att.read()
-    text = ''.join(chr(b) for b in raw)
     msg = await ctx.send(embed=discord.Embed(title='Deobfuscating...', color=0x3498db))
-    res = await run_deobf(text, att.filename)
+    res = await run_deobf(raw, att.filename)
     await msg.delete()
     if res['file']:
         await ctx.send(file=res['file'], embed=res['embed'])
@@ -56,8 +57,7 @@ async def prefix_deobf(ctx):
 async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment):
     await interaction.response.defer(thinking=True)
     raw = await file.read()
-    text = ''.join(chr(b) for b in raw)
-    res = await run_deobf(text, file.filename)
+    res = await run_deobf(raw, file.filename)
     if res['file']:
         await interaction.followup.send(file=res['file'], embed=res['embed'])
     else:

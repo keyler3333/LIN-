@@ -4,17 +4,8 @@ import subprocess
 import tempfile
 import base64
 import urllib.request
-from transformers import WeAreDevsLifter, Lua51Parser, Lua51Decompiler
+from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
-
-GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
-GROQ_AVAILABLE = False
-if GROQ_KEY:
-    try:
-        from groq import Groq
-        GROQ_AVAILABLE = True
-    except ImportError:
-        pass
 
 UNLUAC_JAR_URL = "https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar"
 UNLUAC_LOCAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unluac.jar")
@@ -28,34 +19,38 @@ class DeobfEngine:
         if depth > 5:
             return source, 'max_depth', 'Max recursion depth reached'
 
-        # 1) Static lifter
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
         lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
-        # 2) Extract bytecode and try unluac
         extracted_bc = self._extract_bytecode_from_lifter(source)
         if extracted_bc:
             unluac_result = self._try_unluac(extracted_bc)
             if unluac_result and self._looks_decoded(unluac_result):
                 return self._beautify(unluac_result), 'unluac', 'Decompiled by unluac'
+
+            java_installed = shutil.which('java') is not None
+            if not java_installed:
+                hint = (
+                    "Lua 5.1 bytecode successfully extracted but Java is not installed.\n"
+                    "Run this single command and re-upload the file:\n"
+                    "sudo apt update && sudo apt install default-jre -y"
+                )
+            else:
+                hint = (
+                    "Bytecode extracted but unluac decompilation failed.\n"
+                    "The bytecode is valid Lua 5.1 – try decompiling manually with:\n"
+                    "java -jar unluac.jar extracted_bytecode.luac"
+                )
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
-            hint = (
-                "Lua 5.1 bytecode extracted but unluac is not available.\n"
-                "Install Java (apt install default-jre) and restart the bot.\n"
-                "The bot will automatically download unluac.jar on the next request."
-            )
             return bc_b64, 'bytecode', hint
 
-        # 3) If the lifter found decoded strings, return the best readable chunk
-        #    instead of falling through to the sandbox (which always crashes).
         best_decoded = self._get_best_decoded_text(source)
         if best_decoded and len(best_decoded) > 200:
             return best_decoded, 'static_decode', 'Best decoded strings from static lifter'
 
-        # 4) Sandbox (only if the lifter found nothing)
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
         all_text = []
@@ -84,18 +79,6 @@ class DeobfEngine:
         reason = diag if diag else lifter_diag
         if not reason:
             reason = 'VM obfuscator – no readable source captured'
-        if GROQ_AVAILABLE and GROQ_KEY:
-            try:
-                client = Groq(api_key=GROQ_KEY)
-                resp = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": f"Deobfuscation failed: {reason}. Suggest fix."}],
-                    max_tokens=300,
-                    temperature=0.2
-                )
-                reason += "\n\n--- AI Analysis ---\n" + resp.choices[0].message.content.strip()
-            except:
-                pass
         return source, 'unable', reason
 
     def _get_best_decoded_text(self, source):
@@ -198,14 +181,6 @@ class DeobfEngine:
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout
             return None
-        except:
-            return None
-
-    def _lift_bc(self, bc):
-        try:
-            parser = Lua51Parser(bc)
-            func = parser.parse_function()
-            return Lua51Decompiler(func).decompile()
         except:
             return None
 

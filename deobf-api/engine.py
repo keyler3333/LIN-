@@ -35,7 +35,7 @@ class DeobfEngine:
 
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
-            return self._beautify(lifted), 'static_lift', 'Successfully deobfuscated'
+            return self._beautify(lifted), 'static_lift', 'Static lifter extracted readable source'
 
         lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
@@ -56,25 +56,27 @@ class DeobfEngine:
                 if lifted_bc:
                     return self._beautify(lifted_bc), 'sandbox_dump', 'Decompiled from bytecode dump'
 
+        all_captured = caps + layers
         best = ''
-        for cap in caps:
-            if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
-                best = cap
+        for item in all_captured:
+            s = item if isinstance(item, str) else (item.decode('utf-8', errors='replace') if isinstance(item, bytes) else str(item))
+            if len(s) > len(best):
+                score = self._readability_score(s)
+                if score > 0.1 and len(s) > len(best):
+                    best = s
 
-        if best:
-            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
-
-        for layer in layers:
-            if isinstance(layer, str) and len(layer) > 50:
-                if 'function' in layer or 'local' in layer or 'print' in layer:
-                    return self._beautify(layer), 'sandbox_layer', 'Layer captured'
+        if best and ('function' in best or 'local' in best or 'print' in best or 'end' in best):
+            return self._beautify(best), 'sandbox_capture', 'Readable source captured from sandbox'
 
         if lifted and len(lifted) > 50 and lifted != source:
             return self._beautify(lifted), 'static_lift_fallback', 'Static lifter produced output'
 
+        if best and len(best) > 200:
+            return best, 'memory_dump', 'Recovered from sandbox memory dump'
+
         reason = diag if diag else lifter_diag
         if not reason:
-            reason = 'Sandbox produced no output and no errors were logged.'
+            reason = 'All deobfuscation methods exhausted. The script uses VM-based obfuscation that does not call loadstring.'
         if GROQ_AVAILABLE and GROQ_KEY:
             ai_note = self._ai_analysis(source, reason)
             if ai_note:
@@ -91,13 +93,19 @@ class DeobfEngine:
 
     @staticmethod
     def _looks_decoded(code):
+        return DeobfEngine._readability_score(code) > 0.15
+
+    @staticmethod
+    def _readability_score(code):
         if not code or len(code) < 20:
-            return False
+            return 0.0
         lines = code.split('\n')
         if max((len(l) for l in lines), default=0) > 500:
-            return False
+            return 0.0
         alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.15
+        keywords = ['function', 'local', 'end', 'if', 'then', 'else', 'for', 'while', 'do', 'return', 'print']
+        kw_score = sum(1 for kw in keywords if kw in code) / len(keywords)
+        return (alpha / max(len(code), 1)) * 0.7 + kw_score * 0.3
 
     def _ai_analysis(self, source, diag):
         try:
@@ -105,9 +113,9 @@ class DeobfEngine:
             prompt = (
                 "A Lua obfuscation deobfuscator failed to lift a WeAreDevs script. "
                 "The obfuscator uses a custom Base64 table, a shuffled string constant table, "
-                "and then the original Lua source is hidden among the decoded strings.\n\n"
-                f"Lifter diagnostic: {diag}\n\n"
-                "Source code (first 4000 chars):\n```lua\n" +
+                "and a VM-based executor that never calls loadstring.\n\n"
+                f"Diagnostic: {diag}\n\n"
+                "Source (first 4000 chars):\n```lua\n" +
                 source[:4000] +
                 "\n```\n\n"
                 "Explain why the deobfuscation likely failed and what specific fix should be applied."

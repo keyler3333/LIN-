@@ -44,9 +44,9 @@ class DeobfEngine:
         if current != source and self._looks_decoded(current):
             return self._beautify(current), 'static_lift', 'Successfully deobfuscated'
 
-        layers, captures, diag = execute_sandbox(current, timeout=90)
+        layers, caps, diag = execute_sandbox(current, timeout=90)
 
-        for cap in captures:
+        for cap in caps:
             for offset in range(len(cap)):
                 if cap[offset:offset+4] == '\x1bLua':
                     if offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
@@ -62,7 +62,7 @@ class DeobfEngine:
                     return self._beautify(lifted), 'sandbox_dump', 'Decompiled from bytecode dump'
 
         best = ''
-        for cap in captures:
+        for cap in caps:
             if len(cap) > len(best) and ('function' in cap or 'local' in cap or 'print' in cap):
                 best = cap
 

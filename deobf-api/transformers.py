@@ -367,86 +367,66 @@ class Lua51Decompiler:
 class WeAreDevsLifter(Transformer):
     def __init__(self):
         self.diagnostic = ""
-        self.stage = ""
 
     def transform(self, code):
         self.diagnostic = ""
-        self.stage = ""
         try:
             lifted = self._try_lift(code)
+            if lifted and len(lifted) > 10:
+                return lifted
         except Exception as e:
-            self.diagnostic = f"Lifter crashed at stage '{self.stage}': {e}"
-            return code
-        if lifted and isinstance(lifted, str) and len(lifted) > 10:
-            return lifted
-        if not self.diagnostic:
-            self.diagnostic = "Lifter returned no result but did not set a diagnostic."
+            self.diagnostic = f"Lifter exception: {e}"
         return code
 
     def _try_lift(self, source):
-        self.stage = "building Base64 map"
         cmap = self._build_char_map(source)
-        if not cmap:
-            self.diagnostic = "Base64 table not found or incomplete."
-            return None
-        if len(cmap) < 60:
-            self.diagnostic = f"Base64 table has {len(cmap)} entries (needs 64)."
+        if not cmap or len(cmap) < 60:
+            self.diagnostic = f"Base64 table incomplete ({len(cmap)} entries)"
             return None
 
-        self.stage = "extracting N strings"
         strings = self._extract_n_strings(source)
         if not strings:
-            self.diagnostic = "Constant table N not found."
+            self.diagnostic = "N table not found"
             return None
 
-        self.stage = "extracting shuffle pairs"
         pairs = self._extract_shuffle_pairs(source)
-        if pairs is None or len(pairs) != 3:
-            self.diagnostic = f"Shuffle pairs missing or wrong count (found {len(pairs) if pairs else 0}, need 3)."
-            pairs = None
-
-        self.stage = "decoding strings"
         working = list(strings)
-        if pairs:
+        if pairs and len(pairs) == 3:
             for a, b in pairs:
                 lo, hi = a - 1, b - 1
                 if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
-                    working[lo:hi + 1] = working[lo:hi + 1][::-1]
+                    working[lo:hi+1] = working[lo:hi+1][::-1]
 
-        decoded_chunks = []
+        decoded = []
         for s in working:
             buf = self._decode_b64(s, cmap)
             if buf:
-                decoded_chunks.append(buf)
+                decoded.append(buf)
 
-        if not decoded_chunks:
-            self.diagnostic = "All strings decoded to zero bytes."
+        if not decoded:
+            self.diagnostic = "No strings decoded"
             return None
 
-        self.stage = "looking for bytecode or source"
-        for chunk in decoded_chunks:
+        for chunk in decoded:
             if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                 parser = Lua51Parser(chunk)
                 func = parser.parse_function()
                 return Lua51Decompiler(func).decompile()
 
-        full = bytearray()
-        for c in decoded_chunks:
-            full.extend(c)
-        data = bytes(full)
-        pos = data.find(b'\x1bLua')
-        if pos != -1 and pos + 5 <= len(data) and data[pos + 4] == 0x51:
-            bc = data[pos:]
+        full = b''.join(decoded)
+        pos = full.find(b'\x1bLua')
+        if pos != -1 and pos + 5 <= len(full) and full[pos+4] == 0x51:
+            bc = full[pos:]
             parser = Lua51Parser(bc)
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
 
         best = ""
-        for chunk in decoded_chunks:
+        for chunk in decoded:
             try:
                 text = chunk.decode('utf-8', errors='replace')
                 printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t ')
-                if len(text) > 10 and (printable / max(len(text), 1)) > 0.6:
+                if len(text) > 20 and printable / max(len(text), 1) > 0.5:
                     if len(text) > len(best):
                         best = text
             except:
@@ -455,23 +435,7 @@ class WeAreDevsLifter(Transformer):
         if best:
             return best
 
-        sample_strings = []
-        for chunk in decoded_chunks[:5]:
-            try:
-                sample_strings.append(chunk.decode('latin-1', errors='replace')[:80])
-            except:
-                sample_strings.append(repr(chunk[:40]))
-
-        map_sample = dict(list(cmap.items())[:15])
-
-        self.diagnostic = (
-            f"Decoded {len(strings)} strings, {len(data)} bytes total. "
-            f"Base64 map has {len(cmap)} entries. "
-            f"Shuffle pairs: {pairs}. "
-            f"First bytes (hex): {data[:40].hex() if data else 'empty'}. "
-            f"Sample chunks: {' | '.join(sample_strings)}. "
-            f"Map sample: {map_sample}"
-        )
+        self.diagnostic = f"Decoded {len(decoded)} chunks, {len(full)} bytes total, no bytecode or readable source found"
         return None
 
     def _build_char_map(self, source):
@@ -491,7 +455,7 @@ class WeAreDevsLifter(Transformer):
                     break
         if end == -1:
             return None
-        body = source[start + 1:end]
+        body = source[start+1:end]
 
         assignments = []
         current = []
@@ -517,11 +481,9 @@ class WeAreDevsLifter(Transformer):
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             expr = vpart.strip().replace(' ', '')
             try:
-                val = eval(expr) & 0x3F
-                cmap[key] = val
+                cmap[key] = eval(expr) & 0x3F
             except:
                 pass
-
         return cmap
 
     def _extract_n_strings(self, source):

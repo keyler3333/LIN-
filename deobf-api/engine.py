@@ -26,7 +26,6 @@ class DeobfEngine:
         self.cleaners = [
             EscapeSequenceTransformer(),
             MathTransformer(),
-            self.lifter,
             HexNameRenamer(),
         ]
 
@@ -34,15 +33,19 @@ class DeobfEngine:
         if depth > 5:
             return source, 'max_depth', 'Max recursion depth reached'
 
-        current = source
+        lifted = self.lifter.transform(source)
+        if lifted and lifted != source and self._looks_decoded(lifted):
+            return self._beautify(lifted), 'static_lift', 'Static lifter succeeded'
+
+        clean = source
         for t in self.cleaners:
             try:
-                current = t.transform(current)
+                clean = t.transform(clean)
             except:
                 pass
 
-        if current != source and self._looks_decoded(current):
-            return self._beautify(current), 'static_lift', 'Successfully deobfuscated'
+        if clean != source and self._looks_decoded(clean):
+            return self._beautify(clean), 'static_clean', 'Cleaners produced readable output'
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
@@ -74,10 +77,8 @@ class DeobfEngine:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
                     return self._beautify(layer), 'sandbox_layer', 'Layer captured'
 
-        if self.lifter.diagnostic and 'Decoded' in self.lifter.diagnostic:
-            lifted = self.lifter._try_lift(source)
-            if lifted and self._looks_decoded(lifted):
-                return self._beautify(lifted), 'static_lift_fallback', 'Static lifter succeeded after sandbox'
+        if lifted and len(lifted) > 50:
+            return self._beautify(lifted), 'static_lift_unchecked', 'Static lifter produced output (heuristic bypass)'
 
         reason = diag if diag else 'Sandbox produced no output and no errors were logged.'
         if GROQ_AVAILABLE and GROQ_KEY:
@@ -102,7 +103,7 @@ class DeobfEngine:
         if max((len(l) for l in lines), default=0) > 500:
             return False
         alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.25
+        return (alpha / max(len(code), 1)) > 0.15
 
     def _ai_analysis(self, source, diag):
         try:

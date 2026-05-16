@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tempfile
 import base64
+import urllib.request
 from transformers import WeAreDevsLifter, Lua51Parser, Lua51Decompiler
 from sandbox import execute_sandbox
 
@@ -14,6 +15,10 @@ if GROQ_KEY:
         GROQ_AVAILABLE = True
     except ImportError:
         pass
+
+UNLUAC_JAR_URL = "https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar"
+UNLUAC_LOCAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unluac.jar")
+
 
 class DeobfEngine:
     def __init__(self):
@@ -30,17 +35,18 @@ class DeobfEngine:
 
         lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
-        # 2) Extract bytecode from the lifter and try unluac
+        # 2) Extract bytecode and try unluac (auto‑download if needed)
         extracted_bc = self._extract_bytecode_from_lifter(source)
         if extracted_bc:
             unluac_result = self._try_unluac(extracted_bc)
             if unluac_result and self._looks_decoded(unluac_result):
                 return self._beautify(unluac_result), 'unluac', 'Decompiled by unluac'
+
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
             hint = (
                 "Lua 5.1 bytecode extracted but unluac is not available.\n"
-                "Install Java (apt install default-jre) and download unluac.jar, then run:\n"
-                "java -jar unluac.jar extracted_bytecode.luac"
+                "Install Java (apt install default-jre) and restart the bot.\n"
+                "The bot will automatically download unluac.jar on the next request."
             )
             return bc_b64, 'bytecode', hint
 
@@ -70,7 +76,6 @@ class DeobfEngine:
             if len(biggest) > 200:
                 return biggest, 'memory_dump', 'Largest captured string'
 
-        # 4) Fallback reason
         reason = diag if diag else lifter_diag
         if not reason:
             reason = 'VM obfuscator – bytecode saved for external decompilation'
@@ -87,6 +92,16 @@ class DeobfEngine:
             except:
                 pass
         return source, 'unable', reason
+
+    def _ensure_unluac_jar(self):
+        if os.path.isfile(UNLUAC_LOCAL_PATH):
+            return UNLUAC_LOCAL_PATH
+        try:
+            os.makedirs(os.path.dirname(UNLUAC_LOCAL_PATH), exist_ok=True)
+            urllib.request.urlretrieve(UNLUAC_JAR_URL, UNLUAC_LOCAL_PATH)
+            return UNLUAC_LOCAL_PATH
+        except Exception:
+            return None
 
     def _extract_bytecode_from_lifter(self, source):
         try:
@@ -122,8 +137,8 @@ class DeobfEngine:
             return None
 
     def _try_unluac(self, bytecode):
-        unluac_path = os.environ.get('UNLUAC_PATH', 'unluac.jar')
-        if not os.path.isfile(unluac_path):
+        jar_path = self._ensure_unluac_jar()
+        if not jar_path:
             return None
         java_bin = shutil.which('java')
         if not java_bin:
@@ -133,7 +148,7 @@ class DeobfEngine:
                 tmp.write(bytecode)
                 tmp_path = tmp.name
             result = subprocess.run(
-                [java_bin, '-jar', unluac_path, tmp_path],
+                [java_bin, '-jar', jar_path, tmp_path],
                 capture_output=True,
                 text=True,
                 timeout=30

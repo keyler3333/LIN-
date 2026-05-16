@@ -21,7 +21,7 @@ class DeobfEngine:
 
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
-            return self._beautify(lifted), 'static_lift', 'Static lifter extracted readable source'
+            return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
         lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
@@ -41,51 +41,43 @@ class DeobfEngine:
                 if lifted_bc:
                     return self._beautify(lifted_bc), 'sandbox_dump', 'Bytecode from dump'
 
-        all_text = []
-        for cap in caps:
-            if isinstance(cap, str) and len(cap) > 20:
-                all_text.append(cap)
-        for layer in layers:
-            if isinstance(layer, str) and len(layer) > 20:
-                all_text.append(layer)
-
         best = ''
-        for text in all_text:
-            if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text or 'end' in text):
-                best = text
+        for cap in caps:
+            if isinstance(cap, str) and len(cap) > 20 and ('function' in cap or 'local' in cap):
+                if len(cap) > len(best): best = cap
+        for layer in layers:
+            if isinstance(layer, str) and len(layer) > 20 and ('function' in layer or 'local' in layer):
+                if len(layer) > len(best): best = layer
 
         if best:
             return self._beautify(best), 'sandbox_capture', 'Readable source captured'
 
         if lifted and len(lifted) > 50 and lifted != source:
-            return self._beautify(lifted), 'static_lift_fallback', 'Static lifter output'
+            return self._beautify(lifted), 'static_lift_fallback', 'Lifter output (heuristic)'
 
+        all_text = [c for c in caps if isinstance(c, str)] + [l for l in layers if isinstance(l, str)]
         if all_text:
-            best_overall = max(all_text, key=len)
-            if len(best_overall) > 200:
-                return best_overall, 'memory_dump', 'Recovered from sandbox memory'
+            biggest = max(all_text, key=len)
+            if len(biggest) > 200:
+                return biggest, 'memory_dump', 'Largest captured string'
 
         reason = diag if diag else lifter_diag
         if not reason:
-            reason = 'VM-based obfuscator – no loadstring call. The hidden source is inside the VM bytecode and requires a dedicated Lua 5.1 decompiler (e.g. unluac) to recover.'
+            reason = 'VM obfuscator – the hidden code is inside the decoded bytecode. Use a Lua 5.1 decompiler on the attached dump.'
+
         if GROQ_AVAILABLE and GROQ_KEY:
             try:
                 client = Groq(api_key=GROQ_KEY)
-                prompt = (
-                    "Deobfuscation failed for a WeAreDevs VM obfuscator.\n"
-                    f"Diagnostic: {reason}\n"
-                    "Suggest a concrete fix."
-                )
                 response = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role":"user","content":f"Deobfuscation failed: {reason}. Suggest a fix."}],
                     max_tokens=300,
                     temperature=0.2,
                 )
-                ai_note = response.choices[0].message.content.strip()
-                reason = f"{reason}\n\n--- AI Analysis ---\n{ai_note}"
+                reason += "\n\n--- AI Analysis ---\n" + response.choices[0].message.content.strip()
             except:
                 pass
+
         return source, 'unable', reason
 
     def _lift_bc(self, bc):
@@ -104,7 +96,7 @@ class DeobfEngine:
         if max((len(l) for l in lines), default=0) > 500:
             return False
         alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.15
+        return (alpha / max(len(code),1)) > 0.15
 
     def _beautify(self, code):
         try:
@@ -114,11 +106,10 @@ class DeobfEngine:
             out, ind = [], 0
             for raw in code.split('\n'):
                 line = raw.strip()
-                if not line:
-                    continue
-                if any(line.startswith(w) for w in ('end', 'else', 'elseif', 'until', '}', ')')):
-                    ind = max(0, ind - 1)
-                out.append('    ' * ind + line)
-                if any(line.startswith(w) for w in ('if ', 'for ', 'while ', 'repeat', 'function ', 'local function ')) and not line.endswith('end'):
+                if not line: continue
+                if any(line.startswith(w) for w in ('end','else','elseif','until','}',')')):
+                    ind = max(0, ind-1)
+                out.append('    '*ind + line)
+                if any(line.startswith(w) for w in ('if ','for ','while ','repeat','function ','local function ')) and not line.endswith('end'):
                     ind += 1
             return '\n'.join(out)

@@ -5,7 +5,6 @@ import tempfile
 import base64
 import urllib.request
 from transformers import WeAreDevsLifter
-from sandbox import execute_sandbox
 
 UNLUAC_JAR_URL = "https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar"
 UNLUAC_LOCAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unluac.jar")
@@ -19,12 +18,12 @@ class DeobfEngine:
         if depth > 5:
             return source, 'max_depth', 'Max recursion depth reached'
 
+        # 1) Static lifter
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
-        lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
-
+        # 2) Extract bytecode and try unluac
         extracted_bc = self._extract_bytecode_from_lifter(source)
         if extracted_bc:
             unluac_result = self._try_unluac(extracted_bc)
@@ -34,51 +33,23 @@ class DeobfEngine:
             java_installed = shutil.which('java') is not None
             if not java_installed:
                 hint = (
-                    "Lua 5.1 bytecode successfully extracted but Java is not installed.\n"
-                    "Run this single command and re-upload the file:\n"
-                    "sudo apt update && sudo apt install default-jre -y"
+                    "Lua 5.1 bytecode extracted but Java is not installed.\n"
+                    "Add Java to your Railway container:\n"
+                    "1. Place the Dockerfile at the root of your repo.\n"
+                    "2. Redeploy. The bot will then automatically decompile the bytecode."
                 )
             else:
-                hint = (
-                    "Bytecode extracted but unluac decompilation failed.\n"
-                    "The bytecode is valid Lua 5.1 – try decompiling manually with:\n"
-                    "java -jar unluac.jar extracted_bytecode.luac"
-                )
+                hint = "Bytecode extracted but unluac decompilation failed."
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
             return bc_b64, 'bytecode', hint
 
+        # 3) No bytecode – return best decoded strings from the lifter
         best_decoded = self._get_best_decoded_text(source)
-        if best_decoded and len(best_decoded) > 200:
+        if best_decoded and len(best_decoded) > 100:
             return best_decoded, 'static_decode', 'Best decoded strings from static lifter'
 
-        layers, caps, diag = execute_sandbox(source, timeout=90)
-
-        all_text = []
-        for cap in caps:
-            if isinstance(cap, str) and len(cap) > 20:
-                all_text.append(cap)
-        for layer in layers:
-            if isinstance(layer, str) and len(layer) > 20:
-                all_text.append(layer)
-
-        all_text.sort(key=len, reverse=True)
-
-        best = ''
-        for text in all_text:
-            if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text or 'end' in text):
-                best = text
-
-        if best:
-            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
-
-        if all_text:
-            biggest = max(all_text, key=len)
-            if len(biggest) > 200:
-                return biggest, 'memory_dump', 'Largest captured string'
-
-        reason = diag if diag else lifter_diag
-        if not reason:
-            reason = 'VM obfuscator – no readable source captured'
+        # 4) Nothing usable found
+        reason = self.lifter.diagnostic or 'No readable content decoded.'
         return source, 'unable', reason
 
     def _get_best_decoded_text(self, source):

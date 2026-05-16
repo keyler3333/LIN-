@@ -42,14 +42,12 @@ class MathTransformer(Transformer):
 class HexNameRenamer(Transformer):
     def transform(self, code):
         mapping, ctr = {}, [0]
-
         def rep(m):
             h = m.group(0)
             if h not in mapping:
                 ctr[0] += 1
                 mapping[h] = f'var{ctr[0]}'
             return mapping[h]
-
         return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
 
 
@@ -101,8 +99,8 @@ class Lua51Parser:
         return {'op': op, 'a': a, 'b': b, 'c': c, 'bx': bx, 'sbx': sbx}
 
     def _parse_header(self):
-        assert self.bc[:4] == b'\x1bLua'
-        assert self.bc[4] == 0x51
+        if not (self.bc[:4] == b'\x1bLua' and self.bc[4] == 0x51):
+            raise ValueError("Not Lua 5.1 bytecode")
         self.pos[0] = 5
         self._byte()
         self.little_endian = self._byte() == 1
@@ -186,12 +184,9 @@ class Lua51Decompiler:
 
     @staticmethod
     def _fc(c):
-        if c is None:
-            return 'nil'
-        if isinstance(c, bool):
-            return 'true' if c else 'false'
-        if isinstance(c, str):
-            return repr(c)
+        if c is None: return 'nil'
+        if isinstance(c, bool): return 'true' if c else 'false'
+        if isinstance(c, str): return repr(c)
         if isinstance(c, float):
             return str(int(c)) if c == int(c) and abs(c) < 1e15 else repr(c)
         return str(c)
@@ -240,11 +235,9 @@ class Lua51Decompiler:
                 regs[a] = self._fc(consts[bx] if bx < len(consts) else None)
             elif op == 2:
                 regs[a] = 'true' if b else 'false'
-                if c:
-                    i += 1
+                if c: i += 1
             elif op == 3:
-                for r in range(a, b + 1):
-                    regs[r] = 'nil'
+                for r in range(a, b + 1): regs[r] = 'nil'
             elif op == 4:
                 regs[a] = upvnames[b] if b < len(upvnames) else f'upv{b}'
             elif op == 5:
@@ -253,8 +246,7 @@ class Lua51Decompiler:
                 regs[a] = self._tget(R(b), RK(c))
             elif op == 7:
                 gn = self._fc(consts[bx] if bx < len(consts) else None)
-                if gn.startswith(('"', "'")):
-                    gn = gn[1:-1]
+                if gn.startswith(('"', "'")): gn = gn[1:-1]
                 self._emit(f'{gn} = {R(a)}')
             elif op == 8:
                 self._emit(f'{upvnames[b] if b < len(upvnames) else f"upv{b}"} = {R(a)}')
@@ -264,16 +256,15 @@ class Lua51Decompiler:
                 regs[a] = '{}'
                 self._emit(f'local r{a} = {{}}')
             elif op == 11:
-                key = RK(c)
-                obj = R(b)
-                regs[a] = f'{obj}:{key[1:-1]}' if (key.startswith(('"', "'")) and self._ident(key[1:-1])) else f'{obj}[{key}]'
-                regs[a + 1] = obj
+                key = RK(c); obj = R(b)
+                regs[a] = f'{obj}:{key[1:-1]}' if (key.startswith(('"',"'")) and self._ident(key[1:-1])) else f'{obj}[{key}]'
+                regs[a+1] = obj
             elif op in self.BINOP:
                 regs[a] = f'({RK(b)} {self.BINOP[op]} {RK(c)})'
             elif op in self.UNOP:
                 regs[a] = f'({self.UNOP[op]}{R(b)})'
             elif op == 21:
-                regs[a] = ' .. '.join(R(r) for r in range(b, c + 1))
+                regs[a] = ' .. '.join(R(r) for r in range(b, c+1))
             elif op == 22:
                 self._emit(f'-- jmp -> {i + 1 + sbx}')
             elif op == 23:
@@ -294,74 +285,55 @@ class Lua51Decompiler:
                 self.indent += 1
             elif op == 28:
                 fn = R(a)
-                args = '...' if b == 0 else ('' if b == 1 else ', '.join(R(a + k) for k in range(1, b)))
+                args = '...' if b == 0 else ('' if b == 1 else ', '.join(R(a+k) for k in range(1, b)))
                 call = f'{fn}({args})'
-                if c == 0:
-                    regs[a] = call
-                elif c == 1:
-                    self._emit(call)
+                if c == 0: regs[a] = call
+                elif c == 1: self._emit(call)
                 elif c == 2:
-                    t = self._t()
-                    self._emit(f'local {t} = {call}')
-                    regs[a] = t
+                    t = self._t(); self._emit(f'local {t} = {call}'); regs[a] = t
                 else:
-                    rets = [self._t() for _ in range(c - 1)]
+                    rets = [self._t() for _ in range(c-1)]
                     self._emit(f'local {", ".join(rets)} = {call}')
-                    for k, t in enumerate(rets):
-                        regs[a + k] = t
+                    for k, t in enumerate(rets): regs[a+k] = t
             elif op == 29:
-                args = '' if b == 1 else ', '.join(R(a + k) for k in range(1, b))
+                args = '' if b == 1 else ', '.join(R(a+k) for k in range(1, b))
                 self._emit(f'return {R(a)}({args})')
             elif op == 30:
-                if b == 1:
-                    self._emit('return')
-                elif b == 0:
-                    self._emit(f'return {R(a)}')
-                else:
-                    self._emit(f'return {", ".join(R(a + k) for k in range(b - 1))}')
+                if b == 1: self._emit('return')
+                elif b == 0: self._emit(f'return {R(a)}')
+                else: self._emit(f'return {", ".join(R(a+k) for k in range(b-1))}')
             elif op == 31:
-                self.indent = max(0, self.indent - 1)
-                self._emit('end')
+                self.indent = max(0, self.indent-1); self._emit('end')
             elif op == 32:
-                lv = f'i_{a}'
-                regs[a + 3] = lv
+                lv = f'i_{a}'; regs[a+3] = lv
                 self._emit(f'for {lv} = {R(a)}, {R(a+1)}, {R(a+2)} do')
                 self.indent += 1
             elif op == 33:
                 vs = [self._t() for _ in range(c)]
-                for k, v in enumerate(vs):
-                    regs[a + 3 + k] = v
+                for k, v in enumerate(vs): regs[a+3+k] = v
                 self._emit(f'for {", ".join(vs)} in {R(a)} do')
                 self.indent += 1
             elif op == 34:
-                obj = R(a)
-                base = (c - 1) * 50
-                cnt = b if b != 0 else func['maxstack'] - a - 1
-                for k in range(1, cnt + 1):
-                    self._emit(f'{obj}[{base + k}] = {R(a + k)}')
+                obj = R(a); base = (c-1)*50; cnt = b if b != 0 else func['maxstack']-a-1
+                for k in range(1, cnt+1): self._emit(f'{obj}[{base+k}] = {R(a+k)}')
             elif op == 35:
                 pass
             elif op == 36:
                 pname = f'func_{bx}'
                 if bx < len(protos):
-                    sv = self.indent
-                    self._func(protos[bx], pname, False)
-                    self.indent = sv
+                    sv = self.indent; self._func(protos[bx], pname, False); self.indent = sv
                 regs[a] = pname
             elif op == 37:
-                if b == 0:
-                    regs[a] = '...'
+                if b == 0: regs[a] = '...'
                 else:
-                    vs = [self._t() for _ in range(b - 1)]
+                    vs = [self._t() for _ in range(b-1)]
                     self._emit(f'local {", ".join(vs)} = ...')
-                    for k, v in enumerate(vs):
-                        regs[a + k] = v
+                    for k, v in enumerate(vs): regs[a+k] = v
             else:
                 self._emit(f'-- {self.OPCODES.get(op, f"OP_{op}")} A={a} B={b} C={c}')
             i += 1
         if not is_main:
-            self.indent -= 1
-            self._emit('end')
+            self.indent -= 1; self._emit('end')
 
 
 class WeAreDevsLifter(Transformer):
@@ -417,8 +389,7 @@ class WeAreDevsLifter(Transformer):
 
         idx = full.find(b'\x1bLua')
         if idx != -1 and idx + 5 <= len(full) and full[idx+4] == 0x51:
-            bc = full[idx:]
-            return self._decompile_bytecode(bc)
+            return self._decompile_bytecode(full[idx:])
 
         best = ""
         for chunk in decoded:
@@ -510,7 +481,11 @@ class WeAreDevsLifter(Transformer):
                     pass
             expr = vpart.strip().replace(' ', '')
             try:
-                val = eval(expr) & 0x3F
+                val = eval(expr)
+                if isinstance(val, (int, float)):
+                    val = int(val) & 0x3F
+                else:
+                    continue
                 cmap[key] = val
             except:
                 pass

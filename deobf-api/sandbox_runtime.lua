@@ -112,14 +112,14 @@ local function _newproxy()
     local t = {}
     local mt = {
         __index = function(_, k)
-            local v = rawget(t, k)
+            local v = _orig_rawget(t, k)
             if v ~= nil then return v end
             v = _newproxy()
-            rawset(t, k, v)
+            _orig_rawset(t, k, v)
             return v
         end,
         __call = _noop,
-        __newindex = function(_, k, v) rawset(t, k, v) end,
+        __newindex = function(_, k, v) _orig_rawset(t, k, v) end,
         __gc = function() end,
     }
     return setmetatable(t, mt)
@@ -214,13 +214,13 @@ _safe_env._ENV = _safe_env
 
 local _env_mt = {
     __index = function(t, k)
-        local v = rawget(_safe_env, k)
+        local v = _orig_rawget(_safe_env, k)
         if v ~= nil then return v end
         _L("MISSING: " .. tostring(k))
         return _newproxy()
     end,
     __newindex = function(t, k, v)
-        rawset(_safe_env, k, v)
+        _orig_rawset(_safe_env, k, v)
     end,
 }
 

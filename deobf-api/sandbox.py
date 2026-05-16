@@ -32,10 +32,11 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         inp = os.path.join(temp_dir, 'input.lua')
         drv = os.path.join(temp_dir, 'driver.lua')
 
+        # source is a string of characters in the range 0-255;
+        # write it as raw bytes without any encoding conversion.
         try:
-            raw_bytes = bytes(ord(c) & 0xFF for c in source)
             with open(inp, 'wb') as f:
-                f.write(raw_bytes)
+                f.write(bytes(ord(c) for c in source))
         except Exception as e:
             error_log.append(f"WRITE_INPUT_ERROR: {e}")
             shutil.rmtree(temp_dir, ignore_errors=True)

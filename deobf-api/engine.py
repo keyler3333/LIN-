@@ -1,5 +1,8 @@
 import os
-from transformers import WeAreDevsLifter
+import subprocess
+import tempfile
+import base64
+from transformers import WeAreDevsLifter, Lua51Parser, Lua51Decompiler
 from sandbox import execute_sandbox
 
 GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
@@ -17,36 +20,55 @@ class DeobfEngine:
 
     def process(self, source, depth=0):
         if depth > 5:
-            return source, 'max_depth', 'Max recursion depth'
+            return source, 'max_depth', 'Max recursion depth reached'
 
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
-        lifter_diag = self.lifter.diagnostic or ''
+        lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
+
+        extracted_bc = self._extract_bytecode_from_lifter(source)
+        if extracted_bc:
+            unluac_result = self._try_unluac(extracted_bc)
+            if unluac_result and self._looks_decoded(unluac_result):
+                return self._beautify(unluac_result), 'unluac', 'Decompiled by unluac'
+            bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
+            hint = (
+                "Lua 5.1 bytecode extracted but unluac is not available.\n"
+                "Install Java (apt install default-jre) and download unluac.jar, then run:\n"
+                "java -jar unluac.jar extracted_bytecode.luac"
+            )
+            return bc_b64, 'bytecode', hint
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
-        all_str = []
-        for c in caps:
-            if isinstance(c, str) and len(c) > 10:
-                all_str.append(c)
-        for l in layers:
-            if isinstance(l, str) and len(l) > 10:
-                all_str.append(l)
+        all_text = []
+        for cap in caps:
+            if isinstance(cap, str) and len(cap) > 20:
+                all_text.append(cap)
+        for layer in layers:
+            if isinstance(layer, str) and len(layer) > 20:
+                all_text.append(layer)
 
-        all_str.sort(key=len, reverse=True)
+        all_text.sort(key=len, reverse=True)
 
-        best_combo = '\n'.join(all_str[:30])
-        if len(best_combo) > 50 and self._looks_decoded(best_combo):
-            return self._beautify(best_combo), 'sandbox_capture', 'Combined readable source from sandbox'
+        best = ''
+        for text in all_text:
+            if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text or 'end' in text):
+                best = text
 
-        if lifted and len(lifted) > 50 and lifted != source:
-            return self._beautify(lifted), 'static_lift_fallback', 'Lifter produced output'
+        if best:
+            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
+
+        if all_text:
+            biggest = max(all_text, key=len)
+            if len(biggest) > 200:
+                return biggest, 'memory_dump', 'Largest captured string'
 
         reason = diag if diag else lifter_diag
         if not reason:
-            reason = 'VM obfuscator – the hidden source must be extracted with an external Lua decompiler (e.g., unluac)'
+            reason = 'VM obfuscator – bytecode saved for external decompilation'
         if GROQ_AVAILABLE and GROQ_KEY:
             try:
                 client = Groq(api_key=GROQ_KEY)
@@ -60,6 +82,71 @@ class DeobfEngine:
             except:
                 pass
         return source, 'unable', reason
+
+    def _extract_bytecode_from_lifter(self, source):
+        try:
+            cmap = self.lifter._build_char_map(source)
+            if not cmap or len(cmap) < 60:
+                return None
+            strings = self.lifter._extract_n_strings(source)
+            if not strings:
+                return None
+            pairs = self.lifter._extract_shuffle_pairs(source)
+            working = list(strings)
+            if pairs and len(pairs) == 3:
+                for a, b in pairs:
+                    lo, hi = a - 1, b - 1
+                    if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
+                        working[lo:hi+1] = working[lo:hi+1][::-1]
+            decoded = []
+            for s in working:
+                buf = self.lifter._decode_b64(s, cmap)
+                if buf:
+                    decoded.append(buf)
+            if not decoded:
+                return None
+            for chunk in decoded:
+                if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
+                    return chunk
+            full = b''.join(decoded)
+            idx = full.find(b'\x1bLua')
+            if idx != -1 and idx + 5 <= len(full) and full[idx+4] == 0x51:
+                return full[idx:]
+            return None
+        except:
+            return None
+
+    def _try_unluac(self, bytecode):
+        unluac_path = os.environ.get('UNLUAC_PATH', 'unluac.jar')
+        if not os.path.isfile(unluac_path):
+            return None
+        java_bin = shutil.which('java')
+        if not java_bin:
+            return None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.luac', delete=False) as tmp:
+                tmp.write(bytecode)
+                tmp_path = tmp.name
+            result = subprocess.run(
+                [java_bin, '-jar', unluac_path, tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            os.unlink(tmp_path)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout
+            return None
+        except:
+            return None
+
+    def _lift_bc(self, bc):
+        try:
+            parser = Lua51Parser(bc)
+            func = parser.parse_function()
+            return Lua51Decompiler(func).decompile()
+        except:
+            return None
 
     @staticmethod
     def _looks_decoded(code):

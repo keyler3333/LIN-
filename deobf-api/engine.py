@@ -23,6 +23,7 @@ if GROQ_KEY:
 class DeobfEngine:
     def __init__(self):
         self.lifter = WeAreDevsLifter()
+        # Cleaners used ONLY for static lifting
         self.cleaners = [
             EscapeSequenceTransformer(),
             MathTransformer(),
@@ -34,6 +35,7 @@ class DeobfEngine:
         if depth > 5:
             return source, 'max_depth', 'Max recursion depth reached'
 
+        # ---- Static lift attempt ----
         current = source
         for t in self.cleaners:
             try:
@@ -44,8 +46,10 @@ class DeobfEngine:
         if current != source and self._looks_decoded(current):
             return self._beautify(current), 'static_lift', 'Successfully deobfuscated'
 
-        layers, caps, diag = execute_sandbox(current, timeout=90)
+        # ---- Sandbox with ORIGINAL source ----
+        layers, caps, diag = execute_sandbox(source, timeout=90)
 
+        # ... rest of the handling (bytecode / captured strings) is identical ...
         for cap in caps:
             for offset in range(len(cap)):
                 if cap[offset:offset+4] == '\x1bLua':

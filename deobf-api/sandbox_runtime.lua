@@ -49,11 +49,12 @@ local _orig_rawset = rawset
 local _orig_rawget = rawget
 local _orig_table_concat = table.concat
 local _orig_string_char = string.char
+local _orig_string_dump = string.dump
 local _orig_newproxy = newproxy
 local _orig_unpack = unpack
 
 rawset = function(t, k, v)
-    if type(v) == "string" and #v > 20 then
+    if type(v) == "string" and #v > 5 then
         _write_capture(v)
     end
     return _orig_rawset(t, k, v)
@@ -76,7 +77,7 @@ end
 
 table.concat = function(t, sep, i, j)
     local r = _orig_table_concat(t, sep, i, j)
-    if type(r) == "string" and #r > 20 then
+    if type(r) == "string" and #r > 5 then
         _write_capture(r)
     end
     return r
@@ -84,6 +85,15 @@ end
 
 string.char = function(...)
     return _orig_string_char(...)
+end
+
+string.dump = function(fn)
+    local bc = _orig_string_dump(fn)
+    if bc and #bc > 20 then
+        _write_file(_out .. "/dump.bin", bc, "wb")
+        _L("STRING.DUMP captured " .. #bc .. " bytes")
+    end
+    return bc
 end
 
 local function _hooked_loadstring(code, name)
@@ -154,7 +164,7 @@ local _safe_env = {
         format = string.format, gmatch = string.gmatch, gsub = string.gsub,
         len = string.len, lower = string.lower, match = string.match,
         rep = string.rep, reverse = string.reverse, sub = string.sub,
-        upper = string.upper,
+        upper = string.upper, dump = string.dump,
     },
     math = {
         abs = math.abs, acos = math.acos, asin = math.asin, atan = math.atan,
@@ -266,6 +276,11 @@ else
                 elseif res and type(res) == "string" and #res > 5 then
                     _write_layer(res)
                     _L("RETURNED " .. #res .. " bytes")
+                end
+                for k, v in pairs(_safe_env) do
+                    if type(v) == "string" and #v > 20 then
+                        _write_capture(v)
+                    end
                 end
             end
         end

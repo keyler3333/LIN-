@@ -1,42 +1,38 @@
 local _out = "OUTDIR_PLACEHOLDER"
 local _inp = "INPATH_PLACEHOLDER"
 local _log = {}
-local _captured = {}
+local _layer_count = 0
 local _step_count = 0
 
 local function _L(s)
-    local ok, err = pcall(function()
-        _log[#_log+1] = tostring(s)
-    end)
-    if not ok then
-        _log[#_log+1] = "LOG_ERROR: " .. tostring(err)
-    end
+    _log[#_log+1] = tostring(s)
 end
 
 local function _write_file(path, data, mode)
-    local ok, err = pcall(function()
-        local f = io.open(path, mode or "w")
-        if not f then
-            error("Cannot open " .. path)
-        end
-        f:write(data)
-        f:close()
-    end)
-    if not ok then
-        _L("WRITE_ERROR: " .. tostring(err) .. " for " .. path)
-        return false
-    end
+    local f = io.open(path, mode or "w")
+    if not f then return false end
+    f:write(data)
+    f:close()
     return true
 end
 
-local function _repair_malformed(code)
-    local ok, result = pcall(function()
-        return (tostring(code or "")):gsub("(%d)([a-zA-Z_])", "%1 %2")
-    end)
-    if not ok then
-        return tostring(code or "")
+local function _write_layer(data)
+    _layer_count = _layer_count + 1
+    _write_file(_out .. "/layer_" .. _layer_count .. ".lua", data)
+    _L("LAYER_" .. _layer_count .. " " .. #data .. " bytes")
+end
+
+local function _write_capture(data)
+    local f = io.open(_out .. "/cap.txt", "a")
+    if f then
+        if f:seek("end") > 0 then f:write("---SEP---\n") end
+        f:write(data .. "\n")
+        f:close()
     end
-    return result
+end
+
+local function _repair_malformed(code)
+    return (tostring(code or "")):gsub("(%d)([a-zA-Z_])", "%1 %2")
 end
 
 do
@@ -44,14 +40,10 @@ do
         debug.sethook(function()
             _step_count = _step_count + 1000
             if _step_count > 100000000 then
-                _L("STEP_LIMIT_REACHED")
                 error("__LIMIT__")
             end
         end, "", 1000)
     end)
-    if not ok then
-        _L("HOOK_ERROR: " .. tostring(err))
-    end
 end
 
 local _orig_loadstring = loadstring
@@ -61,122 +53,40 @@ local _orig_rawset = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char = string.char
 
-do
-    local ok, err = pcall(function()
-        rawset = function(t, k, v)
-            if type(v) == "string" and #v > 1 then
-                local captured = false
-                for _, existing in ipairs(_captured) do
-                    if existing == v then
-                        captured = true
-                        break
-                    end
-                end
-                if not captured then
-                    _captured[#_captured + 1] = v
-                    _L("RAWSET " .. #v .. " bytes: " .. string.sub(v, 1, 80):gsub("%c", "."))
-                end
-            end
-            return _orig_rawset(t, k, v)
-        end
-    end)
-    if not ok then
-        _L("RAWSET_HOOK_ERROR: " .. tostring(err))
-        rawset = _orig_rawset
+rawset = function(t, k, v)
+    if type(v) == "string" and #v > 20 then
+        _write_capture(v)
     end
+    return _orig_rawset(t, k, v)
 end
 
-do
-    local ok, err = pcall(function()
-        table.concat = function(t, sep, i, j)
-            local r = _orig_table_concat(t, sep, i, j)
-            if type(r) == "string" and #r > 1 then
-                local captured = false
-                for _, existing in ipairs(_captured) do
-                    if existing == r then
-                        captured = true
-                        break
-                    end
-                end
-                if not captured then
-                    _captured[#_captured + 1] = r
-                    _L("CONCAT " .. #r .. " bytes: " .. string.sub(r, 1, 80):gsub("%c", "."))
-                end
-            end
-            return r
-        end
-    end)
-    if not ok then
-        _L("CONCAT_HOOK_ERROR: " .. tostring(err))
-        table.concat = _orig_table_concat
+table.concat = function(t, sep, i, j)
+    local r = _orig_table_concat(t, sep, i, j)
+    if type(r) == "string" and #r > 20 then
+        _write_capture(r)
     end
+    return r
 end
 
-do
-    local ok, err = pcall(function()
-        string.char = function(...)
-            local r = _orig_string_char(...)
-            if #r > 1 then
-                local captured = false
-                for _, existing in ipairs(_captured) do
-                    if existing == r then
-                        captured = true
-                        break
-                    end
-                end
-                if not captured then
-                    _captured[#_captured + 1] = r
-                    _L("CHAR " .. #r .. " bytes: " .. string.sub(r, 1, 80):gsub("%c", "."))
-                end
-            end
-            return r
-        end
-    end)
-    if not ok then
-        _L("CHAR_HOOK_ERROR: " .. tostring(err))
-        string.char = _orig_string_char
-    end
-end
-
-local function _capture_and_save(code)
-    local captured = false
-    for _, existing in ipairs(_captured) do
-        if existing == code then
-            captured = true
-            break
-        end
-    end
-    if not captured then
-        _captured[#_captured + 1] = code
-        local layer_num = 1
-        while io.open(_out .. "/layer_" .. layer_num .. ".lua") do
-            layer_num = layer_num + 1
-        end
-        local path = _out .. "/layer_" .. layer_num .. ".lua"
-        _write_file(path, code)
-        _L("LAYER_" .. layer_num .. " " .. #code .. " bytes")
-    end
+string.char = function(...)
+    local r = _orig_string_char(...)
+    return r
 end
 
 local function _hooked_loadstring(code, name)
     if type(code) == "function" then
         local parts = {}
-        local max_parts = 5000
-        local part_count = 0
-        while part_count < max_parts do
+        while true do
             local ok, p = pcall(code)
             if not ok or not p then break end
-            if type(p) == "string" then
-                parts[#parts+1] = p
-                part_count = part_count + 1
-            end
+            if type(p) == "string" then parts[#parts+1] = p end
+            if #parts > 5000 then break end
         end
         code = table.concat(parts)
     end
     if type(code) == "string" and #code > 5 then
         code = _repair_malformed(code)
-        _capture_and_save(code)
-        _L("LOADSTRING " .. #code .. " bytes")
+        _write_layer(code)
     end
     return _orig_loadstring(code, name)
 end
@@ -206,18 +116,10 @@ local _safe_env = {
     type = type,
     xpcall = xpcall,
     string = {
-        byte = string.byte,
-        char = string.char,
-        find = string.find,
-        format = string.format,
-        gmatch = string.gmatch,
-        gsub = string.gsub,
-        len = string.len,
-        lower = string.lower,
-        match = string.match,
-        rep = string.rep,
-        reverse = string.reverse,
-        sub = string.sub,
+        byte = string.byte, char = string.char, find = string.find,
+        format = string.format, gmatch = string.gmatch, gsub = string.gsub,
+        len = string.len, lower = string.lower, match = string.match,
+        rep = string.rep, reverse = string.reverse, sub = string.sub,
         upper = string.upper,
     },
     math = {
@@ -240,11 +142,7 @@ local _safe_env = {
         running = coroutine.running, status = coroutine.status,
         wrap = coroutine.wrap, yield = coroutine.yield,
     },
-    print = function(...)
-        local args = {...}
-        for i, v in ipairs(args) do args[i] = tostring(v) end
-        _L("PRINT: " .. table.concat(args, "\t"))
-    end,
+    print = function(...) end,
     warn = function() end,
     getfenv = function(f) return _safe_env end,
     setfenv = function(f, e) return f end,
@@ -280,75 +178,57 @@ _safe_env._G = _safe_env
 
 local _env_mt = {
     __index = function(t, k)
-        local ok, v = pcall(rawget, _safe_env, k)
-        if ok and v ~= nil then return v end
+        local v = rawget(_safe_env, k)
+        if v ~= nil then return v end
         _L("MISSING: " .. tostring(k))
         return {}
     end,
     __newindex = function(t, k, v)
-        pcall(rawset, _safe_env, k, v)
+        rawset(_safe_env, k, v)
     end,
 }
 
 local env = setmetatable({}, _env_mt)
 
-do
-    local fh, err = io.open(_inp, "rb")
-    if not fh then
-        _L("OPEN_ERROR: " .. tostring(err))
-        _write_file(_out .. "/error.txt", "cannot open input: " .. tostring(err))
+local fh = io.open(_inp, "rb")
+if not fh then
+    _L("OPEN_ERROR")
+    _write_file(_out .. "/error.txt", "cannot open input")
+else
+    local source = fh:read("*a")
+    fh:close()
+    if not source then
+        _L("READ_ERROR")
+        _write_file(_out .. "/error.txt", "cannot read input")
     else
-        local source, read_err = fh:read("*a")
-        fh:close()
-        if not source then
-            _L("READ_ERROR: " .. tostring(read_err))
-            _write_file(_out .. "/error.txt", "cannot read input: " .. tostring(read_err))
+        _L("SIZE: " .. #source .. " bytes")
+        source = _repair_malformed(source)
+        local chunk, parse_err = _orig_loadstring(source, "@input")
+        if not chunk then
+            _L("PARSE: " .. tostring(parse_err))
+            _write_file(_out .. "/error.txt", "parse error: " .. tostring(parse_err))
         else
-            _L("SIZE: " .. #source .. " bytes")
-            local hex = ""
-            local max_hex = math.min(#source, 100)
-            for i = 1, max_hex do
-                hex = hex .. string.format("%02X ", string.byte(source, i))
+            setfenv(chunk, env)
+            local function error_handler(e)
+                local tb = debug.traceback(tostring(e), 2)
+                _L("TRACE: " .. tb)
+                return tb
             end
-            _L("HEX: " .. hex)
-            source = _repair_malformed(source)
-            local chunk, parse_err = _orig_loadstring(source, "@input")
-            if not chunk then
-                _L("PARSE: " .. tostring(parse_err))
-                _write_file(_out .. "/error.txt", "parse error: " .. tostring(parse_err))
+            local ok, res = _orig_xpcall(chunk, error_handler)
+            if not ok then
+                _L("RUNTIME: " .. tostring(res))
+                _write_file(_out .. "/error.txt", tostring(res))
             else
-                setfenv(chunk, env)
-                local function error_handler(e)
-                    local tb = debug.traceback(tostring(e), 2)
-                    _L("TRACE: " .. tb)
-                    return tb
-                end
-                local ok, res = _orig_xpcall(chunk, error_handler)
-                if not ok then
-                    _L("RUNTIME: " .. tostring(res))
-                    _write_file(_out .. "/error.txt", tostring(res))
-                else
-                    _L("DONE: " .. type(res))
-                    if res and type(res) == "function" then
-                        local ok2, bc = pcall(string.dump, res)
-                        if ok2 then
-                            _write_file(_out .. "/dump.bin", bc, "wb")
-                            _L("DUMPED " .. #bc .. " bytes")
-                        else
-                            _L("DUMP_FAIL: " .. tostring(bc))
-                        end
-                    elseif res and type(res) == "string" and #res > 5 then
-                        _capture_and_save(res)
-                        _L("RETURNED " .. #res .. " bytes")
+                _L("DONE: " .. type(res))
+                if res and type(res) == "function" then
+                    local ok2, bc = pcall(string.dump, res)
+                    if ok2 then
+                        _write_file(_out .. "/dump.bin", bc, "wb")
+                        _L("DUMPED " .. #bc .. " bytes")
                     end
-                    if #_captured > 0 then
-                        local parts = {}
-                        for i, v in ipairs(_captured) do
-                            if i > 1 then parts[#parts + 1] = "---SEP---\n" end
-                            parts[#parts + 1] = v .. "\n"
-                        end
-                        _write_file(_out .. "/cap.txt", table.concat(parts))
-                    end
+                elseif res and type(res) == "string" and #res > 5 then
+                    _write_layer(res)
+                    _L("RETURNED " .. #res .. " bytes")
                 end
             end
         end
@@ -356,14 +236,9 @@ do
 end
 
 do
-    local ok, err = pcall(function()
-        local df = io.open(_out .. "/diag.txt", "w")
-        if df then
-            df:write(table.concat(_log, "\n"))
-            df:close()
-        end
-    end)
-    if not ok then
-        io.stderr:write("FINAL_ERROR: " .. tostring(err) .. "\n")
+    local df = io.open(_out .. "/diag.txt", "w")
+    if df then
+        df:write(table.concat(_log, "\n"))
+        df:close()
     end
 end

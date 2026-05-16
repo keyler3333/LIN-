@@ -1,14 +1,10 @@
 import os
 from transformers import (
     WeAreDevsLifter,
-    EscapeSequenceTransformer,
-    MathTransformer,
-    HexNameRenamer,
     Lua51Parser,
     Lua51Decompiler,
 )
 from sandbox import execute_sandbox
-
 
 GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
 GROQ_AVAILABLE = False
@@ -19,15 +15,9 @@ if GROQ_KEY:
     except ImportError:
         pass
 
-
 class DeobfEngine:
     def __init__(self):
         self.lifter = WeAreDevsLifter()
-        self.cleaners = [
-            EscapeSequenceTransformer(),
-            MathTransformer(),
-            HexNameRenamer(),
-        ]
 
     def process(self, source, depth=0):
         if depth > 5:
@@ -37,50 +27,69 @@ class DeobfEngine:
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Static lifter extracted readable source'
 
-        lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
+        lifter_diag = self.lifter.diagnostic
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
         for cap in caps:
             for offset in range(len(cap)):
-                if cap[offset:offset+4] == '\x1bLua':
-                    if offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
-                        bc = cap[offset:].encode('latin-1')
-                        lifted_bc = self._lift_bc(bc)
-                        if lifted_bc:
-                            return self._beautify(lifted_bc), 'sandbox_bytecode', 'Bytecode captured via sandbox'
+                if cap[offset:offset+4] == '\x1bLua' and offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
+                    bc = cap[offset:].encode('latin-1')
+                    lifted_bc = self._lift_bc(bc)
+                    if lifted_bc:
+                        return self._beautify(lifted_bc), 'sandbox_bytecode', 'Bytecode captured'
 
         for item in layers:
-            if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
+            if isinstance(item, bytes) and item.startswith(b'\x1bLua') and item[4] == 0x51:
                 lifted_bc = self._lift_bc(item)
                 if lifted_bc:
-                    return self._beautify(lifted_bc), 'sandbox_dump', 'Decompiled from bytecode dump'
+                    return self._beautify(lifted_bc), 'sandbox_dump', 'Bytecode from dump'
 
-        all_captured = caps + layers
+        all_text = []
+        for cap in caps:
+            if isinstance(cap, str) and len(cap) > 20:
+                all_text.append(cap)
+        for layer in layers:
+            if isinstance(layer, str) and len(layer) > 20:
+                all_text.append(layer)
+
         best = ''
-        for item in all_captured:
-            s = item if isinstance(item, str) else (item.decode('utf-8', errors='replace') if isinstance(item, bytes) else str(item))
-            if len(s) > len(best):
-                score = self._readability_score(s)
-                if score > 0.1 and len(s) > len(best):
-                    best = s
+        for text in all_text:
+            if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text or 'end' in text):
+                best = text
 
-        if best and ('function' in best or 'local' in best or 'print' in best or 'end' in best):
-            return self._beautify(best), 'sandbox_capture', 'Readable source captured from sandbox'
+        if best:
+            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
 
         if lifted and len(lifted) > 50 and lifted != source:
-            return self._beautify(lifted), 'static_lift_fallback', 'Static lifter produced output'
+            return self._beautify(lifted), 'static_lift_fallback', 'Static lifter output'
 
-        if best and len(best) > 200:
-            return best, 'memory_dump', 'Recovered from sandbox memory dump'
+        if all_text:
+            best_overall = max(all_text, key=len)
+            if len(best_overall) > 200:
+                return best_overall, 'memory_dump', 'Recovered from sandbox memory'
 
         reason = diag if diag else lifter_diag
         if not reason:
-            reason = 'All deobfuscation methods exhausted. The script uses VM-based obfuscation that does not call loadstring.'
+            reason = 'VM-based obfuscator – no loadstring call. The hidden source is inside the VM bytecode and requires a dedicated Lua 5.1 decompiler (e.g. unluac) to recover.'
         if GROQ_AVAILABLE and GROQ_KEY:
-            ai_note = self._ai_analysis(source, reason)
-            if ai_note:
+            try:
+                client = Groq(api_key=GROQ_KEY)
+                prompt = (
+                    "Deobfuscation failed for a WeAreDevs VM obfuscator.\n"
+                    f"Diagnostic: {reason}\n"
+                    "Suggest a concrete fix."
+                )
+                response = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=300,
+                    temperature=0.2,
+                )
+                ai_note = response.choices[0].message.content.strip()
                 reason = f"{reason}\n\n--- AI Analysis ---\n{ai_note}"
+            except:
+                pass
         return source, 'unable', reason
 
     def _lift_bc(self, bc):
@@ -88,47 +97,18 @@ class DeobfEngine:
             parser = Lua51Parser(bc)
             func = parser.parse_function()
             return Lua51Decompiler(func).decompile()
-        except Exception:
+        except:
             return None
 
     @staticmethod
     def _looks_decoded(code):
-        return DeobfEngine._readability_score(code) > 0.15
-
-    @staticmethod
-    def _readability_score(code):
         if not code or len(code) < 20:
-            return 0.0
+            return False
         lines = code.split('\n')
         if max((len(l) for l in lines), default=0) > 500:
-            return 0.0
+            return False
         alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        keywords = ['function', 'local', 'end', 'if', 'then', 'else', 'for', 'while', 'do', 'return', 'print']
-        kw_score = sum(1 for kw in keywords if kw in code) / len(keywords)
-        return (alpha / max(len(code), 1)) * 0.7 + kw_score * 0.3
-
-    def _ai_analysis(self, source, diag):
-        try:
-            client = Groq(api_key=GROQ_KEY)
-            prompt = (
-                "A Lua obfuscation deobfuscator failed to lift a WeAreDevs script. "
-                "The obfuscator uses a custom Base64 table, a shuffled string constant table, "
-                "and a VM-based executor that never calls loadstring.\n\n"
-                f"Diagnostic: {diag}\n\n"
-                "Source (first 4000 chars):\n```lua\n" +
-                source[:4000] +
-                "\n```\n\n"
-                "Explain why the deobfuscation likely failed and what specific fix should be applied."
-            )
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=800,
-                temperature=0.2,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception:
-            return None
+        return (alpha / max(len(code), 1)) > 0.15
 
     def _beautify(self, code):
         try:

@@ -2,15 +2,11 @@ import discord
 import io
 import os
 import httpx
-import asyncio
-import re
 from discord.ext import commands
-from discord import app_commands
-from itertools import cycle
 
-TOKEN      = os.environ['DISCORD_BOT_TOKEN']
-GROQ_KEY   = os.environ.get('GROQ_API_KEY', '')
-API_URL    = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
+TOKEN    = os.environ['DISCORD_BOT_TOKEN']
+GROQ_KEY = os.environ.get('GROQ_API_KEY', '')
+API_URL  = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -23,24 +19,14 @@ async def call_api(source):
         return r.json()
 
 async def run_deobf(text, filename):
-    if len(text) < 100:
-        em = discord.Embed(
-            title='File too small',
-            description=f'Received only {len(text)} bytes. Expected a full Lua file. Try re-uploading.',
-            color=0xe74c3c
-        )
-        return {'embed': em, 'file': None}
-
     try:
         data = await call_api(text)
     except Exception as e:
         em = discord.Embed(title='API Error', description=str(e), color=0xe74c3c)
         return {'embed': em, 'file': None}
-
     if 'error' in data:
         em = discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c)
         return {'embed': em, 'file': None}
-
     result = data.get('result', '')
     detected = data.get('detected', 'unknown')
     diagnostic = data.get('diagnostic', '')
@@ -52,54 +38,38 @@ async def run_deobf(text, filename):
     return {'embed': em, 'file': f}
 
 @bot.command(name='deobf')
-async def prefix_deobf(ctx, flags: str = ''):
+async def prefix_deobf(ctx):
     if not ctx.message.attachments:
         return await ctx.send('Attach a `.lua` file with `!deobf`')
-
     att = ctx.message.attachments[0]
     raw = await att.read()
-
-    if len(raw) < 100:
-        return await ctx.send(f'File is only {len(raw)} bytes. Please re-upload the full file.')
-
     try:
         text = raw.decode('utf-8')
     except:
         try:
             text = raw.decode('latin-1')
         except:
-            text = raw.decode('utf-8', errors='replace')
-
+            text = ''.join(chr(b) for b in raw)
     msg = await ctx.send(embed=discord.Embed(title='Deobfuscating...', color=0x3498db))
     res = await run_deobf(text, att.filename)
     await msg.delete()
-
     if res['file']:
         await ctx.send(file=res['file'], embed=res['embed'])
     else:
         await ctx.send(embed=res['embed'])
 
 @tree.command(name='deobf', description='Deobfuscate a Lua file')
-@app_commands.describe(file='The .lua file to deobfuscate')
 async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment):
     await interaction.response.defer(thinking=True)
-
     raw = await file.read()
-
-    if len(raw) < 100:
-        await interaction.followup.send(f'File is only {len(raw)} bytes. Please re-upload the full file.')
-        return
-
     try:
         text = raw.decode('utf-8')
     except:
         try:
             text = raw.decode('latin-1')
         except:
-            text = raw.decode('utf-8', errors='replace')
-
+            text = ''.join(chr(b) for b in raw)
     res = await run_deobf(text, file.filename)
-
     if res['file']:
         await interaction.followup.send(file=res['file'], embed=res['embed'])
     else:

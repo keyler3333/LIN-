@@ -14,36 +14,6 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def _fix_lua_source(source):
-    def repl_octal(match):
-        try:
-            val = int(match.group(1), 8)
-            if val < 256:
-                return chr(val)
-        except (ValueError, OverflowError):
-            pass
-        return match.group(0)
-
-    def repl_hex(match):
-        try:
-            val = int(match.group(1), 16)
-            return chr(val)
-        except (ValueError, OverflowError):
-            pass
-        return match.group(0)
-
-    source = re.sub(r'\\x([0-9a-fA-F]{2})', repl_hex, source)
-    source = re.sub(r'\\([0-7]{1,3})', repl_octal, source)
-    return source
-
-
-def _repair_malformed(source):
-    try:
-        return re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', source)
-    except Exception:
-        return source
-
-
 def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
@@ -52,16 +22,6 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
     layers = []
     caps = []
     diag = ""
-
-    try:
-        source = _fix_lua_source(source)
-    except Exception as e:
-        error_log.append(f"SOURCE_FIX_ERROR: {e}")
-
-    try:
-        source = _repair_malformed(source)
-    except Exception as e:
-        error_log.append(f"REPAIR_ERROR: {e}")
 
     try:
         temp_dir = tempfile.mkdtemp()
@@ -73,11 +33,9 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         drv = os.path.join(temp_dir, 'driver.lua')
 
         try:
-            raw_bytes = bytearray()
-            for ch in source:
-                raw_bytes.append(ord(ch) & 0xFF)
+            raw_bytes = bytes(ord(c) & 0xFF for c in source)
             with open(inp, 'wb') as f:
-                f.write(bytes(raw_bytes))
+                f.write(raw_bytes)
         except Exception as e:
             error_log.append(f"WRITE_INPUT_ERROR: {e}")
             shutil.rmtree(temp_dir, ignore_errors=True)

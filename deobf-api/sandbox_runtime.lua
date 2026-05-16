@@ -128,8 +128,7 @@ loadstring = _hooked_loadstring
 load = _hooked_loadstring
 
 getfenv = function(f)
-    local env = _orig_getfenv(f)
-    return env
+    return _orig_getfenv(f)
 end
 
 setfenv = function(f, e)
@@ -152,13 +151,25 @@ local function _make_proxy()
             return v
         end,
         __call = function(t, ...)
-            return _make_proxy()
+            return t
         end,
         __newindex = function(t, k, v)
             _orig_rawset(data, k, v)
         end,
         __gc = function() end,
         __tostring = function() return "proxy" end,
+        __len = function() return 0 end,
+        __unm = function() return 0 end,
+        __add = function() return 0 end,
+        __sub = function() return 0 end,
+        __mul = function() return 0 end,
+        __div = function() return 0 end,
+        __mod = function() return 0 end,
+        __pow = function() return 0 end,
+        __eq = function(a, b) return a == b end,
+        __lt = function() return false end,
+        __le = function() return false end,
+        __concat = function(a, b) return tostring(a) .. tostring(b) end,
     }
     return setmetatable({}, mt)
 end

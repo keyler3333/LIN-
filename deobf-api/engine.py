@@ -35,23 +35,35 @@ class DeobfEngine:
                 lifted_bc = self._lift_bc(item)
                 if lifted_bc: return self._beautify(lifted_bc), 'sandbox_dump', 'Bytecode from dump'
 
-        best = ''
+        all_strings = []
         for cap in caps:
-            if isinstance(cap, str) and len(cap) > 20 and ('function' in cap or 'local' in cap):
-                if len(cap) > len(best): best = cap
+            if isinstance(cap, str):
+                all_strings.append(cap)
         for layer in layers:
-            if isinstance(layer, str) and len(layer) > 20 and ('function' in layer or 'local' in layer):
-                if len(layer) > len(best): best = layer
+            if isinstance(layer, str):
+                all_strings.append(layer)
 
-        if best: return self._beautify(best), 'sandbox_capture', 'Readable source captured'
+        all_strings.sort(key=len, reverse=True)
+
+        readable_parts = [s for s in all_strings if self._looks_decoded(s)]
+        if readable_parts:
+            combined = "\n".join(readable_parts)
+            if len(combined) > 100:
+                return self._beautify(combined), 'sandbox_capture', 'Combined readable source from sandbox'
+
+        best = ''
+        for s in all_strings:
+            if len(s) > len(best) and ('function' in s or 'local' in s or 'print' in s or 'end' in s):
+                best = s
+        if best:
+            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
 
         if lifted and len(lifted) > 50 and lifted != source:
             return self._beautify(lifted), 'static_lift_fallback', 'Lifter output (heuristic)'
 
-        all_text = [c for c in caps if isinstance(c, str)] + [l for l in layers if isinstance(l, str)]
-        if all_text:
-            biggest = max(all_text, key=len)
-            if len(biggest) > 200: return biggest, 'memory_dump', 'Largest captured string'
+        biggest = all_strings[0] if all_strings else ''
+        if len(biggest) > 200:
+            return biggest, 'memory_dump', 'Largest captured string'
 
         reason = diag or lifter_diag
         if not reason: reason = 'VM obfuscator – the hidden code is inside the decoded bytecode.'

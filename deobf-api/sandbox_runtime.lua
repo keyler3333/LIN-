@@ -33,7 +33,7 @@ local function _write_capture(data)
 end
 
 local function _track_string(v)
-    if type(v) == "string" and #v > 3 and not _tracked[v] then
+    if type(v) == "string" and #v > 5 and not _tracked[v] then
         _tracked[v] = true
         _write_capture(v)
     end
@@ -139,13 +139,13 @@ local function _roproxy()
         __gc = function() end,
         __tostring = function() return "Instance" end,
         __len = function() return 0 end,
-        __unm = function() return _roproxy() end,
-        __add = function() return _roproxy() end,
-        __sub = function() return _roproxy() end,
-        __mul = function() return _roproxy() end,
-        __div = function() return _roproxy() end,
-        __mod = function() return _roproxy() end,
-        __pow = function() return _roproxy() end,
+        __unm = function() return 0 end,
+        __add = function() return 0 end,
+        __sub = function() return 0 end,
+        __mul = function() return 0 end,
+        __div = function() return 0 end,
+        __mod = function() return 0 end,
+        __pow = function() return 0 end,
         __eq = function(a, b) return a == b end,
         __lt = function() return false end,
         __le = function() return false end,

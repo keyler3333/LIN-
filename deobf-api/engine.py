@@ -23,12 +23,14 @@ class DeobfEngine:
         if depth > 5:
             return source, 'max_depth', 'Max recursion depth reached'
 
+        # 1) Static lifter
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
         lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
+        # 2) Extract bytecode from the lifter and try unluac
         extracted_bc = self._extract_bytecode_from_lifter(source)
         if extracted_bc:
             unluac_result = self._try_unluac(extracted_bc)
@@ -42,6 +44,7 @@ class DeobfEngine:
             )
             return bc_b64, 'bytecode', hint
 
+        # 3) Sandbox (best‑effort string capture)
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
         all_text = []
@@ -67,6 +70,7 @@ class DeobfEngine:
             if len(biggest) > 200:
                 return biggest, 'memory_dump', 'Largest captured string'
 
+        # 4) Fallback reason
         reason = diag if diag else lifter_diag
         if not reason:
             reason = 'VM obfuscator – bytecode saved for external decompilation'

@@ -14,30 +14,27 @@ def _lua_str(path):
     return '"' + path.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def _escape_to_byte(match):
-    try:
-        val = int(match.group(1))
-        if val < 256:
-            return chr(val)
-        return match.group(0)
-    except (ValueError, OverflowError):
-        return match.group(0)
-
-
-def _hex_to_byte(match):
-    try:
-        return chr(int(match.group(1), 16))
-    except (ValueError, OverflowError):
-        return match.group(0)
-
-
 def _fix_lua_source(source):
-    try:
-        source = re.sub(r'\\x([0-9a-fA-F]{2})', _hex_to_byte, source)
-        source = re.sub(r'\\(\d{1,3})', _escape_to_byte, source)
-        return source
-    except Exception:
-        return source
+    def repl_octal(match):
+        try:
+            val = int(match.group(1), 8)
+            if val < 256:
+                return chr(val)
+        except (ValueError, OverflowError):
+            pass
+        return match.group(0)
+
+    def repl_hex(match):
+        try:
+            val = int(match.group(1), 16)
+            return chr(val)
+        except (ValueError, OverflowError):
+            pass
+        return match.group(0)
+
+    source = re.sub(r'\\x([0-9a-fA-F]{2})', repl_hex, source)
+    source = re.sub(r'\\([0-7]{1,3})', repl_octal, source)
+    return source
 
 
 def _repair_malformed(source):
@@ -76,15 +73,11 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         drv = os.path.join(temp_dir, 'driver.lua')
 
         try:
-            if isinstance(source, str):
-                raw_bytes = bytearray()
-                for ch in source:
-                    raw_bytes.append(ord(ch) & 0xFF)
-                with open(inp, 'wb') as f:
-                    f.write(bytes(raw_bytes))
-            else:
-                with open(inp, 'wb') as f:
-                    f.write(source)
+            raw_bytes = bytearray()
+            for ch in source:
+                raw_bytes.append(ord(ch) & 0xFF)
+            with open(inp, 'wb') as f:
+                f.write(bytes(raw_bytes))
         except Exception as e:
             error_log.append(f"WRITE_INPUT_ERROR: {e}")
             shutil.rmtree(temp_dir, ignore_errors=True)

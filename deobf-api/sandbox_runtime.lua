@@ -121,11 +121,9 @@ end
 
 loadstring = _hooked_loadstring
 load = _hooked_loadstring
-
 getfenv = _orig_getfenv
 setfenv = _orig_setfenv
 
-local _roproxy_mt
 local function _roproxy()
     local data = {}
     local mt = {
@@ -155,7 +153,6 @@ local function _roproxy()
     }
     return setmetatable({}, mt)
 end
-_roproxy_mt = getmetatable(_roproxy())
 
 local function _make_service(name)
     return _roproxy()
@@ -190,7 +187,7 @@ local game = {
         elseif name == "ServerScriptService" then return _roproxy()
         elseif name == "StarterGui" then return _roproxy()
         elseif name == "StarterPack" then return _roproxy()
-        elseif name == "SoundService" then return _roproxy()
+        elseif name == "SoundService" then return _make_service(name)
         elseif name == "MarketplaceService" then return _make_service(name)
         elseif name == "HttpService" then return _make_service(name)
         elseif name == "TeleportService" then return _make_service(name)
@@ -208,10 +205,10 @@ local Instance = {
         obj.Name = className
         obj.className = className
         obj.Parent = nil
-        obj:Destroy = function() end
-        obj:Clone = function() return obj end
-        obj:FindFirstChild = function() return nil end
-        obj:WaitForChild = function() return nil end
+        obj.Destroy = function() end
+        obj.Clone = function() return obj end
+        obj.FindFirstChild = function() return nil end
+        obj.WaitForChild = function() return nil end
         return obj
     end,
 }
@@ -357,8 +354,6 @@ local _safe_env = {
     tick = tick,
     time = time,
     elapsedTime = elapsedTime,
-    _G = nil,
-    _ENV = nil,
 }
 
 _safe_env._G = _safe_env

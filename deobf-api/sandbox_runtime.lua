@@ -46,6 +46,7 @@ local _orig_loadstring = loadstring
 local _orig_pcall = pcall
 local _orig_xpcall = xpcall
 local _orig_rawset = rawset
+local _orig_rawget = rawget
 local _orig_table_concat = table.concat
 local _orig_string_char = string.char
 local _orig_newproxy = newproxy
@@ -56,6 +57,21 @@ rawset = function(t, k, v)
         _write_capture(v)
     end
     return _orig_rawset(t, k, v)
+end
+
+rawget = function(t, k)
+    local v = _orig_rawget(t, k)
+    if v ~= nil then return v end
+    local mt = getmetatable(t)
+    if mt and mt.__index then
+        local index = mt.__index
+        if type(index) == "function" then
+            return index(t, k)
+        else
+            return index[k]
+        end
+    end
+    return nil
 end
 
 table.concat = function(t, sep, i, j)

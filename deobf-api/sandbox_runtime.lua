@@ -3,6 +3,7 @@ local _inp = "INPATH_PLACEHOLDER"
 local _log = {}
 local _layer_count = 0
 local _step_count = 0
+local _tracked = {}
 
 local function _L(s)
     _log[#_log+1] = tostring(s)
@@ -31,6 +32,13 @@ local function _write_capture(data)
     end
 end
 
+local function _track_string(v)
+    if type(v) == "string" and #v > 3 and not _tracked[v] then
+        _tracked[v] = true
+        _write_capture(v)
+    end
+end
+
 do
     local ok, err = pcall(function()
         debug.sethook(function()
@@ -52,11 +60,14 @@ local _orig_string_char = string.char
 local _orig_string_dump = string.dump
 local _orig_newproxy = newproxy
 local _orig_unpack = unpack
+local _orig_getfenv = getfenv
+local _orig_setfenv = setfenv
+local _orig_type = type
+local _orig_pairs = pairs
+local _orig_tostring = tostring
 
 rawset = function(t, k, v)
-    if type(v) == "string" and #v > 5 then
-        _write_capture(v)
-    end
+    _track_string(v)
     return _orig_rawset(t, k, v)
 end
 
@@ -66,9 +77,9 @@ rawget = function(t, k)
     local mt = getmetatable(t)
     if mt and mt.__index then
         local index = mt.__index
-        if type(index) == "function" then
+        if _orig_type(index) == "function" then
             return index(t, k)
-        elseif type(index) == "table" then
+        elseif _orig_type(index) == "table" then
             return index[k]
         end
     end
@@ -77,14 +88,14 @@ end
 
 table.concat = function(t, sep, i, j)
     local r = _orig_table_concat(t, sep, i, j)
-    if type(r) == "string" and #r > 5 then
-        _write_capture(r)
-    end
+    _track_string(r)
     return r
 end
 
 string.char = function(...)
-    return _orig_string_char(...)
+    local r = _orig_string_char(...)
+    _track_string(r)
+    return r
 end
 
 string.dump = function(fn)
@@ -97,17 +108,17 @@ string.dump = function(fn)
 end
 
 local function _hooked_loadstring(code, name)
-    if type(code) == "function" then
+    if _orig_type(code) == "function" then
         local parts = {}
         while true do
             local ok, p = pcall(code)
             if not ok or not p then break end
-            if type(p) == "string" then parts[#parts+1] = p end
+            if _orig_type(p) == "string" then parts[#parts+1] = p end
             if #parts > 5000 then break end
         end
         code = table.concat(parts)
     end
-    if type(code) == "string" and #code > 5 then
+    if _orig_type(code) == "string" and #code > 5 then
         _write_layer(code)
     end
     return _orig_loadstring(code, name)
@@ -115,6 +126,20 @@ end
 
 loadstring = _hooked_loadstring
 load = _hooked_loadstring
+
+getfenv = function(f)
+    local env = _orig_getfenv(f)
+    return env
+end
+
+setfenv = function(f, e)
+    if _orig_type(e) == "table" then
+        for k, v in _orig_pairs(e) do
+            _track_string(v)
+        end
+    end
+    return _orig_setfenv(f, e)
+end
 
 local function _make_proxy()
     local data = {}
@@ -133,6 +158,7 @@ local function _make_proxy()
             _orig_rawset(data, k, v)
         end,
         __gc = function() end,
+        __tostring = function() return "proxy" end,
     }
     return setmetatable({}, mt)
 end
@@ -158,7 +184,11 @@ local _safe_env = {
     tostring = tostring,
     type = type,
     xpcall = xpcall,
-    unpack = _orig_unpack or table.unpack or function(t, i, j) return t[i], t[i+1], t[i+2] end,
+    unpack = _orig_unpack or table.unpack,
+    getfenv = getfenv,
+    setfenv = setfenv,
+    loadstring = loadstring,
+    load = load,
     string = {
         byte = string.byte, char = string.char, find = string.find,
         format = string.format, gmatch = string.gmatch, gsub = string.gsub,
@@ -186,7 +216,7 @@ local _safe_env = {
             return n
         end,
         remove = table.remove, sort = table.sort,
-        unpack = _orig_unpack or function(t, i, j) return t[i], t[i+1], t[i+2] end,
+        unpack = _orig_unpack or table.unpack,
     },
     os = { clock = os.clock, date = os.date, difftime = os.difftime, time = os.time },
     coroutine = {
@@ -196,8 +226,6 @@ local _safe_env = {
     },
     print = function(...) end,
     warn = function() end,
-    getfenv = function(f) return _safe_env end,
-    setfenv = function(f, e) return f end,
     newproxy = function(add)
         local u = _orig_newproxy(add)
         if add then
@@ -219,6 +247,10 @@ local _safe_env = {
     SoundService = _make_proxy(),
     HttpService = _make_proxy(),
     Enum = _make_proxy(),
+    shared = _make_proxy(),
+    getconnections = _make_proxy(),
+    hookfunction = _make_proxy(),
+    isscript = _make_proxy(),
 }
 
 _safe_env._G = _safe_env
@@ -232,6 +264,7 @@ local _env_mt = {
         return _make_proxy()
     end,
     __newindex = function(t, k, v)
+        _track_string(v)
         _orig_rawset(_safe_env, k, v)
     end,
 }
@@ -255,38 +288,55 @@ else
             _L("PARSE: " .. tostring(parse_err))
             _write_file(_out .. "/error.txt", "parse error: " .. tostring(parse_err))
         else
-            setfenv(chunk, env)
+            _orig_setfenv(chunk, env)
             local function error_handler(e)
-                local tb = debug.traceback(tostring(e), 2)
+                local tb = debug.traceback(_orig_tostring(e), 2)
                 _L("TRACE: " .. tb)
                 return tb
             end
             local ok, res = _orig_xpcall(chunk, error_handler)
             if not ok then
-                _L("RUNTIME: " .. tostring(res))
-                _write_file(_out .. "/error.txt", tostring(res))
+                _L("RUNTIME: " .. _orig_tostring(res))
+                _write_file(_out .. "/error.txt", _orig_tostring(res))
             else
-                _L("DONE: " .. type(res))
-                if res and type(res) == "function" then
+                _L("DONE: " .. _orig_type(res))
+                if res and _orig_type(res) == "function" then
                     local ok2, bc = pcall(string.dump, res)
                     if ok2 then
                         _write_file(_out .. "/dump.bin", bc, "wb")
                         _L("DUMPED " .. #bc .. " bytes")
                     end
-                elseif res and type(res) == "string" and #res > 5 then
+                elseif res and _orig_type(res) == "string" and #res > 5 then
                     _write_layer(res)
                     _L("RETURNED " .. #res .. " bytes")
                 end
-                for k, v in pairs(_safe_env) do
-                    if type(v) == "string" and #v > 20 then
-                        _write_capture(v)
+                _L("MEMORY_SCAN_START")
+                local mem_parts = {}
+                local function _scan_table(t, depth, path)
+                    if depth > 4 then return end
+                    for k, v in _orig_pairs(t) do
+                        local full_path = path .. "[" .. _orig_tostring(k) .. "]"
+                        if _orig_type(v) == "string" and #v > 5 then
+                            _track_string(v)
+                            mem_parts[#mem_parts+1] = v
+                        elseif _orig_type(v) == "table" then
+                            _scan_table(v, depth + 1, full_path)
+                        end
                     end
                 end
-                for k, v in pairs(env) do
-                    if type(v) == "string" and #v > 20 then
-                        _write_capture(v)
+                _scan_table(_safe_env, 0, "_G")
+                _scan_table(env, 0, "env")
+                if #mem_parts > 0 then
+                    local mf = io.open(_out .. "/memory.txt", "w")
+                    if mf then
+                        for i, s in ipairs(mem_parts) do
+                            if i > 1 then mf:write("---MEMSEP---\n") end
+                            mf:write(s .. "\n")
+                        end
+                        mf:close()
                     end
                 end
+                _L("MEMORY_SCAN_END: " .. #mem_parts .. " strings found")
             end
         end
     end

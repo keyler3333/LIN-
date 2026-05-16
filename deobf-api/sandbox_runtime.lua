@@ -67,7 +67,7 @@ rawget = function(t, k)
         local index = mt.__index
         if type(index) == "function" then
             return index(t, k)
-        else
+        elseif type(index) == "table" then
             return index[k]
         end
     end
@@ -106,23 +106,25 @@ end
 loadstring = _hooked_loadstring
 load = _hooked_loadstring
 
-local function _noop(...) end
-
-local function _newproxy()
-    local t = {}
+local function _make_proxy()
+    local data = {}
     local mt = {
-        __index = function(_, k)
-            local v = _orig_rawget(t, k)
+        __index = function(t, k)
+            local v = _orig_rawget(data, k)
             if v ~= nil then return v end
-            v = _newproxy()
-            _orig_rawset(t, k, v)
+            v = _make_proxy()
+            _orig_rawset(data, k, v)
             return v
         end,
-        __call = _noop,
-        __newindex = function(_, k, v) _orig_rawset(t, k, v) end,
+        __call = function(t, ...)
+            return _make_proxy()
+        end,
+        __newindex = function(t, k, v)
+            _orig_rawset(data, k, v)
+        end,
         __gc = function() end,
     }
-    return setmetatable(t, mt)
+    return setmetatable({}, mt)
 end
 
 local _safe_env = {
@@ -194,19 +196,19 @@ local _safe_env = {
         end
         return u
     end,
-    game = _newproxy(),
-    workspace = _newproxy(),
-    Players = _newproxy(),
-    MarketplaceService = _newproxy(),
-    ReplicatedStorage = _newproxy(),
-    ServerStorage = _newproxy(),
-    ServerScriptService = _newproxy(),
-    Lighting = _newproxy(),
-    StarterGui = _newproxy(),
-    StarterPack = _newproxy(),
-    SoundService = _newproxy(),
-    HttpService = _newproxy(),
-    Enum = _newproxy(),
+    game = _make_proxy(),
+    workspace = _make_proxy(),
+    Players = _make_proxy(),
+    MarketplaceService = _make_proxy(),
+    ReplicatedStorage = _make_proxy(),
+    ServerStorage = _make_proxy(),
+    ServerScriptService = _make_proxy(),
+    Lighting = _make_proxy(),
+    StarterGui = _make_proxy(),
+    StarterPack = _make_proxy(),
+    SoundService = _make_proxy(),
+    HttpService = _make_proxy(),
+    Enum = _make_proxy(),
 }
 
 _safe_env._G = _safe_env
@@ -217,7 +219,7 @@ local _env_mt = {
         local v = _orig_rawget(_safe_env, k)
         if v ~= nil then return v end
         _L("MISSING: " .. tostring(k))
-        return _newproxy()
+        return _make_proxy()
     end,
     __newindex = function(t, k, v)
         _orig_rawset(_safe_env, k, v)

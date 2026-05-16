@@ -52,6 +52,8 @@ local _orig_xpcall = xpcall
 local _orig_rawset = rawset
 local _orig_table_concat = table.concat
 local _orig_string_char = string.char
+local _orig_newproxy = newproxy
+local _orig_unpack = unpack
 
 rawset = function(t, k, v)
     if type(v) == "string" and #v > 20 then
@@ -115,6 +117,7 @@ local _safe_env = {
     tostring = tostring,
     type = type,
     xpcall = xpcall,
+    unpack = _orig_unpack or table.unpack or function(t, i, j) return t[i], t[i+1], t[i+2] end,
     string = {
         byte = string.byte, char = string.char, find = string.find,
         format = string.format, gmatch = string.gmatch, gsub = string.gsub,
@@ -135,6 +138,7 @@ local _safe_env = {
     table = {
         concat = table.concat, insert = table.insert,
         maxn = function(t) return #t end, remove = table.remove, sort = table.sort,
+        unpack = _orig_unpack or function(t, i, j) return t[i], t[i+1], t[i+2] end,
     },
     os = { clock = os.clock, date = os.date, difftime = os.difftime, time = os.time },
     coroutine = {
@@ -147,8 +151,11 @@ local _safe_env = {
     getfenv = function(f) return _safe_env end,
     setfenv = function(f, e) return f end,
     newproxy = function(add)
-        local u = newproxy(true)
-        if add then getmetatable(u).__gc = function() end end
+        local u = _orig_newproxy(true)
+        if add then
+            local mt = getmetatable(u)
+            if mt then mt.__gc = function() end end
+        end
         return u
     end,
     game = {
@@ -175,6 +182,7 @@ local _safe_env = {
 }
 
 _safe_env._G = _safe_env
+_safe_env._ENV = _safe_env
 
 local _env_mt = {
     __index = function(t, k)

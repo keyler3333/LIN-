@@ -372,7 +372,7 @@ class WeAreDevsLifter(Transformer):
         self.diagnostic = ""
         try:
             lifted = self._try_lift(code)
-            if lifted and len(lifted) > 10:
+            if lifted and len(lifted) > 20:
                 return lifted
         except Exception as e:
             self.diagnostic = f"Lifter exception: {e}"
@@ -426,7 +426,7 @@ class WeAreDevsLifter(Transformer):
             try:
                 text = chunk.decode('utf-8', errors='replace')
                 printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t ')
-                if len(text) > 20 and printable / max(len(text), 1) > 0.5:
+                if len(text) > 20 and printable / max(len(text), 1) > 0.6:
                     if len(text) > len(best):
                         best = text
             except:
@@ -435,7 +435,7 @@ class WeAreDevsLifter(Transformer):
         if best:
             return best
 
-        self.diagnostic = f"Decoded {len(decoded)} chunks, {len(full)} bytes total, no bytecode or readable source found"
+        self.diagnostic = f"Decoded {len(decoded)} chunks, {len(full)} bytes total"
         return None
 
     def _build_char_map(self, source):
@@ -460,7 +460,19 @@ class WeAreDevsLifter(Transformer):
         assignments = []
         current = []
         paren_depth = 0
+        in_string = False
+        string_char = None
         for ch in body:
+            if in_string:
+                current.append(ch)
+                if ch == string_char:
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                string_char = ch
+                current.append(ch)
+                continue
             if ch == '(':
                 paren_depth += 1
             elif ch == ')':
@@ -479,19 +491,92 @@ class WeAreDevsLifter(Transformer):
                 continue
             kpart, vpart = assign.split('=', 1)
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
+            if key.startswith('\\'):
+                try:
+                    key = chr(int(key[1:]))
+                except:
+                    pass
             expr = vpart.strip().replace(' ', '')
             try:
-                cmap[key] = eval(expr) & 0x3F
+                val = eval(expr) & 0x3F
+                cmap[key] = val
             except:
                 pass
         return cmap
 
     def _extract_n_strings(self, source):
-        m = re.search(r'local\s+N\s*=\s*\{((?:\s*"[^"]*"\s*[;,]?\s*)+)\}', source, re.DOTALL)
+        m = re.search(r'local\s+N\s*=\s*\{', source)
         if not m:
             return None
-        raw = m.group(1)
-        return re.findall(r'"([^"]*)"', raw)
+        start = m.end() - 1
+        depth = 0
+        end = -1
+        in_string = False
+        string_char = None
+        for i in range(start, len(source)):
+            ch = source[i]
+            if in_string:
+                if ch == '\\':
+                    if i + 1 < len(source):
+                        i += 1
+                    continue
+                if ch == string_char:
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                string_char = ch
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end == -1:
+            return None
+        body = source[start+1:end]
+
+        strings = []
+        current = []
+        in_string = False
+        string_char = None
+        escape_next = False
+        for ch in body:
+            if escape_next:
+                current.append('\\' + ch)
+                escape_next = False
+                continue
+            if in_string:
+                if ch == '\\':
+                    current.append(ch)
+                    escape_next = True
+                    continue
+                current.append(ch)
+                if ch == string_char:
+                    strings.append(''.join(current))
+                    current = []
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                string_char = ch
+                current.append(ch)
+                continue
+        if current:
+            strings.append(''.join(current))
+
+        result = []
+        for s in strings:
+            s = s.strip()
+            if s.startswith('"') and s.endswith('"'):
+                s = s[1:-1]
+            elif s.startswith("'") and s.endswith("'"):
+                s = s[1:-1]
+            if s:
+                result.append(s)
+        return result
 
     def _extract_shuffle_pairs(self, source):
         cleaned = re.sub(r'\((-?\d+)\)', r'\1', source)

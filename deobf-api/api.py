@@ -16,12 +16,10 @@ def deobf():
     data = request.get_json(silent=True)
     if not data or not data.get('source', '').strip():
         return jsonify({'error': 'No source provided'}), 400
-    if len(data['source'].encode()) > 4 * 1024 * 1024:
+    source = data['source']
+    if len(source) > 4 * 1024 * 1024:
         return jsonify({'error': 'Source exceeds 4MB limit'}), 413
     try:
-        source = data['source']
-        if isinstance(source, bytes):
-            source = ''.join(chr(b) for b in source)
         result, obf_type, diag = engine.process(source)
         return jsonify({'result': result, 'detected': obf_type, 'diagnostic': diag})
     except Exception as e:

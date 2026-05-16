@@ -35,13 +35,12 @@ class DeobfEngine:
 
         lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
-        # 2) Extract bytecode and try unluac (auto‑download if needed)
+        # 2) Extract bytecode and try unluac
         extracted_bc = self._extract_bytecode_from_lifter(source)
         if extracted_bc:
             unluac_result = self._try_unluac(extracted_bc)
             if unluac_result and self._looks_decoded(unluac_result):
                 return self._beautify(unluac_result), 'unluac', 'Decompiled by unluac'
-
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
             hint = (
                 "Lua 5.1 bytecode extracted but unluac is not available.\n"
@@ -50,7 +49,13 @@ class DeobfEngine:
             )
             return bc_b64, 'bytecode', hint
 
-        # 3) Sandbox (best‑effort string capture)
+        # 3) If the lifter found decoded strings, return the best readable chunk
+        #    instead of falling through to the sandbox (which always crashes).
+        best_decoded = self._get_best_decoded_text(source)
+        if best_decoded and len(best_decoded) > 200:
+            return best_decoded, 'static_decode', 'Best decoded strings from static lifter'
+
+        # 4) Sandbox (only if the lifter found nothing)
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
         all_text = []
@@ -78,7 +83,7 @@ class DeobfEngine:
 
         reason = diag if diag else lifter_diag
         if not reason:
-            reason = 'VM obfuscator – bytecode saved for external decompilation'
+            reason = 'VM obfuscator – no readable source captured'
         if GROQ_AVAILABLE and GROQ_KEY:
             try:
                 client = Groq(api_key=GROQ_KEY)
@@ -92,6 +97,42 @@ class DeobfEngine:
             except:
                 pass
         return source, 'unable', reason
+
+    def _get_best_decoded_text(self, source):
+        try:
+            cmap = self.lifter._build_char_map(source)
+            if not cmap or len(cmap) < 60:
+                return None
+            strings = self.lifter._extract_n_strings(source)
+            if not strings:
+                return None
+            pairs = self.lifter._extract_shuffle_pairs(source)
+            working = list(strings)
+            if pairs and len(pairs) == 3:
+                for a, b in pairs:
+                    lo, hi = a - 1, b - 1
+                    if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
+                        working[lo:hi+1] = working[lo:hi+1][::-1]
+            decoded = []
+            for s in working:
+                buf = self.lifter._decode_b64(s, cmap)
+                if buf:
+                    decoded.append(buf)
+            if not decoded:
+                return None
+            best = ""
+            for chunk in decoded:
+                try:
+                    text = chunk.decode('utf-8', errors='replace')
+                    printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t ')
+                    if len(text) > 20 and printable / max(len(text), 1) > 0.5:
+                        if len(text) > len(best):
+                            best = text
+                except:
+                    pass
+            return best if best else None
+        except:
+            return None
 
     def _ensure_unluac_jar(self):
         if os.path.isfile(UNLUAC_LOCAL_PATH):

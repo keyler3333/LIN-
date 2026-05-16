@@ -128,10 +128,23 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
                 if data:
                     for part in data.split('---SEP---'):
                         s = part.strip()
-                        if len(s) > 20:
+                        if len(s) > 5:
                             caps.append(s)
             except Exception as e:
                 error_log.append(f"READ_CAP_ERROR: {e}")
+
+        memf = os.path.join(temp_dir, 'memory.txt')
+        if os.path.exists(memf):
+            try:
+                with open(memf, encoding='utf-8', errors='replace') as f:
+                    data = f.read()
+                if data:
+                    for part in data.split('---MEMSEP---'):
+                        s = part.strip()
+                        if len(s) > 10:
+                            caps.append(s)
+            except Exception as e:
+                error_log.append(f"READ_MEM_ERROR: {e}")
 
         diagf = os.path.join(temp_dir, 'diag.txt')
         if os.path.exists(diagf):

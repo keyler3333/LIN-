@@ -4,7 +4,6 @@ import subprocess
 import tempfile
 import shutil
 import traceback
-import sys
 
 LUA_BIN = shutil.which('lua5.1') or shutil.which('lua51') or shutil.which('lua') or 'lua'
 RUNTIME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sandbox_runtime.lua')
@@ -48,23 +47,6 @@ def _repair_malformed(source):
         return source
 
 
-def _write_file_safe(path, data, mode='w'):
-    try:
-        with open(path, mode, encoding='utf-8' if 'b' not in mode else None) as f:
-            f.write(data)
-        return True
-    except Exception:
-        return False
-
-
-def _read_file_safe(path, mode='r'):
-    try:
-        with open(path, mode, encoding='utf-8' if 'b' not in mode else None, errors='replace') as f:
-            return f.read(), None
-    except Exception as e:
-        return None, str(e)
-
-
 def execute_sandbox(source, use_emulator=False, timeout=90):
     if not os.path.isfile(RUNTIME_PATH):
         raise RuntimeError(f'sandbox_runtime.lua not found at {RUNTIME_PATH!r}')
@@ -78,7 +60,7 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         source = _fix_lua_source(source)
     except Exception as e:
         error_log.append(f"SOURCE_FIX_ERROR: {e}")
-    
+
     try:
         source = _repair_malformed(source)
     except Exception as e:
@@ -94,8 +76,15 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         drv = os.path.join(temp_dir, 'driver.lua')
 
         try:
-            with open(inp, 'wb') as f:
-                f.write(source.encode('latin-1'))
+            if isinstance(source, str):
+                raw_bytes = bytearray()
+                for ch in source:
+                    raw_bytes.append(ord(ch) & 0xFF)
+                with open(inp, 'wb') as f:
+                    f.write(bytes(raw_bytes))
+            else:
+                with open(inp, 'wb') as f:
+                    f.write(source)
         except Exception as e:
             error_log.append(f"WRITE_INPUT_ERROR: {e}")
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -111,15 +100,18 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
 
         out_dir = temp_dir.replace('\\', '/')
         inp_path = inp.replace('\\', '/')
-        
+
         driver = (runtime
                   .replace('"OUTDIR_PLACEHOLDER"', _lua_str(out_dir))
                   .replace('"INPATH_PLACEHOLDER"', _lua_str(inp_path)))
 
-        if not _write_file_safe(drv, driver, 'w'):
-            error_log.append("WRITE_DRIVER_ERROR")
+        try:
+            with open(drv, 'w', encoding='utf-8') as f:
+                f.write(driver)
+        except Exception as e:
+            error_log.append(f"WRITE_DRIVER_ERROR: {e}")
             shutil.rmtree(temp_dir, ignore_errors=True)
-            return [], [], "WRITE_DRIVER_ERROR: Could not write driver.lua"
+            return [], [], f"WRITE_DRIVER_ERROR: {e}"
 
         env = os.environ.copy()
         current_lua_path = env.get('LUA_PATH', '')
@@ -156,11 +148,13 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
             p = os.path.join(temp_dir, f'layer_{i}.lua')
             if not os.path.exists(p):
                 break
-            data, err = _read_file_safe(p)
-            if err:
-                error_log.append(f"READ_LAYER_{i}_ERROR: {err}")
-            elif data:
-                layers.append(data)
+            try:
+                with open(p, encoding='utf-8', errors='replace') as f:
+                    data = f.read()
+                if data:
+                    layers.append(data)
+            except Exception as e:
+                error_log.append(f"READ_LAYER_{i}_ERROR: {e}")
             i += 1
 
         dump = os.path.join(temp_dir, 'dump.bin')
@@ -177,33 +171,39 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
 
         capf = os.path.join(temp_dir, 'cap.txt')
         if os.path.exists(capf):
-            data, err = _read_file_safe(capf)
-            if err:
-                error_log.append(f"READ_CAP_ERROR: {err}")
-            elif data:
-                for part in data.split('---SEP---'):
-                    s = part.strip()
-                    if len(s) > 20:
-                        caps.append(s)
+            try:
+                with open(capf, encoding='utf-8', errors='replace') as f:
+                    data = f.read()
+                if data:
+                    for part in data.split('---SEP---'):
+                        s = part.strip()
+                        if len(s) > 20:
+                            caps.append(s)
+            except Exception as e:
+                error_log.append(f"READ_CAP_ERROR: {e}")
 
         diagf = os.path.join(temp_dir, 'diag.txt')
         if os.path.exists(diagf):
-            data, err = _read_file_safe(diagf)
-            if err:
-                error_log.append(f"READ_DIAG_ERROR: {err}")
-            elif data:
-                diag = data
+            try:
+                with open(diagf, encoding='utf-8', errors='replace') as f:
+                    data = f.read()
+                if data:
+                    diag = data
+            except Exception as e:
+                error_log.append(f"READ_DIAG_ERROR: {e}")
 
         errf = os.path.join(temp_dir, 'error.txt')
         if os.path.exists(errf):
-            data, err = _read_file_safe(errf)
-            if err:
-                error_log.append(f"READ_ERROR_FILE_ERROR: {err}")
-            elif data:
-                if diag:
-                    diag = data + "\n---\n" + diag
-                else:
-                    diag = data
+            try:
+                with open(errf, encoding='utf-8', errors='replace') as f:
+                    data = f.read()
+                if data:
+                    if diag:
+                        diag = data + "\n---\n" + diag
+                    else:
+                        diag = data
+            except Exception as e:
+                error_log.append(f"READ_ERROR_FILE_ERROR: {e}")
 
         if error_log:
             err_summary = "\n".join(error_log)

@@ -90,23 +90,24 @@ end
 loadstring = _hooked_loadstring
 load = _hooked_loadstring
 
-local function _dummy()
-    return function() end
-end
+local function _noop(...) end
 
-local _roproxy = {}
-local _roproxy_mt = {
-    __index = function(_, k)
-        local v = rawget(_roproxy, k)
-        if v ~= nil then return v end
-        v = _dummy()
-        rawset(_roproxy, k, v)
-        return v
-    end,
-    __call = _dummy,
-    __newindex = function(_, k, v) rawset(_roproxy, k, v) end,
-    __gc = function() end,
-}
+local function _newproxy()
+    local t = {}
+    local mt = {
+        __index = function(_, k)
+            local v = rawget(t, k)
+            if v ~= nil then return v end
+            v = _newproxy()
+            rawset(t, k, v)
+            return v
+        end,
+        __call = _noop,
+        __newindex = function(_, k, v) rawset(t, k, v) end,
+        __gc = function() end,
+    }
+    return setmetatable(t, mt)
+end
 
 local _safe_env = {
     assert = assert,
@@ -177,32 +178,19 @@ local _safe_env = {
         end
         return u
     end,
-    game = setmetatable({
-        PlaceId = 12345678,
-        JobId = "00000000-0000-0000-0000-000000000000",
-        GetService = function(_, name) return setmetatable({}, _roproxy_mt) end,
-    }, _roproxy_mt),
-    workspace = setmetatable({}, _roproxy_mt),
-    Players = setmetatable({
-        LocalPlayer = setmetatable({
-            Name = "Player", UserId = 1, Character = setmetatable({}, _roproxy_mt),
-            PlayerGui = setmetatable({}, _roproxy_mt), Backpack = setmetatable({}, _roproxy_mt),
-        }, _roproxy_mt),
-        GetPlayers = function() return {} end,
-    }, _roproxy_mt),
-    MarketplaceService = setmetatable({}, _roproxy_mt),
-    ReplicatedStorage = setmetatable({}, _roproxy_mt),
-    ServerStorage = setmetatable({}, _roproxy_mt),
-    ServerScriptService = setmetatable({}, _roproxy_mt),
-    Lighting = setmetatable({}, _roproxy_mt),
-    StarterGui = setmetatable({}, _roproxy_mt),
-    StarterPack = setmetatable({}, _roproxy_mt),
-    SoundService = setmetatable({}, _roproxy_mt),
-    HttpService = setmetatable({
-        GetAsync = function() return "" end,
-        PostAsync = function() return "" end,
-    }, _roproxy_mt),
-    Enum = setmetatable({}, _roproxy_mt),
+    game = _newproxy(),
+    workspace = _newproxy(),
+    Players = _newproxy(),
+    MarketplaceService = _newproxy(),
+    ReplicatedStorage = _newproxy(),
+    ServerStorage = _newproxy(),
+    ServerScriptService = _newproxy(),
+    Lighting = _newproxy(),
+    StarterGui = _newproxy(),
+    StarterPack = _newproxy(),
+    SoundService = _newproxy(),
+    HttpService = _newproxy(),
+    Enum = _newproxy(),
 }
 
 _safe_env._G = _safe_env
@@ -213,7 +201,7 @@ local _env_mt = {
         local v = rawget(_safe_env, k)
         if v ~= nil then return v end
         _L("MISSING: " .. tostring(k))
-        return setmetatable({}, _roproxy_mt)
+        return _newproxy()
     end,
     __newindex = function(t, k, v)
         rawset(_safe_env, k, v)

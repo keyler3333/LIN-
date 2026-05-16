@@ -100,6 +100,42 @@ do
     end)
 end
 
+local _roproxy
+_roproxy = function()
+    _proxy_counter = _proxy_counter + 1
+    local data = {}
+    local mt = {
+        __index = function(t, k)
+            local v = _orig_rawget(data, k)
+            if v ~= nil then return v end
+            v = _roproxy()
+            _orig_rawset(data, k, v)
+            return v
+        end,
+        __call = function(t, ...)
+            return t
+        end,
+        __newindex = function(t, k, v)
+            _orig_rawset(data, k, v)
+        end,
+        __gc = function() end,
+        __tostring = function() return "Instance" end,
+        __len = function() return 0 end,
+        __unm = function() return 0 end,
+        __add = function() return 0 end,
+        __sub = function() return 0 end,
+        __mul = function() return 0 end,
+        __div = function() return 0 end,
+        __mod = function() return 0 end,
+        __pow = function() return 0 end,
+        __eq = function(a, b) return a == b end,
+        __lt = function() return false end,
+        __le = function() return false end,
+        __concat = function(a, b) return _orig_tostring(a) .. _orig_tostring(b) end,
+    }
+    return setmetatable({}, mt)
+end
+
 rawset = function(t, k, v)
     _track_string(v)
     return _orig_rawset(t, k, v)
@@ -112,12 +148,14 @@ rawget = function(t, k)
     if mt and mt.__index then
         local index = mt.__index
         if _orig_type(index) == "function" then
-            return index(t, k)
+            local result = index(t, k)
+            if result ~= nil then return result end
         elseif _orig_type(index) == "table" then
-            return index[k]
+            local result = index[k]
+            if result ~= nil then return result end
         end
     end
-    return nil
+    return _roproxy()
 end
 
 table.concat = function(t, sep, i, j)
@@ -162,42 +200,6 @@ loadstring = _hooked_loadstring
 load = _hooked_loadstring
 getfenv = _orig_getfenv
 setfenv = _orig_setfenv
-
-local _roproxy
-_roproxy = function()
-    _proxy_counter = _proxy_counter + 1
-    local data = {}
-    local mt = {
-        __index = function(t, k)
-            local v = _orig_rawget(data, k)
-            if v ~= nil then return v end
-            v = _roproxy()
-            _orig_rawset(data, k, v)
-            return v
-        end,
-        __call = function(t, ...)
-            return t
-        end,
-        __newindex = function(t, k, v)
-            _orig_rawset(data, k, v)
-        end,
-        __gc = function() end,
-        __tostring = function() return "Instance" end,
-        __len = function() return 0 end,
-        __unm = function() return 0 end,
-        __add = function() return 0 end,
-        __sub = function() return 0 end,
-        __mul = function() return 0 end,
-        __div = function() return 0 end,
-        __mod = function() return 0 end,
-        __pow = function() return 0 end,
-        __eq = function(a, b) return a == b end,
-        __lt = function() return false end,
-        __le = function() return false end,
-        __concat = function(a, b) return _orig_tostring(a) .. _orig_tostring(b) end,
-    }
-    return setmetatable({}, mt)
-end
 
 local function _make_service(name)
     return _roproxy()
@@ -260,8 +262,8 @@ local Instance = {
         obj.Parent = nil
         obj.Destroy = function() end
         obj.Clone = function() return obj end
-        obj.FindFirstChild = function() return nil end
-        obj.WaitForChild = function() return nil end
+        obj.FindFirstChild = function() return _roproxy() end
+        obj.WaitForChild = function() return _roproxy() end
         return obj
     end,
 }

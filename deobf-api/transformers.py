@@ -429,15 +429,13 @@ class WeAreDevsLifter(Transformer):
         depth = 0
         end = -1
         for i in range(start, len(source)):
-            if source[i] == '{':
-                depth += 1
+            if source[i] == '{': depth += 1
             elif source[i] == '}':
                 depth -= 1
                 if depth == 0:
                     end = i
                     break
-        if end == -1:
-            return None
+        if end == -1: return None
         body = source[start+1:end]
 
         assignments = []
@@ -448,18 +446,15 @@ class WeAreDevsLifter(Transformer):
         for ch in body:
             if in_string:
                 current.append(ch)
-                if ch == string_char:
-                    in_string = False
+                if ch == string_char: in_string = False
                 continue
             if ch in ('"', "'"):
                 in_string = True
                 string_char = ch
                 current.append(ch)
                 continue
-            if ch == '(':
-                paren_depth += 1
-            elif ch == ')':
-                paren_depth -= 1
+            if ch == '(': paren_depth += 1
+            elif ch == ')': paren_depth -= 1
             if ch in (',', ';') and paren_depth == 0:
                 assignments.append(''.join(current).strip())
                 current = []
@@ -470,8 +465,7 @@ class WeAreDevsLifter(Transformer):
 
         cmap = {}
         for assign in assignments:
-            if '=' not in assign:
-                continue
+            if '=' not in assign: continue
             kpart, vpart = assign.split('=', 1)
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             if key.startswith('\\'):
@@ -483,18 +477,14 @@ class WeAreDevsLifter(Transformer):
             try:
                 val = eval(expr)
                 if isinstance(val, (int, float)):
-                    val = int(val) & 0x3F
-                else:
-                    continue
-                cmap[key] = val
+                    cmap[key] = int(val) & 0x3F
             except:
                 pass
         return cmap
 
     def _extract_n_strings(self, source):
         m = re.search(r'local\s+N\s*=\s*\{', source)
-        if not m:
-            return None
+        if not m: return None
         start = m.end() - 1
         depth = 0
         end = -1
@@ -504,25 +494,21 @@ class WeAreDevsLifter(Transformer):
             ch = source[i]
             if in_string:
                 if ch == '\\':
-                    if i + 1 < len(source):
-                        i += 1
+                    if i + 1 < len(source): i += 1
                     continue
-                if ch == string_char:
-                    in_string = False
+                if ch == string_char: in_string = False
                 continue
             if ch in ('"', "'"):
                 in_string = True
                 string_char = ch
                 continue
-            if ch == '{':
-                depth += 1
+            if ch == '{': depth += 1
             elif ch == '}':
                 depth -= 1
                 if depth == 0:
                     end = i
                     break
-        if end == -1:
-            return None
+        if end == -1: return None
         body = source[start+1:end]
 
         strings = []
@@ -551,32 +537,38 @@ class WeAreDevsLifter(Transformer):
                 string_char = ch
                 current.append(ch)
                 continue
-        if current:
-            strings.append(''.join(current))
+        if current: strings.append(''.join(current))
 
         result = []
         for s in strings:
             s = s.strip()
-            if s.startswith('"') and s.endswith('"'):
+            if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
                 s = s[1:-1]
-            elif s.startswith("'") and s.endswith("'"):
-                s = s[1:-1]
-            if s:
-                result.append(s)
+            if s: result.append(s)
         return result
 
     def _extract_shuffle_pairs(self, source):
-        cleaned = re.sub(r'\((-?\d+)\)', r'\1', source)
+        m = re.search(r'ipairs\s*\(\s*\{', source)
+        if not m: return None
+        start = m.end() - 1
+        depth = 0
+        end = -1
+        for i in range(start, len(source)):
+            if source[i] == '{': depth += 1
+            elif source[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end == -1: return None
+        body = source[start:end+1]
         pairs = []
-        for a_s, b_s in re.findall(
-            r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
-            cleaned
-        ):
+        for pair_match in re.finditer(r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}', body):
+            a_s = pair_match.group(1).replace('--', '+').replace(' ', '')
+            b_s = pair_match.group(2).replace('--', '+').replace(' ', '')
             try:
-                a_s = a_s.replace('--', '+')
-                b_s = b_s.replace('--', '+')
-                a = eval(a_s.replace(' ', ''))
-                b = eval(b_s.replace(' ', ''))
+                a = eval(a_s)
+                b = eval(b_s)
                 if a > 0 and b > 0:
                     pairs.append((a, b))
             except:
@@ -595,8 +587,7 @@ class WeAreDevsLifter(Transformer):
                     buf.append((acc >> 16) & 0xFF)
                 break
             val = cmap.get(ch)
-            if val is None:
-                continue
+            if val is None: continue
             acc = (acc << 6) | val
             cnt += 1
             if cnt == 4:

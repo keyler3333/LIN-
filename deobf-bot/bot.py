@@ -43,13 +43,7 @@ async def prefix_deobf(ctx):
         return await ctx.send('Attach a `.lua` file with `!deobf`')
     att = ctx.message.attachments[0]
     raw = await att.read()
-    try:
-        text = raw.decode('utf-8')
-    except:
-        try:
-            text = raw.decode('latin-1')
-        except:
-            text = ''.join(chr(b) for b in raw)
+    text = ''.join(chr(b) for b in raw)
     msg = await ctx.send(embed=discord.Embed(title='Deobfuscating...', color=0x3498db))
     res = await run_deobf(text, att.filename)
     await msg.delete()
@@ -62,13 +56,7 @@ async def prefix_deobf(ctx):
 async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment):
     await interaction.response.defer(thinking=True)
     raw = await file.read()
-    try:
-        text = raw.decode('utf-8')
-    except:
-        try:
-            text = raw.decode('latin-1')
-        except:
-            text = ''.join(chr(b) for b in raw)
+    text = ''.join(chr(b) for b in raw)
     res = await run_deobf(text, file.filename)
     if res['file']:
         await interaction.followup.send(file=res['file'], embed=res['embed'])

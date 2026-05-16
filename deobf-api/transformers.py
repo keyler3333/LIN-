@@ -420,7 +420,7 @@ class WeAreDevsLifter(Transformer):
                 decoded_chunks.append(buf)
 
         if not decoded_chunks:
-            self.diagnostic = "All strings decoded to zero bytes – the Base64 map is incorrect."
+            self.diagnostic = "All strings decoded to zero bytes."
             return None
 
         self.stage = "looking for bytecode or source"
@@ -517,7 +517,8 @@ class WeAreDevsLifter(Transformer):
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             expr = vpart.strip().replace(' ', '')
             try:
-                cmap[key] = eval(expr) & 0x3F
+                val = eval(expr) & 0x3F
+                cmap[key] = val
             except:
                 pass
 

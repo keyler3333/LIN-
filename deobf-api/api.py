@@ -30,9 +30,6 @@ def deobf():
     if len(raw_bytes) > 4 * 1024 * 1024:
         return jsonify({'error': 'Source exceeds 4MB limit'}), 413
 
-    # Build a string where each character's code point is the same as the
-    # original byte value (0–255).  This is safe because we never attempt
-    # to interpret the string as text – it's only used to write the file.
     source_str = ''.join(chr(b) for b in raw_bytes)
 
     try:

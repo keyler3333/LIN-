@@ -37,10 +37,7 @@ class DeobfEngine:
         if lifted and lifted != source and self._looks_decoded(lifted):
             return self._beautify(lifted), 'static_lift', 'Successfully deobfuscated'
 
-        if self.lifter.diagnostic:
-            diag_msg = self.lifter.diagnostic
-        else:
-            diag_msg = ''
+        lifter_diag = self.lifter.diagnostic if self.lifter.diagnostic else ''
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
@@ -75,7 +72,7 @@ class DeobfEngine:
         if lifted and len(lifted) > 50 and lifted != source:
             return self._beautify(lifted), 'static_lift_fallback', 'Static lifter produced output'
 
-        reason = diag if diag else diag_msg
+        reason = diag if diag else lifter_diag
         if not reason:
             reason = 'Sandbox produced no output and no errors were logged.'
         if GROQ_AVAILABLE and GROQ_KEY:

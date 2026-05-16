@@ -35,17 +35,12 @@ class DeobfEngine:
 
         lifted = self.lifter.transform(source)
         if lifted and lifted != source and self._looks_decoded(lifted):
-            return self._beautify(lifted), 'static_lift', 'Static lifter succeeded'
+            return self._beautify(lifted), 'static_lift', 'Successfully deobfuscated'
 
-        clean = source
-        for t in self.cleaners:
-            try:
-                clean = t.transform(clean)
-            except:
-                pass
-
-        if clean != source and self._looks_decoded(clean):
-            return self._beautify(clean), 'static_clean', 'Cleaners produced readable output'
+        if self.lifter.diagnostic:
+            diag_msg = self.lifter.diagnostic
+        else:
+            diag_msg = ''
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 
@@ -54,15 +49,15 @@ class DeobfEngine:
                 if cap[offset:offset+4] == '\x1bLua':
                     if offset + 5 <= len(cap) and ord(cap[offset+4]) == 0x51:
                         bc = cap[offset:].encode('latin-1')
-                        lifted = self._lift_bc(bc)
-                        if lifted:
-                            return self._beautify(lifted), 'sandbox_bytecode', 'Bytecode captured via sandbox'
+                        lifted_bc = self._lift_bc(bc)
+                        if lifted_bc:
+                            return self._beautify(lifted_bc), 'sandbox_bytecode', 'Bytecode captured via sandbox'
 
         for item in layers:
             if isinstance(item, bytes) and item.startswith(b'\x1bLua'):
-                lifted = self._lift_bc(item)
-                if lifted:
-                    return self._beautify(lifted), 'sandbox_dump', 'Decompiled from bytecode dump'
+                lifted_bc = self._lift_bc(item)
+                if lifted_bc:
+                    return self._beautify(lifted_bc), 'sandbox_dump', 'Decompiled from bytecode dump'
 
         best = ''
         for cap in caps:
@@ -77,10 +72,12 @@ class DeobfEngine:
                 if 'function' in layer or 'local' in layer or 'print' in layer:
                     return self._beautify(layer), 'sandbox_layer', 'Layer captured'
 
-        if lifted and len(lifted) > 50:
-            return self._beautify(lifted), 'static_lift_unchecked', 'Static lifter produced output (heuristic bypass)'
+        if lifted and len(lifted) > 50 and lifted != source:
+            return self._beautify(lifted), 'static_lift_fallback', 'Static lifter produced output'
 
-        reason = diag if diag else 'Sandbox produced no output and no errors were logged.'
+        reason = diag if diag else diag_msg
+        if not reason:
+            reason = 'Sandbox produced no output and no errors were logged.'
         if GROQ_AVAILABLE and GROQ_KEY:
             ai_note = self._ai_analysis(source, reason)
             if ai_note:

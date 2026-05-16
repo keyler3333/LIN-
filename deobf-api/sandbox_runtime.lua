@@ -282,6 +282,11 @@ else
                         _write_capture(v)
                     end
                 end
+                for k, v in pairs(env) do
+                    if type(v) == "string" and #v > 20 then
+                        _write_capture(v)
+                    end
+                end
             end
         end
     end

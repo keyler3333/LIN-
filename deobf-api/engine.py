@@ -1,4 +1,4 @@
-import os, re, shutil, subprocess, tempfile, base64, urllib.request, ast
+import os, re, shutil, subprocess, tempfile, base64, urllib.request
 from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
 
@@ -12,9 +12,15 @@ class DeobfEngine:
 
     def process(self, source):
         layers, caps, diag = execute_sandbox(source, timeout=120)
-        sandbox_dump = self._find_sandbox_dump(layers, caps)
+
+        sandbox_dump = None
+        for item in layers + caps:
+            if isinstance(item, str) and 'SANDBOX_OUTPUT_START' in item:
+                sandbox_dump = item
+                break
+
         if sandbox_dump:
-            cmap = self._extract_base64_map_from_dump(sandbox_dump)
+            cmap = self._parse_base64_map(sandbox_dump)
             if cmap and len(cmap) >= 60:
                 bc = self._extract_bytecode_from_dump(sandbox_dump, cmap)
                 if bc:
@@ -22,7 +28,7 @@ class DeobfEngine:
                     if decompiled and self._is_valid_lua(decompiled):
                         return self._beautify(decompiled), 'unluac', 'Decompiled from sandbox dump'
                     b64 = base64.b64encode(bc).decode('ascii')
-                    return b64, 'bytecode', f'Bytecode extracted from sandbox ({len(bc)} bytes). unluac: {err or "unknown"}'
+                    return b64, 'bytecode', f'Bytecode from sandbox ({len(bc)} bytes). unluac: {err or "unknown"}'
 
         bc, bc_diag = self._extract_bytecode_from_lifter(source)
         if bc:
@@ -30,46 +36,37 @@ class DeobfEngine:
             if decompiled and self._is_valid_lua(decompiled):
                 return self._beautify(decompiled), 'unluac', 'Decompiled by static lifter'
             b64 = base64.b64encode(bc).decode('ascii')
-            return b64, 'bytecode', f'Bytecode extracted ({len(bc)} bytes). unluac: {err or "unknown"}'
+            return b64, 'bytecode', f'Bytecode ({len(bc)} bytes). unluac: {err or "unknown"}'
 
-        return '', 'unable', bc_diag or 'No readable Lua could be extracted.'
+        return '', 'unable', bc_diag or 'No readable Lua extracted.'
 
-    def _find_sandbox_dump(self, layers, caps):
-        for item in layers + caps:
-            if isinstance(item, str) and 'SANDBOX_OUTPUT_START' in item:
-                return item
-        return None
-
-    def _extract_base64_map_from_dump(self, dump):
-        m = re.search(r'SANDBOX_OUTPUT_START\s*(return\s*\{.*?\})\s*SANDBOX_OUTPUT_END', dump, re.DOTALL)
-        if not m:
-            return None
-        try:
-            data = ast.literal_eval(m.group(1).strip().replace('return ', ''))
-        except Exception:
-            return None
-        for key, val in data.items():
-            if 'base64' in key.lower() and isinstance(val, str):
-                cmap = {}
-                for match in re.finditer(r'\[(\d+)\]\s*=\s*(\d+)', val):
-                    cmap[chr(int(match.group(1)))] = int(match.group(2))
-                if len(cmap) >= 60:
-                    return cmap
-        return None
+    def _parse_base64_map(self, dump):
+        cmap = {}
+        block = dump.split('SANDBOX_OUTPUT_START')[1]
+        block = block.split('SANDBOX_OUTPUT_END')[0]
+        for match in re.finditer(r'\["(\d+)"\]\s*=\s*(\d+)', block):
+            cmap[chr(int(match.group(1)))] = int(match.group(2))
+        if len(cmap) < 60:
+            for match in re.finditer(r'\[(\d+)\]\s*=\s*(\d+)', block):
+                cmap[chr(int(match.group(1)))] = int(match.group(2))
+        return cmap
 
     def _extract_bytecode_from_dump(self, dump, cmap):
-        m = re.search(r'SANDBOX_OUTPUT_START\s*(return\s*\{.*?\})\s*SANDBOX_OUTPUT_END', dump, re.DOTALL)
-        if not m:
-            return None
-        try:
-            data = ast.literal_eval(m.group(1).strip().replace('return ', ''))
-        except Exception:
-            return None
-        for key, val in data.items():
-            if 'bytecode' in key.lower() and isinstance(val, str):
-                if val[:4] == '\x1bLua' or val[:12] == '\x1bLua':
-                    return val.encode('latin-1') if isinstance(val, str) else val
+        block = dump.split('SANDBOX_OUTPUT_START')[1]
+        block = block.split('SANDBOX_OUTPUT_END')[0]
+        for match in re.finditer(r'"bytecode[^"]*"\s*=\s*"([^"]*)"', block):
+            s = match.group(1)
+            decoded = self._decode_escape_string(s)
+            if decoded[:4] == b'\x1bLua' or decoded[:12] == b'\x1bLua':
+                return decoded
         return None
+
+    @staticmethod
+    def _decode_escape_string(s):
+        try:
+            return s.encode('latin-1').decode('unicode_escape').encode('latin-1')
+        except Exception:
+            return s.encode('latin-1')
 
     def _extract_bytecode_from_lifter(self, source):
         cmap = self.lifter._build_char_map(source)
@@ -88,8 +85,7 @@ class DeobfEngine:
         decoded = []
         for s in working:
             buf = self.lifter._decode_b64(s, cmap)
-            if buf:
-                decoded.append(buf)
+            if buf: decoded.append(buf)
         if not decoded:
             return None, "No strings decoded"
         for chunk in decoded:
@@ -107,8 +103,7 @@ class DeobfEngine:
         if not os.path.isfile(self.unluac_path):
             return None, "unluac.jar not found"
         java_bin = shutil.which('java')
-        if not java_bin:
-            return None, "java not found"
+        if not java_bin: return None, "java not found"
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix='.luac', delete=False) as tmp:
@@ -139,14 +134,12 @@ class DeobfEngine:
 
     @staticmethod
     def _is_valid_lua(code):
-        if not code or len(code) < 20:
-            return False
+        if not code or len(code) < 20: return False
         try:
             import luaparser
             luaparser.ast.parse(code)
             return True
-        except Exception:
-            pass
+        except Exception: pass
         lua_keywords = {'function','local','end','return','if','then','else','elseif','for','while','do','repeat','until','not','and','or','nil','true','false','in','break'}
         words = set(re.findall(r'\b\w+\b', code))
         keyword_hits = len(words & lua_keywords)

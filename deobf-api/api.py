@@ -5,21 +5,13 @@ from engine import DeobfEngine
 
 app = Flask(__name__)
 engine = DeobfEngine()
-API_KEY = os.environ.get('API_KEY')
-
-@app.before_request
-def check_auth():
-    if request.path == '/health':
-        return None
-    if API_KEY and request.headers.get('X-API-Key') != API_KEY:
-        return jsonify({'error': 'Unauthorized'}), 401
 
 @app.route('/health')
 def health():
     return jsonify({'ok': True})
 
 @app.route('/deobf', methods=['POST'])
-async def deobf():
+def deobf():
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'error': 'No data provided'}), 400
@@ -34,15 +26,16 @@ async def deobf():
         return jsonify({'error': 'Source exceeds 5MB limit'}), 413
     source_str = raw_bytes.decode('latin-1')
     try:
-        result = await engine.process(source_str)
-        return jsonify({
-            'result': result.output or '',
-            'detected': 'success' if result.success else 'unable',
-            'diagnostic': result.summary(),
-            'raw_bytecode_b64': base64.b64encode(result.raw_bytecode).decode('ascii') if result.raw_bytecode else None
-        })
+        result, obf_type, diag = engine.process(source_str)
+        response = {
+            'result': result,
+            'detected': obf_type,
+            'diagnostic': diag
+        }
+        return jsonify(response)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)

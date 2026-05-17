@@ -16,6 +16,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 tree = bot.tree
 
+ALLOWED_EXTENSIONS = ('.lua', '.txt')
+
 async def call_api(source_b64):
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(f'{API_URL}/deobf', json={'source_b64': source_b64})
@@ -55,10 +57,10 @@ async def run_deobf(raw_bytes, filename):
 @commands.cooldown(1, 30, commands.BucketType.user)
 async def prefix_deobf(ctx):
     if not ctx.message.attachments:
-        return await ctx.send('Attach a `.lua` file with `!deobf`')
+        return await ctx.send('Attach a `.lua` or `.txt` file with `!deobf`')
     att = ctx.message.attachments[0]
-    if not att.filename.lower().endswith('.lua'):
-        return await ctx.send('Please attach a `.lua` file.')
+    if not att.filename.lower().endswith(ALLOWED_EXTENSIONS):
+        return await ctx.send('Please attach a `.lua` or `.txt` file.')
     if att.size > 5 * 1024 * 1024:
         return await ctx.send('File exceeds 5MB limit.')
     raw = await att.read()
@@ -72,8 +74,8 @@ async def prefix_deobf(ctx):
 
 @tree.command(name='deobf', description='Deobfuscate a Lua file')
 async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment):
-    if not file.filename.lower().endswith('.lua'):
-        return await interaction.response.send_message('Please attach a `.lua` file.', ephemeral=True)
+    if not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
+        return await interaction.response.send_message('Please attach a `.lua` or `.txt` file.', ephemeral=True)
     if file.size > 5 * 1024 * 1024:
         return await interaction.response.send_message('File exceeds 5MB limit.', ephemeral=True)
     await interaction.response.defer(thinking=True)

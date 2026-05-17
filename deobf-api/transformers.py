@@ -19,7 +19,7 @@ class EscapeSequenceTransformer(Transformer):
 
 
 class MathTransformer(Transformer):
-    _PAT = re.compile(r'\((-?\d+)\s*([\+\-\*\/\^])\s*(-?\d+)\)')
+    _PAT = re.compile(r'\((-?\d+(?:\.\d+)?)\s*([\+\-\*\/\^])\s*(-?\d+(?:\.\d+)?)\)')
 
     def transform(self, code):
         for _ in range(20):
@@ -32,12 +32,14 @@ class MathTransformer(Transformer):
     @staticmethod
     def _fold(m):
         try:
-            a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-            if op == '+': return str(a + b)
-            if op == '-': return str(a - b)
-            if op == '*': return str(a * b)
-            if op == '/' and b != 0: return str(a // b)
-            if op == '^': return str(int(a ** b))
+            a, op, b = float(m.group(1)), m.group(2), float(m.group(3))
+            if op == '+': result = a + b
+            elif op == '-': result = a - b
+            elif op == '*': result = a * b
+            elif op == '/' and b != 0: result = a / b
+            elif op == '^': result = a ** b
+            else: return m.group(0)
+            return str(int(result)) if result == int(result) and abs(result) < 1e15 else repr(result)
         except Exception:
             pass
         return m.group(0)
@@ -377,8 +379,18 @@ class Lua51Decompiler:
 
 
 class WeAreDevsLifter(Transformer):
-    _CHARMAP_VAR_PATS = [r'local\s+b\s*=\s*\{', r'local\s+_b\s*=\s*\{', r'local\s+B\s*=\s*\{']
-    _STRTAB_VAR_PATS  = [r'local\s+N\s*=\s*\{', r'local\s+_N\s*=\s*\{', r'local\s+n\s*=\s*\{']
+    _CHARMAP_VAR_PATS = [
+        r'local\s+b\s*=\s*\{',  r'local\s+_b\s*=\s*\{', r'local\s+B\s*=\s*\{',
+        r'local\s+t\s*=\s*\{',  r'local\s+_t\s*=\s*\{', r'local\s+T\s*=\s*\{',
+        r'local\s+c\s*=\s*\{',  r'local\s+_c\s*=\s*\{', r'local\s+C\s*=\s*\{',
+        r'local\s+map\s*=\s*\{', r'local\s+chars\s*=\s*\{',
+    ]
+    _STRTAB_VAR_PATS = [
+        r'local\s+N\s*=\s*\{',  r'local\s+_N\s*=\s*\{', r'local\s+n\s*=\s*\{',
+        r'local\s+s\s*=\s*\{',  r'local\s+_s\s*=\s*\{', r'local\s+S\s*=\s*\{',
+        r'local\s+d\s*=\s*\{',  r'local\s+_d\s*=\s*\{', r'local\s+D\s*=\s*\{',
+        r'local\s+strings\s*=\s*\{', r'local\s+data\s*=\s*\{',
+    ]
 
     def __init__(self):
         self.diagnostic = ""
@@ -414,7 +426,8 @@ class WeAreDevsLifter(Transformer):
 
         decoded = []
         for s in working:
-            buf = self._decode_b64(s, cmap)
+            s_unescaped = self._unescape_lua_string(s)
+            buf = self._decode_b64(s_unescaped, cmap)
             if buf:
                 decoded.append(buf)
 
@@ -538,13 +551,14 @@ class WeAreDevsLifter(Transformer):
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             if key.startswith('\\'):
                 key = self._unescape_lua_string(key)
-            expr = vpart.strip().replace(' ', '')
-            try:
-                val = eval(expr)
-                if isinstance(val, (int, float)):
-                    cmap[key] = int(val) & 0x3F
-            except Exception:
-                pass
+            expr = vpart.strip()
+            if re.match(r'^[\d\s\+\-\*\/\^\(\)\.]+$', expr):
+                try:
+                    val = eval(expr)
+                    if isinstance(val, (int, float)):
+                        cmap[key] = int(val) & 0x3F
+                except Exception:
+                    pass
         return cmap
 
     def _extract_n_strings(self, source):
@@ -614,7 +628,7 @@ class WeAreDevsLifter(Transformer):
         body = source[start:end + 1]
         pairs = []
         for a_s, b_s in re.findall(
-            r'\{(-?\d+(?:\s*[+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[+\-]\s*-?\d+)*)\}',
+            r'\{(-?\d+(?:\s*[\+\-]\s*-?\d+)*)\s*[;,]\s*(-?\d+(?:\s*[\+\-]\s*-?\d+)*)\}',
             body
         ):
             try:

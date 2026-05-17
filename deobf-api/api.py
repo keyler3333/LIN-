@@ -9,6 +9,8 @@ API_KEY = os.environ.get('API_KEY')
 
 @app.before_request
 def check_auth():
+    if request.path == '/health':
+        return None
     if API_KEY and request.headers.get('X-API-Key') != API_KEY:
         return jsonify({'error': 'Unauthorized'}), 401
 

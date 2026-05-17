@@ -113,10 +113,13 @@ class DeobfEngine:
             return '\n'.join(all_text), 'memory_dump', 'Largest captured string from sandbox memory'
 
         reason = lifter_diag or sandbox_diag or 'No readable content extracted'
-        return source, 'unable', reason
+        return '', 'unable', reason
 
     @staticmethod
     def _repair_source(code):
+        code = re.sub(r'(\d)(\s*)(end\b)', r'\1;\3', code)
+        code = re.sub(r'(\d)(\s*)(local\b)', r'\1;\3', code)
+        code = re.sub(r'(\d)(\s*)(function\b)', r'\1;\3', code)
         code = re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', code)
         code = re.sub(r'(\d)\.?(\d*)e([^0-9+\-])', r'\1.\2e0\3', code)
         code = re.sub(r'(\d)e([^0-9+\-])', r'\1e0\2', code)

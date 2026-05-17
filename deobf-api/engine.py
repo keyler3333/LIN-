@@ -97,11 +97,11 @@ class DeobfEngine:
             if isinstance(item, str) and len(item) > 20:
                 item = self._repair_source(item)
                 all_text.append(item)
-        all_text.sort(key=len, reverse=True)
 
-        for text in all_text:
-            if self._looks_decoded(text):
-                return self._beautify(text), 'sandbox_capture', 'Readable source captured by sandbox'
+        if all_text:
+            combined = '\n'.join(all_text)
+            if self._looks_decoded(combined):
+                return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
 
         for item in layers:
             if isinstance(item, bytes) and self._is_lua51_bytecode(item):
@@ -109,8 +109,8 @@ class DeobfEngine:
                 if decompiled and self._looks_decoded(decompiled):
                     return self._beautify(self._repair_source(decompiled)), 'sandbox_unluac', 'Sandbox bytecode decompiled by unluac'
 
-        if all_text and len(all_text[0]) > 200:
-            return all_text[0], 'memory_dump', 'Largest captured string from sandbox memory'
+        if all_text and len('\n'.join(all_text)) > 200:
+            return '\n'.join(all_text), 'memory_dump', 'Largest captured string from sandbox memory'
 
         reason = lifter_diag or sandbox_diag or 'No readable content extracted'
         return source, 'unable', reason

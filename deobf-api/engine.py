@@ -1,9 +1,11 @@
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import base64
 import urllib.request
+
 from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
 
@@ -11,6 +13,9 @@ UNLUAC_JAR_URL = "https://github.com/scratchminer/unluac/releases/download/v2023
 UNLUAC_LOCAL_PATH = os.environ.get('UNLUAC_PATH') or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'unluac.jar'
 )
+
+MAX_LAYERS = 4
+
 
 class DeobfEngine:
     def __init__(self):
@@ -26,11 +31,32 @@ class DeobfEngine:
             b64 = base64.b64encode(bc).decode('ascii')
             return b64, 'bytecode', f'Bytecode extracted ({len(bc)} bytes). unluac: {err or "unknown"}'
 
-        layers, caps, diag = execute_sandbox(source, timeout=90)
-        all_text = [t for t in caps + layers if isinstance(t, str) and len(t) > 20]
-        combined = '\n'.join(all_text)
-        if len(combined) > 200 and self._is_valid_lua(combined):
-            return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
+        current_source = source
+        for depth in range(MAX_LAYERS):
+            layers, caps, diag = execute_sandbox(current_source, timeout=90)
+
+            for item in layers:
+                if isinstance(item, bytes) and len(item) >= 12 and item[:4] == b'\x1bLua':
+                    decompiled, err = self._run_unluac(item)
+                    if decompiled and self._is_valid_lua(decompiled):
+                        label = 'sandbox_unluac' if depth == 0 else f'sandbox_unluac_l{depth+1}'
+                        return self._beautify(decompiled), label, f'Sandbox bytecode → unluac (layer {depth+1})'
+
+            all_text = [t for t in caps + layers if isinstance(t, str) and len(t) > 20]
+            combined = '\n'.join(all_text)
+
+            if len(combined) > 200 and self._is_valid_lua(combined):
+                label = 'sandbox_capture' if depth == 0 else f'sandbox_capture_l{depth+1}'
+                return self._beautify(combined), label, f'Readable source captured by sandbox (layer {depth+1})'
+
+            next_source = None
+            for t in all_text:
+                if len(t) > 100 and any(kw in t for kw in ('loadstring', 'local ', 'function ')):
+                    next_source = t
+                    break
+            if next_source is None or next_source == current_source:
+                break
+            current_source = next_source
 
         return '', 'unable', bc_diag or 'No readable Lua could be extracted. The script may use an unsupported obfuscator.'
 
@@ -55,8 +81,8 @@ class DeobfEngine:
 
         decoded = []
         for s in working:
-            s_bytes = self.lifter._unescape_lua_string(s)
-            buf = self.lifter._decode_b64(s_bytes, cmap)
+            s_unescaped = self.lifter._unescape_lua_string(s)
+            buf = self.lifter._decode_b64(s_unescaped, cmap)
             if buf:
                 decoded.append(buf)
 
@@ -82,6 +108,8 @@ class DeobfEngine:
         java_bin = shutil.which('java')
         if not java_bin:
             return None, "java not found"
+
+        tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix='.luac', delete=False) as tmp:
                 tmp.write(bytecode)
@@ -90,7 +118,6 @@ class DeobfEngine:
                 [java_bin, '-jar', self.unluac_path, tmp_path],
                 capture_output=True, text=True, timeout=30
             )
-            os.unlink(tmp_path)
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout, None
             return None, result.stderr[:300]
@@ -98,10 +125,18 @@ class DeobfEngine:
             return None, "timeout"
         except Exception as e:
             return None, str(e)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _ensure_unluac_jar(self):
         try:
-            os.makedirs(os.path.dirname(self.unluac_path), exist_ok=True)
+            jar_dir = os.path.dirname(self.unluac_path)
+            if jar_dir:
+                os.makedirs(jar_dir, exist_ok=True)
             urllib.request.urlretrieve(UNLUAC_JAR_URL, self.unluac_path)
         except Exception:
             pass
@@ -110,12 +145,27 @@ class DeobfEngine:
     def _is_valid_lua(code):
         if not code or len(code) < 20:
             return False
+
         try:
             from luaparser import ast
             ast.parse(code)
             return True
+        except ImportError:
+            pass
         except Exception:
-            return False
+            pass
+
+        lua_keywords = {
+            'function', 'local', 'end', 'return', 'if', 'then', 'else',
+            'elseif', 'for', 'while', 'do', 'repeat', 'until', 'not',
+            'and', 'or', 'nil', 'true', 'false', 'in', 'break',
+        }
+        words = set(re.findall(r'\b\w+\b', code))
+        keyword_hits = len(words & lua_keywords)
+        printable = sum(1 for c in code if c.isprintable() or c in '\n\r\t')
+        printable_ratio = printable / max(len(code), 1)
+
+        return keyword_hits >= 3 and printable_ratio > 0.75
 
     def _beautify(self, code):
         try:

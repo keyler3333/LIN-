@@ -35,22 +35,23 @@ class DeobfEngine:
         for depth in range(MAX_LAYERS):
             layers, caps, diag = execute_sandbox(current_source, timeout=90)
 
-            for item in layers:
-                if isinstance(item, bytes) and len(item) >= 12 and item[:4] == b'\x1bLua':
-                    decompiled, err = self._run_unluac(item)
-                    if decompiled and self._is_valid_lua(decompiled):
-                        label = 'sandbox_unluac' if depth == 0 else f'sandbox_unluac_l{depth+1}'
-                        return self._beautify(decompiled), label, f'Sandbox bytecode → unluac (layer {depth+1})'
+            bytecode_items = [item for item in layers if isinstance(item, bytes) and len(item) >= 12 and item[:4] == b'\x1bLua']
+            text_items = [item for item in caps + layers if isinstance(item, str) and len(item) > 20]
 
-            all_text = [t for t in caps + layers if isinstance(t, str) and len(t) > 20]
-            combined = '\n'.join(all_text)
+            for bc_item in bytecode_items:
+                decompiled, err = self._run_unluac(bc_item)
+                if decompiled and self._is_valid_lua(decompiled):
+                    label = 'sandbox_unluac' if depth == 0 else f'sandbox_unluac_l{depth+1}'
+                    return self._beautify(decompiled), label, f'Sandbox bytecode -> unluac (layer {depth+1})'
 
-            if len(combined) > 200 and self._is_valid_lua(combined):
-                label = 'sandbox_capture' if depth == 0 else f'sandbox_capture_l{depth+1}'
-                return self._beautify(combined), label, f'Readable source captured by sandbox (layer {depth+1})'
+            if text_items:
+                combined = '\n'.join(text_items)
+                if len(combined) > 200 and self._is_valid_lua(combined):
+                    label = 'sandbox_capture' if depth == 0 else f'sandbox_capture_l{depth+1}'
+                    return self._beautify(combined), label, f'Readable source captured by sandbox (layer {depth+1})'
 
             next_source = None
-            for t in all_text:
+            for t in text_items:
                 if len(t) > 100 and any(kw in t for kw in ('loadstring', 'local ', 'function ')):
                     next_source = t
                     break

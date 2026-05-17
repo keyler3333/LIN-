@@ -5,18 +5,13 @@ import subprocess
 import tempfile
 import base64
 import urllib.request
-import asyncio
 
 from transformers import (
     WeAreDevsLifter,
-    EscapeSequenceTransformer,
-    MathTransformer,
-    HexNameRenamer,
-    NumberArrayDecoder,
-    Base64StdDecoder,
+    Lua51Parser,
+    Lua51Decompiler,
 )
 from sandbox import execute_sandbox
-from lune_executor import execute_and_capture
 
 UNLUAC_JAR_URL = "https://github.com/scratchminer/unluac/releases/download/v2023.03.22/unluac.jar"
 UNLUAC_LOCAL_PATH = os.environ.get('UNLUAC_PATH') or os.path.join(
@@ -28,129 +23,29 @@ class DeobfEngine:
     def __init__(self):
         self.lifter = WeAreDevsLifter()
         self.unluac_path = UNLUAC_LOCAL_PATH
-        self.pre_transformers = [
-            EscapeSequenceTransformer(),
-            MathTransformer(),
-            HexNameRenamer(),
-        ]
-        self.static_decoders = [
-            NumberArrayDecoder(),
-            Base64StdDecoder(),
-        ]
 
     def process(self, source):
-        cleaned = source
-        for t in self.pre_transformers:
-            try:
-                cleaned = t.transform(cleaned) or cleaned
-            except Exception:
-                pass
-
-        lifted = self.lifter.transform(cleaned)
-        if lifted and lifted != cleaned and self._is_valid_lua(lifted):
-            return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
-
-        lifter_diag = self.lifter.diagnostic or ''
-
-        for decoder in self.static_decoders:
-            try:
-                result = decoder.transform(cleaned)
-                if result and result != cleaned and self._is_valid_lua(result):
-                    return self._beautify(result), 'static_decode', decoder.__class__.__name__
-            except Exception:
-                pass
-
-        extracted_bc = self._extract_bytecode(cleaned)
-        raw_bytes = cleaned.encode('latin-1')
-        if not extracted_bc and raw_bytes[:4] == b'\x1bLua':
-            extracted_bc = raw_bytes
+        extracted_bc = self._extract_bytecode(source)
 
         if extracted_bc:
             decompiled, err = self._run_unluac(extracted_bc)
             if decompiled and self._is_valid_lua(decompiled):
                 return self._beautify(decompiled), 'unluac', 'Decompiled by unluac'
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
-            hint = f"Bytecode extracted but unluac failed ({err or 'unknown reason'})"
+            hint = f"Bytecode extracted ({len(extracted_bc)} bytes). unluac failed: {err or 'unknown'}"
             return bc_b64, 'bytecode', hint
 
-        captured, lune_info = self._run_lune(cleaned)
-        if captured:
-            if self._is_lua51_bytecode(captured):
-                decompiled, err = self._run_unluac(captured)
-                if decompiled and self._is_valid_lua(decompiled):
-                    return self._beautify(decompiled), 'lune_unluac', 'Lune captured bytecode, decompiled by unluac'
-                bc_b64 = base64.b64encode(captured).decode('ascii')
-                return bc_b64, 'bytecode', 'Lune captured bytecode; unluac unavailable/failed'
-            try:
-                text = captured.decode('utf-8', errors='replace')
-                if self._is_valid_lua(text):
-                    return self._beautify(text), 'lune_capture', 'Source captured by Lune dynamic execution'
-                if len(text) > 100:
-                    return text, 'lune_string', 'String captured by Lune'
-            except Exception:
-                pass
+        lifted = self.lifter.transform(source)
+        if lifted and lifted != source and self._is_valid_lua(lifted):
+            return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
-        layers, caps, sandbox_diag = execute_sandbox(cleaned, timeout=90)
+        layers, caps, sandbox_diag = execute_sandbox(source, timeout=90)
+        all_text = [item for item in caps + layers if isinstance(item, str) and len(item) > 20]
+        combined = '\n'.join(all_text)
+        if len(combined) > 200 and self._is_valid_lua(combined):
+            return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
 
-        all_text = []
-        for item in caps + layers:
-            if isinstance(item, str) and len(item) > 20:
-                item = self._repair_source(item)
-                all_text.append(item)
-
-        if all_text:
-            combined = '\n'.join(all_text)
-            if self._is_valid_lua(combined):
-                return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
-
-        for item in layers:
-            if isinstance(item, bytes) and self._is_lua51_bytecode(item):
-                decompiled, _ = self._run_unluac(item)
-                if decompiled and self._is_valid_lua(decompiled):
-                    return self._beautify(decompiled), 'sandbox_unluac', 'Sandbox bytecode decompiled by unluac'
-
-        reason = lifter_diag or sandbox_diag or 'No readable content extracted'
-        return '', 'unable', reason
-
-    @staticmethod
-    def _repair_source(code):
-        code = re.sub(r'(\d)(\s*)(end\b)', r'\1;\3', code)
-        code = re.sub(r'(\d)(\s*)(local\b)', r'\1;\3', code)
-        code = re.sub(r'(\d)(\s*)(function\b)', r'\1;\3', code)
-        code = re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', code)
-        code = re.sub(r'(\d)\.?(\d*)e([^0-9+\-])', r'\1.\2e0\3', code)
-        code = re.sub(r'(\d)e([^0-9+\-])', r'\1e0\2', code)
-        code = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', code)
-        return code
-
-    @staticmethod
-    def _is_valid_lua(code):
-        if not code or len(code) < 30:
-            return False
-        try:
-            from luaparser import ast
-            ast.parse(code)
-            return True
-        except Exception:
-            pass
-        return DeobfEngine._looks_decoded(code)
-
-    @staticmethod
-    def _looks_decoded(code):
-        if not code or len(code) < 30:
-            return False
-        lines = code.split('\n')
-        if max((len(l) for l in lines), default=0) > 4000:
-            return False
-        keywords = [
-            'function', 'local', 'end', 'if', 'then', 'else',
-            'for', 'while', 'do', 'return', 'print', 'require',
-        ]
-        kw_count = sum(1 for kw in keywords if kw in code)
-        if kw_count < 2:
-            return False
-        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.15
+        return '', 'unable', 'No readable Lua could be extracted. The script may use an unsupported obfuscator.'
 
     def _extract_bytecode(self, source):
         cmap = self.lifter._build_char_map(source)
@@ -178,23 +73,8 @@ class DeobfEngine:
             return full[idx:]
         return None
 
-    def _run_lune(self, source):
-        try:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    raise RuntimeError
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            return loop.run_until_complete(execute_and_capture(source))
-        except Exception as e:
-            return None, {'error': str(e)}
-
     @staticmethod
     def _is_lua51_bytecode(data):
-        if isinstance(data, str):
-            data = data.encode('latin-1')
         return len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51
 
     def _run_unluac(self, bytecode):
@@ -204,7 +84,7 @@ class DeobfEngine:
             return None, "unluac.jar not found"
         java_bin = shutil.which('java')
         if not java_bin:
-            return None, "java not found in PATH"
+            return None, "java not found"
         try:
             with tempfile.NamedTemporaryFile(suffix='.luac', delete=False) as tmp:
                 tmp.write(bytecode)
@@ -218,38 +98,45 @@ class DeobfEngine:
                 return result.stdout, None
             return None, result.stderr[:300]
         except subprocess.TimeoutExpired:
-            return None, "unluac timed out after 30 s"
+            return None, "timeout"
         except Exception as e:
             return None, str(e)
 
     def _ensure_unluac_jar(self):
         try:
-            dir_ = os.path.dirname(self.unluac_path)
-            if dir_:
-                os.makedirs(dir_, exist_ok=True)
+            os.makedirs(os.path.dirname(self.unluac_path), exist_ok=True)
             urllib.request.urlretrieve(UNLUAC_JAR_URL, self.unluac_path)
         except Exception:
             pass
+
+    @staticmethod
+    def _is_valid_lua(code):
+        if not code or len(code) < 20:
+            return False
+        try:
+            from luaparser import ast
+            ast.parse(code)
+            return True
+        except Exception:
+            return False
 
     def _beautify(self, code):
         try:
             from luaparser import ast as lua_ast
             return lua_ast.to_lua_source(lua_ast.parse(code))
         except Exception:
-            pass
-        out = []
-        ind = 0
-        openers = ('if ', 'if(', 'for ', 'for(', 'while ', 'while(',
-                   'function ', 'local function ', 'do', 'repeat')
-        closers = ('end', 'else', 'elseif', 'until', '}', ')')
-        for raw in code.split('\n'):
-            line = raw.strip()
-            if not line:
-                out.append('')
-                continue
-            if any(line.startswith(w) for w in closers):
-                ind = max(0, ind - 1)
-            out.append('    ' * ind + line)
-            if any(line.startswith(w) for w in openers) and not line.endswith('end'):
-                ind += 1
-        return '\n'.join(out)
+            out, ind = [], 0
+            openers = ('if ', 'if(', 'for ', 'for(', 'while ', 'while(',
+                       'function ', 'local function ', 'do', 'repeat')
+            closers = ('end', 'else', 'elseif', 'until', '}', ')')
+            for raw in code.split('\n'):
+                line = raw.strip()
+                if not line:
+                    out.append('')
+                    continue
+                if any(line.startswith(w) for w in closers):
+                    ind = max(0, ind - 1)
+                out.append('    ' * ind + line)
+                if any(line.startswith(w) for w in openers) and not line.endswith('end'):
+                    ind += 1
+            return '\n'.join(out)

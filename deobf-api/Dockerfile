@@ -1,9 +1,12 @@
-FROM python:3.11-slim
-RUN apt-get update && apt-get install -y lua5.1 curl unzip && rm -rf /var/lib/apt/lists/*
-RUN curl -L -o /tmp/lune.zip https://github.com/lune-org/lune/releases/latest/download/lune-x86_64-unknown-linux-musl.zip && unzip /tmp/lune.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/lune && rm /tmp/lune.zip || echo "Lune install failed - emulator will be unavailable"
-RUN lua5.1 -v
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y default-jre-headless lua5.1 lua-socket && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["python", "api.py"]
+COPY . /app/
+RUN pip install -r requirements.txt
+
+ADD https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar /opt/unluac.jar
+ENV UNLUAC_PATH=/opt/unluac.jar
+
+CMD ["sh", "-c", "gunicorn -w 4 -b 0.0.0.0:${PORT} api:app"]

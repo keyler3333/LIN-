@@ -2,28 +2,52 @@ import discord
 import io
 import os
 import re
+import logging
 import httpx
 import base64
 from discord.ext import commands
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s %(message)s',
+    datefmt='%H:%M:%S',
+)
+log = logging.getLogger('deobf-bot')
+
 TOKEN   = os.environ.get('DISCORD_BOT_TOKEN')
 API_URL = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
+API_KEY = os.environ.get('API_KEY', '')
 
 if not TOKEN:
     raise SystemExit("DISCORD_BOT_TOKEN not set.")
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot  = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+bot  = commands.Bot(command_prefix='=', intents=intents, help_command=None)
 tree = bot.tree
 
 ALLOWED_EXTENSIONS = ('.lua', '.txt', '.luau')
 MAX_BYTES = 5 * 1024 * 1024
 
+SUCCESS_METHODS = ('unluac', 'sandbox_capture', 'sandbox_unluac',
+                   'sandbox_capture_l2', 'sandbox_unluac_l2',
+                   'sandbox_capture_l3', 'sandbox_unluac_l3')
+
+
+def _api_headers():
+    h = {'Content-Type': 'application/json'}
+    if API_KEY:
+        h['X-API-Key'] = API_KEY
+    return h
+
 
 async def call_api(source_b64):
     async with httpx.AsyncClient(timeout=120) as c:
-        r = await c.post(f'{API_URL}/deobf', json={'source_b64': source_b64})
+        r = await c.post(
+            f'{API_URL}/deobf',
+            json={'source_b64': source_b64},
+            headers=_api_headers(),
+        )
         r.raise_for_status()
         return r.json()
 
@@ -46,6 +70,7 @@ async def run_deobf(raw_bytes, filename):
         source_b64 = base64.b64encode(raw_bytes).decode('ascii')
         data = await call_api(source_b64)
     except Exception as e:
+        log.error(f"API call failed: {e}")
         return {
             'embed': discord.Embed(title='API Error', description=str(e)[:1800], color=0xe74c3c),
             'files': [],
@@ -60,19 +85,28 @@ async def run_deobf(raw_bytes, filename):
     detected   = data.get('detected', 'unknown')
     diagnostic = data.get('diagnostic', '')
 
-    SUCCESS_METHODS = ('static_lift', 'static_decode', 'unluac', 'lune_capture',
-                       'lune_unluac', 'sandbox_capture', 'sandbox_unluac')
-    color = 0x2ecc71 if detected in SUCCESS_METHODS else (0xe67e22 if detected not in ('unable',) else 0xe74c3c)
+    if detected in SUCCESS_METHODS:
+        title = 'Deobfuscation Complete'
+        color = 0x2ecc71
+    elif detected == 'bytecode':
+        title = 'Bytecode Extracted'
+        color = 0xe67e22
+    else:
+        title = 'Deobfuscation Failed'
+        color = 0xe74c3c
 
-    em = discord.Embed(title='Deobfuscation Complete', color=color)
-    em.add_field(name='Method',   value=f'`{detected}`', inline=True)
-    em.add_field(name='Input',    value=filename,        inline=True)
+    em = discord.Embed(title=title, color=color)
+    em.add_field(name='Method', value=f'`{detected}`', inline=True)
+    em.add_field(name='Input',  value=filename,        inline=True)
     if diagnostic:
         em.add_field(name='Diagnostic', value=diagnostic[:1000], inline=False)
 
     files = []
     if result and detected != 'bytecode':
-        files.append(discord.File(fp=io.StringIO(result), filename=f'deobf_{filename}'))
+        files.append(discord.File(
+            fp=io.BytesIO(result.encode('utf-8', errors='replace')),
+            filename=f'deobf_{filename}',
+        ))
     elif detected == 'bytecode' and result:
         raw_out = base64.b64decode(result)
         files.append(discord.File(fp=io.BytesIO(raw_out), filename=f'extracted_{filename}.luac'))
@@ -102,10 +136,11 @@ async def prefix_deobf(ctx):
         code = _extract_inline_code(body)
         if not code:
             return await ctx.send(
-                'Attach a `.lua` file **or** paste code (with or without \\`\\`\\`lua fences) after `!deobf`.'
+                'Attach a `.lua` file **or** paste code (with or without \\`\\`\\`lua fences) after `=i deobf`.'
             )
         raw = code.encode('utf-8')
 
+    log.info(f"Deobf request from {ctx.author} ({filename}, {len(raw)} bytes)")
     msg = await ctx.send(embed=discord.Embed(
         title='⚙️ Deobfuscating…',
         description='Running all engines. This may take up to 90 s.',
@@ -126,6 +161,7 @@ async def deobf_error(ctx, error):
 
 
 @tree.command(name='deobf', description='Deobfuscate a Lua file')
+@commands.cooldown(1, 30, commands.BucketType.user)
 async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment):
     if not file.filename.lower().endswith(ALLOWED_EXTENSIONS):
         return await interaction.response.send_message(
@@ -135,6 +171,7 @@ async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment
             'File exceeds 5 MB limit.', ephemeral=True)
     await interaction.response.defer(thinking=True)
     raw = await file.read()
+    log.info(f"Slash deobf from {interaction.user} ({file.filename}, {len(raw)} bytes)")
     res = await run_deobf(raw, file.filename)
     await interaction.followup.send(embed=res['embed'], files=res.get('files', []))
 
@@ -143,7 +180,7 @@ async def slash_deobf(interaction: discord.Interaction, file: discord.Attachment
 async def help_cmd(ctx):
     em = discord.Embed(title='Deobfuscator Help', color=0x3498db)
     em.add_field(
-        name='!deobf [file or pasted code]',
+        name='=i deobf [file or pasted code]',
         value=(
             'Deobfuscate Lua source.\n'
             '• Attach a `.lua` / `.luau` / `.txt` file, **or**\n'
@@ -163,7 +200,7 @@ async def help_cmd(ctx):
 @bot.event
 async def on_ready():
     await tree.sync()
-    print(f'Ready: {bot.user}  |  API: {API_URL}')
+    log.info(f'Ready: {bot.user}  |  API: {API_URL}')
 
 
 if __name__ == '__main__':

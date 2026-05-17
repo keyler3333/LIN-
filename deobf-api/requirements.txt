@@ -1,3 +1,5 @@
 flask
+gunicorn
+httpx
 luaparser
-groq
+discord.py

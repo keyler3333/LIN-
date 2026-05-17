@@ -6,7 +6,6 @@ import base64
 from discord.ext import commands
 
 TOKEN = os.environ.get('DISCORD_BOT_TOKEN')
-API_KEY = os.environ.get('API_KEY')
 API_URL = os.environ.get('DEOBF_API_URL', 'http://localhost:5000')
 
 if not TOKEN:
@@ -18,40 +17,37 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 tree = bot.tree
 
 async def call_api(source_b64):
-    headers = {}
-    if API_KEY:
-        headers['X-API-Key'] = API_KEY
     async with httpx.AsyncClient(timeout=120) as c:
-        r = await c.post(f'{API_URL}/deobf', json={'source_b64': source_b64}, headers=headers)
+        r = await c.post(f'{API_URL}/deobf', json={'source_b64': source_b64})
         return r.json()
 
 async def run_deobf(raw_bytes, filename):
     if len(raw_bytes) > 5 * 1024 * 1024:
-        return {'embed': discord.Embed(title='Error', description='File exceeds 5MB limit', color=0xe74c3c), 'file': None}
+        return {'embed': discord.Embed(title='Error', description='File exceeds 5MB limit', color=0xe74c3c), 'files': []}
     try:
         source_b64 = base64.b64encode(raw_bytes).decode('ascii')
         data = await call_api(source_b64)
     except Exception as e:
-        return {'embed': discord.Embed(title='API Error', description=str(e), color=0xe74c3c), 'file': None}
+        return {'embed': discord.Embed(title='API Error', description=str(e), color=0xe74c3c), 'files': []}
     if 'error' in data:
-        return {'embed': discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c), 'file': None}
+        return {'embed': discord.Embed(title='Deobfuscation failed', description=data['error'], color=0xe74c3c), 'files': []}
 
     result = data.get('result', '')
     detected = data.get('detected', 'unknown')
     diagnostic = data.get('diagnostic', '')
-    raw_bytecode_b64 = data.get('raw_bytecode_b64')
 
-    em = discord.Embed(title='Deobfuscation complete', color=0x2ecc71 if detected == 'success' else 0xe67e22)
-    em.add_field(name='Status', value=detected, inline=True)
+    color = 0x2ecc71 if detected == 'static_lift' or detected == 'unluac' or detected == 'sandbox_capture' else 0xe67e22
+    em = discord.Embed(title='Deobfuscation complete', color=color)
+    em.add_field(name='Method', value=detected, inline=True)
     if diagnostic:
-        em.add_field(name='Pipeline', value=diagnostic[:1000], inline=False)
+        em.add_field(name='Diagnostic', value=diagnostic[:1000], inline=False)
 
     files = []
-    if result:
+    if result and detected != 'bytecode':
         files.append(discord.File(fp=io.StringIO(result), filename=f'deobf_{filename}'))
-    if raw_bytecode_b64:
-        raw_bytes_out = base64.b64decode(raw_bytecode_b64)
-        files.append(discord.File(fp=io.BytesIO(raw_bytes_out), filename=f'captured_{filename}.luac'))
+    elif detected == 'bytecode' and result:
+        raw_bytes_out = base64.b64decode(result)
+        files.append(discord.File(fp=io.BytesIO(raw_bytes_out), filename=f'extracted_{filename}.luac'))
 
     return {'embed': em, 'files': files}
 

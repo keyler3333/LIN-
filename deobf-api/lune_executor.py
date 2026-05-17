@@ -2,9 +2,6 @@ import asyncio
 import os
 import tempfile
 import hashlib
-import logging
-
-logger = logging.getLogger("deobf")
 
 EXECUTION_TIMEOUT = 10
 LUNE_BIN = os.environ.get("LUNE_BIN", "lune")
@@ -128,9 +125,10 @@ async def execute_and_capture(lua_source):
         output_path = os.path.join(tmpdir, f"captured_{tag}.luac")
 
         indented = "\n".join("    " + line for line in lua_source.splitlines())
+        indented_escaped = indented.replace("{", "{{").replace("}", "}}")
         shim = SHIM_TEMPLATE.format(
             outpath=output_path,
-            indented_user_script=indented,
+            indented_user_script=indented_escaped,
         )
 
         with open(script_path, "w", encoding="utf-8") as f:
@@ -161,9 +159,6 @@ async def execute_and_capture(lua_source):
                 info["runtime_error"] = line[len("RUNTIME_ERROR: "):]
             elif line.startswith("CAPTURE_SUCCESS: "):
                 info["capture_success"] = True
-
-        if info["stub_globals"]:
-            logger.debug(f"Stubbed globals: {', '.join(info['stub_globals'])}")
 
         if os.path.isfile(output_path):
             with open(output_path, "rb") as f:

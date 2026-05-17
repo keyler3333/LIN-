@@ -18,7 +18,7 @@ class DeobfEngine:
         self.unluac_path = UNLUAC_LOCAL_PATH
 
     def process(self, source):
-        bc = self._extract_bytecode(source)
+        bc, bc_diag = self._extract_bytecode(source)
         if bc:
             decompiled, err = self._run_unluac(bc)
             if decompiled and self._is_valid_lua(decompiled):
@@ -32,15 +32,19 @@ class DeobfEngine:
         if len(combined) > 200 and self._is_valid_lua(combined):
             return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
 
-        return '', 'unable', 'No readable Lua could be extracted. The script may use an unsupported obfuscator.'
+        return '', 'unable', bc_diag or 'No readable Lua could be extracted. The script may use an unsupported obfuscator.'
 
     def _extract_bytecode(self, source):
         cmap = self.lifter._build_char_map(source)
-        if not cmap or len(cmap) < 16:
-            return None
+        map_size = len(cmap) if cmap else 0
+        if not cmap or map_size < 16:
+            return None, f"Base64 map too small ({map_size} entries)"
+
         strings = self.lifter._extract_n_strings(source)
-        if not strings:
-            return None
+        str_count = len(strings) if strings else 0
+        if not strings or str_count == 0:
+            return None, f"String table not found (map: {map_size})"
+
         pairs = self.lifter._extract_shuffle_pairs(source)
         working = list(strings)
         if pairs:
@@ -48,22 +52,27 @@ class DeobfEngine:
                 lo, hi = a - 1, b - 1
                 if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
                     working[lo:hi + 1] = working[lo:hi + 1][::-1]
+
         decoded = []
         for s in working:
             s_bytes = self.lifter._unescape_lua_string(s)
             buf = self.lifter._decode_b64(s_bytes, cmap)
             if buf:
                 decoded.append(buf)
+
         if not decoded:
-            return None
+            return None, f"No strings decoded (map: {map_size}, strings: {str_count})"
+
         for chunk in decoded:
             if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
-                return chunk
+                return chunk, None
+
         full = b''.join(decoded)
         idx = full.find(b'\x1bLua')
         if idx != -1 and idx + 5 <= len(full) and full[idx + 4] == 0x51:
-            return full[idx:]
-        return None
+            return full[idx:], None
+
+        return None, f"Bytecode not found in {len(decoded)} decoded chunks ({len(full)} bytes total, map: {map_size}, strings: {str_count})"
 
     def _run_unluac(self, bytecode):
         if not os.path.isfile(self.unluac_path):

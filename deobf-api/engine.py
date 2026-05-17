@@ -38,6 +38,8 @@ class DeobfEngine:
             Base64StdDecoder(),
         ]
 
+    # ── Public entry point ─────────────────────────────────────────────────
+
     def process(self, source):
         cleaned = source
         for t in self.pre_transformers:
@@ -95,7 +97,7 @@ class DeobfEngine:
         all_text = []
         for item in caps + layers:
             if isinstance(item, str) and len(item) > 20:
-                item = re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', item)
+                item = self._repair_source(item)
                 all_text.append(item)
         all_text.sort(key=len, reverse=True)
 
@@ -114,6 +116,24 @@ class DeobfEngine:
 
         reason = lifter_diag or sandbox_diag or 'No readable content extracted'
         return source, 'unable', reason
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _repair_source(code):
+        """
+        Repair common syntax artifacts left by Lua obfuscators.
+        These transformations are idempotent and safe — they never
+        break valid Lua.
+        """
+        # Insert space between digit and following letter/underscore (e.g. 1end -> 1 end)
+        code = re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', code)
+        # Fix incomplete exponent: 1e followed by non-digit/not '+'/'-' → replace 'e' with 'e0'
+        code = re.sub(r'(\d)\.?(\d*)e([^0-9+\-])', r'\1.\2e0\3', code)
+        code = re.sub(r'(\d)e([^0-9+\-])', r'\1e0\2', code)
+        # Remove stray non-printable characters that sometimes leak through
+        code = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', code)
+        return code
 
     def _extract_bytecode(self, source):
         cmap = self.lifter._build_char_map(source)

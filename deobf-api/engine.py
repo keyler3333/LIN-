@@ -4,10 +4,12 @@ import subprocess
 import tempfile
 import base64
 import urllib.request
+import asyncio
 from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
+from lune_executor import execute_and_capture
 
-UNLUAC_JAR_URL = "https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar"
+UNLUAC_JAR_URL = "https://github.com/scratchminer/unluac/releases/download/v2023.03.22/unluac.jar"
 UNLUAC_LOCAL_PATH = os.environ.get('UNLUAC_PATH') or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'unluac.jar'
 )
@@ -45,6 +47,32 @@ class DeobfEngine:
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
             hint = "Bytecode extracted but unluac failed."
             return bc_b64, 'bytecode', hint
+
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        captured, info = loop.run_until_complete(execute_and_capture(source))
+
+        if captured:
+            if self._is_lua51_bytecode(captured):
+                decompiled, decompile_err = self._run_unluac(captured)
+                if decompiled and self._looks_decoded(decompiled):
+                    return self._beautify(decompiled), 'lune_unluac', 'Captured and decompiled via Lune'
+                bc_b64 = base64.b64encode(captured).decode('ascii')
+                hint = "Bytecode captured via Lune but decompilation failed."
+                return bc_b64, 'bytecode', hint
+
+            try:
+                text = captured.decode('utf-8', errors='replace')
+                if self._looks_decoded(text):
+                    return self._beautify(text), 'lune_capture', 'Readable source captured via Lune'
+                if len(text) > 100:
+                    return text, 'lune_string', 'String captured via Lune'
+            except:
+                pass
 
         layers, caps, diag = execute_sandbox(source, timeout=90)
 

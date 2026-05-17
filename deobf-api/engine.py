@@ -48,7 +48,12 @@ class DeobfEngine:
                 lo, hi = a - 1, b - 1
                 if 0 <= lo < len(working) and 0 <= hi < len(working) and lo < hi:
                     working[lo:hi + 1] = working[lo:hi + 1][::-1]
-        decoded = [buf for s in working if (buf := self.lifter._decode_b64(s, cmap))]
+        decoded = []
+        for s in working:
+            s_bytes = self.lifter._unescape_lua_string(s)
+            buf = self.lifter._decode_b64(s_bytes, cmap)
+            if buf:
+                decoded.append(buf)
         if not decoded:
             return None
         for chunk in decoded:

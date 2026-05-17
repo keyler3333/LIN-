@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -69,7 +70,7 @@ class DeobfEngine:
             if decompiled and self._looks_decoded(decompiled):
                 return self._beautify(decompiled), 'unluac', 'Bytecode decompiled by unluac'
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
-            hint   = f"Bytecode extracted but unluac failed ({err or 'unknown reason'})"
+            hint = f"Bytecode extracted but unluac failed ({err or 'unknown reason'})"
             return bc_b64, 'bytecode', hint
 
         captured, lune_info = self._run_lune(cleaned)
@@ -94,6 +95,7 @@ class DeobfEngine:
         all_text = []
         for item in caps + layers:
             if isinstance(item, str) and len(item) > 20:
+                item = re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', item)
                 all_text.append(item)
         all_text.sort(key=len, reverse=True)
 
@@ -134,7 +136,7 @@ class DeobfEngine:
             if self._is_lua51_bytecode(chunk):
                 return chunk
         full = b''.join(decoded)
-        idx  = full.find(b'\x1bLua')
+        idx = full.find(b'\x1bLua')
         if idx != -1 and idx + 5 <= len(full) and full[idx + 4] == 0x51:
             return full[idx:]
         return None

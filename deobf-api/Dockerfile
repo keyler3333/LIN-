@@ -6,7 +6,7 @@ WORKDIR /app
 COPY . /app/
 RUN pip install -r requirements.txt
 
-ADD https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar /opt/unluac.jar
+ADD https://github.com/scratchminer/unluac/releases/download/v2023.03.22/unluac.jar /opt/unluac.jar
 ENV UNLUAC_PATH=/opt/unluac.jar
 
 CMD ["sh", "-c", "gunicorn -w 4 -b 0.0.0.0:${PORT} api:app"]

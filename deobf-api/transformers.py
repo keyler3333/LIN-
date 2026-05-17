@@ -261,6 +261,18 @@ class Lua51Decompiler:
         if not is_main: self.indent -= 1; self._emit('end')
 
 class WeAreDevsLifter(Transformer):
+    _CHARMAP_VAR_PATS = [
+        r'local\s+b\s*=\s*\{', r'local\s+_b\s*=\s*\{', r'local\s+B\s*=\s*\{',
+        r'local\s+t\s*=\s*\{', r'local\s+_t\s*=\s*\{', r'local\s+T\s*=\s*\{',
+        r'local\s+c\s*=\s*\{', r'local\s+_c\s*=\s*\{', r'local\s+C\s*=\s*\{',
+        r'local\s+map\s*=\s*\{', r'local\s+chars\s*=\s*\{',
+    ]
+    _STRTAB_VAR_PATS = [
+        r'local\s+N\s*=\s*\{', r'local\s+_N\s*=\s*\{', r'local\s+n\s*=\s*\{',
+        r'local\s+s\s*=\s*\{', r'local\s+_s\s*=\s*\{', r'local\s+S\s*=\s*\{',
+        r'local\s+d\s*=\s*\{', r'local\s+_d\s*=\s*\{', r'local\s+D\s*=\s*\{',
+        r'local\s+strings\s*=\s*\{', r'local\s+data\s*=\s*\{',
+    ]
     def __init__(self):
         self.diagnostic = ""
     def transform(self, code):
@@ -273,13 +285,11 @@ class WeAreDevsLifter(Transformer):
         return code
 
     def _try_lift(self, source):
-        cmap = self._find_base64_map(source)
-        if not cmap:
-            self.diagnostic = "No base64 map found (64 unique characters in range 0-63)"
+        cmap = self._build_char_map(source)
+        if not cmap or len(cmap) < 16:
+            self.diagnostic = f"Base64 table too small ({len(cmap) if cmap else 0} entries)"
             return None
         strings = self._extract_n_strings(source)
-        if not strings:
-            strings = self._find_all_strings(source)
         if not strings:
             self.diagnostic = "String table not found"
             return None
@@ -319,84 +329,6 @@ class WeAreDevsLifter(Transformer):
         self.diagnostic = f"Decoded {len(decoded)} chunk(s), {len(full)} bytes"
         return None
 
-    def _find_base64_map(self, source):
-        best = None
-        for m in re.finditer(r'\{', source):
-            start = m.start()
-            depth = 0; end = -1
-            for i in range(start, len(source)):
-                if source[i] == '{': depth += 1
-                elif source[i] == '}':
-                    depth -= 1
-                    if depth == 0: end = i; break
-            if end == -1: continue
-            body = source[start+1:end]
-            cmap = self._parse_map_body(body)
-            if cmap and len(cmap) == 64:
-                return cmap
-            if cmap and len(cmap) > len(best or {}):
-                best = cmap
-        return best if best and len(best) >= 60 else None
-
-    def _parse_map_body(self, body):
-        assignments = []
-        current = []
-        paren_depth = 0
-        in_str = False
-        str_ch = None
-        for ch in body:
-            if in_str:
-                current.append(ch)
-                if ch == str_ch: in_str = False
-                continue
-            if ch in ('"', "'"):
-                in_str = True; str_ch = ch; current.append(ch); continue
-            if ch == '(': paren_depth += 1
-            elif ch == ')': paren_depth -= 1
-            if ch in (',', ';') and paren_depth == 0:
-                assignments.append(''.join(current).strip()); current = []
-            else: current.append(ch)
-        if current: assignments.append(''.join(current).strip())
-        cmap = {}
-        for assign in assignments:
-            if '=' not in assign: continue
-            kpart, vpart = assign.split('=', 1)
-            key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
-            if key.startswith('\\'): key = WeAreDevsLifter._unescape_lua_string(key)
-            expr = vpart.strip()
-            if re.match(r'^[\d\s\+\-\*\/\^\(\)\.]+$', expr):
-                try:
-                    val = ast.literal_eval(expr)
-                    if isinstance(val, (int, float)):
-                        cmap[key] = int(val) & 0x3F
-                except Exception: pass
-        return cmap
-
-    def _find_all_strings(self, source):
-        strings = []
-        in_str = False
-        str_ch = None
-        current = []
-        esc_next = False
-        for ch in source:
-            if esc_next:
-                current.append('\\'+ch); esc_next = False; continue
-            if in_str:
-                if ch == '\\': current.append(ch); esc_next = True; continue
-                current.append(ch)
-                if ch == str_ch:
-                    strings.append(''.join(current)); current = []; in_str = False
-                continue
-            if ch in ('"', "'"):
-                in_str = True; str_ch = ch; current.append(ch)
-        result = []
-        for s in strings:
-            s = s.strip()
-            if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
-                s = s[1:-1]
-            if s and len(s) > 3: result.append(s)
-        return result if result else None
-
     @staticmethod
     def _unescape_lua_string(s):
         result = []
@@ -433,14 +365,49 @@ class WeAreDevsLifter(Transformer):
             self.diagnostic = f"Bytecode decompilation failed: {e}"
             return None
 
+    def _build_char_map(self, source):
+        for pat in self._CHARMAP_VAR_PATS:
+            m = re.search(pat, source)
+            if m: break
+        else: return None
+        start = source.index('{', m.start())
+        depth = 0; end = -1
+        for i in range(start, len(source)):
+            if source[i] == '{': depth += 1
+            elif source[i] == '}':
+                depth -= 1
+                if depth == 0: end = i; break
+        if end == -1: return None
+        body = source[start+1:end]
+        assignments = []; current = []; paren_depth = 0; in_str = False; str_ch = None
+        for ch in body:
+            if in_str:
+                current.append(ch)
+                if ch == str_ch: in_str = False
+                continue
+            if ch in ('"', "'"): in_str = True; str_ch = ch; current.append(ch); continue
+            if ch == '(': paren_depth += 1
+            elif ch == ')': paren_depth -= 1
+            if ch in (',', ';') and paren_depth == 0:
+                assignments.append(''.join(current).strip()); current = []
+            else: current.append(ch)
+        if current: assignments.append(''.join(current).strip())
+        cmap = {}
+        for assign in assignments:
+            if '=' not in assign: continue
+            kpart, vpart = assign.split('=', 1)
+            key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
+            if key.startswith('\\'): key = self._unescape_lua_string(key)
+            expr = vpart.strip()
+            if re.match(r'^[\d\s\+\-\*\/\^\(\)\.]+$', expr):
+                try:
+                    val = ast.literal_eval(expr)
+                    if isinstance(val, (int, float)): cmap[key] = int(val) & 0x3F
+                except Exception: pass
+        return cmap
+
     def _extract_n_strings(self, source):
-        pats = [
-            r'local\s+N\s*=\s*\{', r'local\s+_N\s*=\s*\{', r'local\s+n\s*=\s*\{',
-            r'local\s+s\s*=\s*\{', r'local\s+_s\s*=\s*\{', r'local\s+S\s*=\s*\{',
-            r'local\s+d\s*=\s*\{', r'local\s+_d\s*=\s*\{', r'local\s+D\s*=\s*\{',
-            r'local\s+strings\s*=\s*\{', r'local\s+data\s*=\s*\{',
-        ]
-        for pat in pats:
+        for pat in self._STRTAB_VAR_PATS:
             m = re.search(pat, source)
             if m: break
         else: return None

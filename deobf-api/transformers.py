@@ -1,10 +1,13 @@
 import re
 import struct
 import ast
+import base64 as _b64_std
+
 
 class Transformer:
     def transform(self, code):
         raise NotImplementedError
+
 
 class EscapeSequenceTransformer(Transformer):
     def transform(self, code):
@@ -12,14 +15,18 @@ class EscapeSequenceTransformer(Transformer):
         code = re.sub(r'\\(\d{1,3})', lambda m: chr(int(m.group(1))) if int(m.group(1)) < 256 else m.group(0), code)
         return code
 
+
 class MathTransformer(Transformer):
     _PAT = re.compile(r'\((-?\d+(?:\.\d+)?)\s*([\+\-\*\/\^])\s*(-?\d+(?:\.\d+)?)\)')
+
     def transform(self, code):
         for _ in range(20):
             new = self._PAT.sub(self._fold, code)
-            if new == code: break
+            if new == code:
+                break
             code = new
         return code
+
     @staticmethod
     def _fold(m):
         try:
@@ -34,6 +41,7 @@ class MathTransformer(Transformer):
         except Exception:
             return m.group(0)
 
+
 class HexNameRenamer(Transformer):
     def transform(self, code):
         mapping, ctr = {}, [0]
@@ -45,78 +53,150 @@ class HexNameRenamer(Transformer):
             return mapping[h]
         return re.sub(r'_0x[0-9a-fA-F]+', rep, code)
 
+
 class NumberArrayDecoder(Transformer):
     _PAT = re.compile(r'string\.char\(([0-9,\s]+)\)')
+
     def transform(self, code):
         def replace(m):
             try:
                 parts = [p.strip() for p in m.group(1).split(',') if p.strip()]
                 nums = [int(p) for p in parts if p.isdigit()]
-                if not nums or len(nums) != len(parts): return m.group(0)
+                if not nums or len(nums) != len(parts):
+                    return m.group(0)
                 chars = [chr(n) for n in nums if 0 <= n <= 127]
-                if len(chars) != len(nums): return m.group(0)
+                if len(chars) != len(nums):
+                    return m.group(0)
                 s = ''.join(chars)
-                if all(c.isprintable() or c in '\n\r\t' for c in s): return repr(s)
+                if all(c.isprintable() or c in '\n\r\t' for c in s):
+                    return repr(s)
             except Exception:
                 pass
             return m.group(0)
         return self._PAT.sub(replace, code)
 
+
 class Base64StdDecoder(Transformer):
     _PAT = re.compile(r'"([A-Za-z0-9+/]{40,}={0,2})"')
+
     def transform(self, code):
-        import base64 as _b64
         def try_decode(m):
             s = m.group(1)
             try:
                 padded = s + '=' * (-len(s) % 4)
-                decoded = _b64.b64decode(padded)
+                decoded = _b64_std.b64decode(padded)
                 text = decoded.decode('utf-8', errors='strict')
-                if len(text) > 30 and any(kw in text for kw in ['function','local ','end','return','print(']):
+                if len(text) > 30 and any(kw in text for kw in ['function', 'local ', 'end', 'return', 'print(']):
                     return repr(text)
             except Exception:
                 pass
             return m.group(0)
         return self._PAT.sub(try_decode, code)
 
+
+class XorStringDecoder(Transformer):
+    _TABLE_PAT = re.compile(r'\{(\s*\d+(?:\s*,\s*\d+){19,})\s*\}')
+    _SCORE_KW = ['function', 'local', 'end', 'return', 'if', 'then', 'for', 'while', 'loadstring', 'pcall']
+
+    def transform(self, code):
+        best = None
+        for m in self._TABLE_PAT.finditer(code):
+            raw_str = m.group(1)
+            try:
+                parts = [p.strip() for p in raw_str.split(',') if p.strip().isdigit()]
+                nums = [int(p) for p in parts]
+                if not nums or len(nums) > 200_000:
+                    continue
+                if not all(0 <= n <= 255 for n in nums):
+                    continue
+                for key in range(1, 256):
+                    decoded_bytes = bytes(n ^ key for n in nums)
+                    try:
+                        text = decoded_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        continue
+                    printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t')
+                    if (printable / max(len(text), 1)) < 0.80:
+                        continue
+                    kw_hits = sum(1 for kw in self._SCORE_KW if kw in text)
+                    if kw_hits >= 2:
+                        if best is None or len(text) > len(best[2]):
+                            best = (m.start(), m.end(), text)
+                        break
+            except Exception:
+                pass
+        if best is None:
+            return code
+        start, end, text = best
+        return code[:start] + repr(text) + code[end:]
+
+
 class Lua51Parser:
     def __init__(self, bc):
         self.bc = bc
         self.pos = [0]
         self._parse_header()
+
     def _byte(self):
-        v = self.bc[self.pos[0]]; self.pos[0] += 1; return v
+        v = self.bc[self.pos[0]]
+        self.pos[0] += 1
+        return v
+
     def _int(self):
-        d = self.bc[self.pos[0]:self.pos[0]+self.int_size]; self.pos[0] += self.int_size
+        d = self.bc[self.pos[0]:self.pos[0] + self.int_size]
+        self.pos[0] += self.int_size
         return int.from_bytes(d, 'little' if self.little_endian else 'big')
+
     def _sizet(self):
-        d = self.bc[self.pos[0]:self.pos[0]+self.sizet_size]; self.pos[0] += self.sizet_size
+        d = self.bc[self.pos[0]:self.pos[0] + self.sizet_size]
+        self.pos[0] += self.sizet_size
         return int.from_bytes(d, 'little' if self.little_endian else 'big')
+
     def _double(self):
-        d = self.bc[self.pos[0]:self.pos[0]+8]; self.pos[0] += 8
+        d = self.bc[self.pos[0]:self.pos[0] + 8]
+        self.pos[0] += 8
         return struct.unpack('<d' if self.little_endian else '>d', d)[0]
+
     def _string(self):
         size = self._sizet()
-        if size == 0: return None
-        s = self.bc[self.pos[0]:self.pos[0]+size-1].decode('latin-1', errors='replace')
-        self.pos[0] += size; return s
+        if size == 0:
+            return None
+        s = self.bc[self.pos[0]:self.pos[0] + size - 1].decode('latin-1', errors='replace')
+        self.pos[0] += size
+        return s
+
     def _instruction(self):
-        d = self.bc[self.pos[0]:self.pos[0]+4]; self.pos[0] += 4
+        d = self.bc[self.pos[0]:self.pos[0] + 4]
+        self.pos[0] += 4
         v = int.from_bytes(d, 'little' if self.little_endian else 'big')
-        return {'op': v & 0x3F, 'a': (v>>6) & 0xFF, 'c': (v>>14) & 0x1FF, 'b': (v>>23) & 0x1FF,
-                'bx': (v>>14) & 0x3FFFF, 'sbx': ((v>>14) & 0x3FFFF) - 131071}
+        return {
+            'op': v & 0x3F, 'a': (v >> 6) & 0xFF, 'c': (v >> 14) & 0x1FF,
+            'b': (v >> 23) & 0x1FF, 'bx': (v >> 14) & 0x3FFFF,
+            'sbx': ((v >> 14) & 0x3FFFF) - 131071,
+        }
+
     def _parse_header(self):
         if not (self.bc[:4] == b'\x1bLua' and self.bc[4] == 0x51):
-            raise ValueError('Not Lua 5.1')
-        self.pos[0] = 5; self._byte(); self.little_endian = self._byte() == 1
-        self.int_size = self._byte(); self.sizet_size = self._byte()
-        self._byte(); self._byte(); self._byte()
+            raise ValueError('Not a Lua 5.1 bytecode header')
+        self.pos[0] = 5
+        self._byte()
+        self.little_endian = self._byte() == 1
+        self.int_size = self._byte()
+        self.sizet_size = self._byte()
+        self._byte()
+        self._byte()
+        self._byte()
+
     def parse_function(self):
-        func = {'source': self._string(), 'line_defined': self._int(), 'last_line': self._int(),
-                'nups': self._byte(), 'numparams': self._byte(), 'is_vararg': self._byte(),
-                'maxstack': self._byte()}
-        n = self._int(); func['code'] = [self._instruction() for _ in range(n)]
-        n = self._int(); consts = []
+        func = {
+            'source': self._string(), 'line_defined': self._int(), 'last_line': self._int(),
+            'nups': self._byte(), 'numparams': self._byte(), 'is_vararg': self._byte(),
+            'maxstack': self._byte(),
+        }
+        n = self._int()
+        func['code'] = [self._instruction() for _ in range(n)]
+        n = self._int()
+        consts = []
         for _ in range(n):
             t = self._byte()
             if t == 0: consts.append(None)
@@ -125,29 +205,44 @@ class Lua51Parser:
             elif t == 4: consts.append(self._string())
             else: consts.append(None)
         func['constants'] = consts
-        n = self._int(); func['protos'] = [self.parse_function() for _ in range(n)]
-        n = self._int(); self.pos[0] += n * self.int_size
         n = self._int()
-        for _ in range(n): self._string(); self._int(); self._int()
-        n = self._int(); func['upvalue_names'] = [self._string() for _ in range(n)]
+        func['protos'] = [self.parse_function() for _ in range(n)]
+        n = self._int()
+        self.pos[0] += n * self.int_size
+        n = self._int()
+        for _ in range(n):
+            self._string(); self._int(); self._int()
+        n = self._int()
+        func['upvalue_names'] = [self._string() for _ in range(n)]
         return func
 
+
 class Lua51Decompiler:
-    OPCODES = {0:'MOVE',1:'LOADK',2:'LOADBOOL',3:'LOADNIL',4:'GETUPVAL',5:'GETGLOBAL',
-               6:'GETTABLE',7:'SETGLOBAL',8:'SETUPVAL',9:'SETTABLE',10:'NEWTABLE',
-               11:'SELF',12:'ADD',13:'SUB',14:'MUL',15:'DIV',16:'MOD',17:'POW',
-               18:'UNM',19:'NOT',20:'LEN',21:'CONCAT',22:'JMP',23:'EQ',24:'LT',
-               25:'LE',26:'TEST',27:'TESTSET',28:'CALL',29:'TAILCALL',30:'RETURN',
-               31:'FORLOOP',32:'FORPREP',33:'TFORLOOP',34:'SETLIST',35:'CLOSE',
-               36:'CLOSURE',37:'VARARG'}
+    OPCODES = {
+        0:'MOVE',1:'LOADK',2:'LOADBOOL',3:'LOADNIL',4:'GETUPVAL',5:'GETGLOBAL',
+        6:'GETTABLE',7:'SETGLOBAL',8:'SETUPVAL',9:'SETTABLE',10:'NEWTABLE',
+        11:'SELF',12:'ADD',13:'SUB',14:'MUL',15:'DIV',16:'MOD',17:'POW',
+        18:'UNM',19:'NOT',20:'LEN',21:'CONCAT',22:'JMP',23:'EQ',24:'LT',
+        25:'LE',26:'TEST',27:'TESTSET',28:'CALL',29:'TAILCALL',30:'RETURN',
+        31:'FORLOOP',32:'FORPREP',33:'TFORLOOP',34:'SETLIST',35:'CLOSE',
+        36:'CLOSURE',37:'VARARG',
+    }
     BINOP = {12:'+',13:'-',14:'*',15:'/',16:'%',17:'^'}
     UNOP = {18:'-',19:'not ',20:'#'}
+
     def __init__(self, func):
-        self.root = func; self.lines = []; self.indent = 0; self._tmp = [0]
+        self.root = func
+        self.lines = []
+        self.indent = 0
+        self._tmp = [0]
+
     def decompile(self):
-        self._func(self.root, '__main__', True); return '\n'.join(self.lines)
+        self._func(self.root, '__main__', True)
+        return '\n'.join(self.lines)
+
     def _emit(self, s): self.lines.append('    ' * self.indent + s)
     def _t(self): self._tmp[0] += 1; return f't{self._tmp[0]}'
+
     @staticmethod
     def _fc(c):
         if c is None: return 'nil'
@@ -155,17 +250,24 @@ class Lua51Decompiler:
         if isinstance(c, str): return repr(c)
         if isinstance(c, float): return str(int(c)) if c == int(c) and abs(c) < 1e15 else repr(c)
         return str(c)
+
     @staticmethod
     def _ident(s): return bool(re.match(r'^[A-Za-z_]\w*$', s))
+
     def _rk(self, v, consts, regs):
         if v & 0x100: idx = v & 0xFF; return self._fc(consts[idx] if idx < len(consts) else None)
         return regs.get(v, f'r{v}')
+
     def _tget(self, obj, key):
-        if (key.startswith('"') or key.startswith("'")) and self._ident(key[1:-1]): return f'{obj}.{key[1:-1]}'
+        if (key.startswith('"') or key.startswith("'")) and self._ident(key[1:-1]):
+            return f'{obj}.{key[1:-1]}'
         return f'{obj}[{key}]'
+
     def _tset(self, obj, key, val):
-        if (key.startswith('"') or key.startswith("'")) and self._ident(key[1:-1]): return f'{obj}.{key[1:-1]} = {val}'
+        if (key.startswith('"') or key.startswith("'")) and self._ident(key[1:-1]):
+            return f'{obj}.{key[1:-1]} = {val}'
         return f'{obj}[{key}] = {val}'
+
     def _func(self, func, name='f', is_main=False):
         code = func['code']; consts = func['constants']; protos = func['protos']
         upvnames = func.get('upvalue_names') or []
@@ -198,8 +300,10 @@ class Lua51Decompiler:
             elif op == 10: regs[a] = '{}'; self._emit(f'local r{a} = {{}}')
             elif op == 11:
                 key = RK(c); obj = R(b)
-                if (key.startswith(('"', "'")) and self._ident(key[1:-1])): regs[a] = f'{obj}:{key[1:-1]}'
-                else: regs[a] = f'{obj}[{key}]'
+                if (key.startswith(('"', "'")) and self._ident(key[1:-1])):
+                    regs[a] = f'{obj}:{key[1:-1]}'
+                else:
+                    regs[a] = f'{obj}[{key}]'
                 regs[a+1] = obj
             elif op in self.BINOP: regs[a] = f'({RK(b)} {self.BINOP[op]} {RK(c)})'
             elif op in self.UNOP: regs[a] = f'({self.UNOP[op]}{R(b)})'
@@ -221,8 +325,7 @@ class Lua51Decompiler:
                 call = f'{fn}({args})'
                 if c == 0: regs[a] = call
                 elif c == 1: self._emit(call)
-                elif c == 2:
-                    t = self._t(); self._emit(f'local {t} = {call}'); regs[a] = t
+                elif c == 2: t = self._t(); self._emit(f'local {t} = {call}'); regs[a] = t
                 else:
                     rets = [self._t() for _ in range(c-1)]
                     self._emit(f'local {", ".join(rets)} = {call}')
@@ -260,6 +363,7 @@ class Lua51Decompiler:
             i += 1
         if not is_main: self.indent -= 1; self._emit('end')
 
+
 class WeAreDevsLifter(Transformer):
     _CHARMAP_VAR_PATS = [
         r'local\s+b\s*=\s*\{', r'local\s+_b\s*=\s*\{', r'local\s+B\s*=\s*\{',
@@ -273,8 +377,10 @@ class WeAreDevsLifter(Transformer):
         r'local\s+d\s*=\s*\{', r'local\s+_d\s*=\s*\{', r'local\s+D\s*=\s*\{',
         r'local\s+strings\s*=\s*\{', r'local\s+data\s*=\s*\{',
     ]
+
     def __init__(self):
         self.diagnostic = ""
+
     def transform(self, code):
         self.diagnostic = ""
         try:

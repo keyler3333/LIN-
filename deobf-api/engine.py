@@ -1,4 +1,4 @@
-import os, re, shutil, subprocess, tempfile, base64, urllib.request, ast
+import os, re, shutil, subprocess, tempfile, base64, urllib.request
 from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
 
@@ -12,7 +12,8 @@ class DeobfEngine:
 
     def process(self, source):
         layers, caps, diag = execute_sandbox(source, timeout=120)
-        bc = self._extract_bytecode_from_sandbox(layers)
+
+        bc = self._extract_bytecode_from_layers(layers)
         if bc:
             dc, err = self._run_unluac(bc)
             if dc and self._is_valid_lua(dc):
@@ -20,14 +21,8 @@ class DeobfEngine:
             return base64.b64encode(bc).decode(), 'bytecode', f'Sandbox bytecode ({len(bc)} bytes). unluac: {err}'
 
         for item in layers:
-            if isinstance(item, bytes):
-                if len(item) >= 12 and item[:4] == b'\x1bLua' and item[4] == 0x51:
-                    dc, err = self._run_unluac(item)
-                    if dc and self._is_valid_lua(dc):
-                        return self._beautify(dc), 'sandbox_unluac', 'Decompiled from sandbox bytecode dump'
-            elif isinstance(item, str):
-                if len(item) > 100 and self._is_valid_lua(item):
-                    return self._beautify(item), 'sandbox_capture', 'Readable source captured by sandbox'
+            if isinstance(item, str) and len(item) > 100 and self._is_valid_lua(item):
+                return self._beautify(item), 'sandbox_capture', 'Readable source captured by sandbox'
 
         all_text = [c for c in caps if isinstance(c, str) and len(c) > 20]
         if all_text:
@@ -42,51 +37,49 @@ class DeobfEngine:
                 return self._beautify(dc), 'unluac', 'Decompiled from static lifter'
             return base64.b64encode(bc).decode(), 'bytecode', f'Static lifter bytecode ({len(bc)} bytes). unluac: {err}'
 
-        return '', 'unable', lifter_diag or diag or 'No readable Lua could be extracted'
+        final_diag = lifter_diag or ''
+        if diag:
+            final_diag = (final_diag + '\n---\n' + diag) if final_diag else diag
+        return '', 'unable', final_diag or 'No readable Lua could be extracted'
 
-    def _extract_bytecode_from_sandbox(self, layers):
+    def _extract_bytecode_from_layers(self, layers):
         for item in layers:
+            if isinstance(item, bytes):
+                if len(item) >= 12 and item[:4] == b'\x1bLua' and item[4] == 0x51:
+                    return item
+                continue
             if not isinstance(item, str):
                 continue
-            if 'SANDBOX_OUTPUT_START' not in item:
-                continue
-            m = re.search(r'SANDBOX_OUTPUT_START\s*(return\s*\{.*?\})\s*SANDBOX_OUTPUT_END', item, re.DOTALL)
-            if not m:
-                continue
-            try:
-                data = ast.literal_eval(m.group(1).strip().replace('return ', ''))
-            except Exception:
-                continue
-            for key, val in data.items():
-                if isinstance(val, str) and len(val) >= 12:
-                    decoded = self._decode_lua_string(val)
-                    if isinstance(decoded, bytes) and len(decoded) >= 12 and decoded[:4] == b'\x1bLua' and decoded[4] == 0x51:
-                        return decoded
-                    if isinstance(decoded, str) and len(decoded) >= 12 and decoded[:4] == '\x1bLua' and decoded[4] == '\x51':
-                        return decoded.encode('latin-1')
+            if len(item) >= 12 and item[:4] == '\x1bLua' and item[4] == '\x51':
+                return item.encode('latin-1')
+            for match in re.finditer(r'\x1bLua\x51.{7,}', item, re.DOTALL):
+                return match.group(0).encode('latin-1', errors='replace')
+            if 'SANDBOX_OUTPUT_START' in item:
+                start = item.find('SANDBOX_OUTPUT_START')
+                end = item.find('SANDBOX_OUTPUT_END', start)
+                if end != -1:
+                    block = item[start + len('SANDBOX_OUTPUT_START'):end]
+                    for match in re.finditer(r'"(\\\\\d{1,3}(?:\\\\\d{1,3}){11,}[^"]*)"', block):
+                        escaped = match.group(1)
+                        decoded = self._decode_lua_escapes(escaped)
+                        if decoded and len(decoded) >= 12 and decoded[:4] == b'\x1bLua' and decoded[4] == 0x51:
+                            return decoded
+                    for match in re.finditer(r'\[\d+\]\s*=\s*(\d+)', block):
+                        pass
         return None
 
     @staticmethod
-    def _decode_lua_string(s):
+    def _decode_lua_escapes(s):
         try:
             result = bytearray()
             i = 0
             while i < len(s):
                 if s[i] == '\\' and i + 1 < len(s):
-                    if s[i+1] == '\\':
-                        result.append(ord('\\'))
-                        i += 2
-                    elif s[i+1].isdigit():
-                        j = i + 1
-                        while j < len(s) and s[j].isdigit() and j - i < 4:
-                            j += 1
-                        val = int(s[i+1:j])
-                        if val < 256:
-                            result.append(val)
-                        else:
-                            result.append(ord(s[i]))
-                            i += 1
-                            continue
+                    j = i + 1
+                    while j < len(s) and s[j].isdigit():
+                        j += 1
+                    if j > i + 1:
+                        result.append(int(s[i+1:j]))
                         i = j
                     else:
                         result.append(ord(s[i]))
@@ -96,7 +89,7 @@ class DeobfEngine:
                     i += 1
             return bytes(result)
         except Exception:
-            return s
+            return None
 
     def _extract_bytecode_from_lifter(self, source):
         cmap = self.lifter._build_char_map(source)

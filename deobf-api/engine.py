@@ -38,8 +38,6 @@ class DeobfEngine:
             Base64StdDecoder(),
         ]
 
-    # ── Public entry point ─────────────────────────────────────────────────
-
     def process(self, source):
         cleaned = source
         for t in self.pre_transformers:
@@ -50,7 +48,7 @@ class DeobfEngine:
 
         lifted = self.lifter.transform(cleaned)
         if lifted and lifted != cleaned and self._looks_decoded(lifted):
-            return self._beautify(lifted), 'static_lift', 'WeAreDev static lifter'
+            return self._beautify(self._repair_source(lifted)), 'static_lift', 'Deobfuscated by static lifter'
 
         lifter_diag = self.lifter.diagnostic or ''
 
@@ -58,7 +56,7 @@ class DeobfEngine:
             try:
                 result = decoder.transform(cleaned)
                 if result and result != cleaned and self._looks_decoded(result):
-                    return self._beautify(result), 'static_decode', decoder.__class__.__name__
+                    return self._beautify(self._repair_source(result)), 'static_decode', decoder.__class__.__name__
             except Exception:
                 pass
 
@@ -70,7 +68,7 @@ class DeobfEngine:
         if extracted_bc:
             decompiled, err = self._run_unluac(extracted_bc)
             if decompiled and self._looks_decoded(decompiled):
-                return self._beautify(decompiled), 'unluac', 'Bytecode decompiled by unluac'
+                return self._beautify(self._repair_source(decompiled)), 'unluac', 'Decompiled by unluac'
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
             hint = f"Bytecode extracted but unluac failed ({err or 'unknown reason'})"
             return bc_b64, 'bytecode', hint
@@ -80,13 +78,13 @@ class DeobfEngine:
             if self._is_lua51_bytecode(captured):
                 decompiled, err = self._run_unluac(captured)
                 if decompiled and self._looks_decoded(decompiled):
-                    return self._beautify(decompiled), 'lune_unluac', 'Lune captured bytecode, decompiled by unluac'
+                    return self._beautify(self._repair_source(decompiled)), 'lune_unluac', 'Lune captured bytecode, decompiled by unluac'
                 bc_b64 = base64.b64encode(captured).decode('ascii')
                 return bc_b64, 'bytecode', 'Lune captured bytecode; unluac unavailable/failed'
             try:
                 text = captured.decode('utf-8', errors='replace')
                 if self._looks_decoded(text):
-                    return self._beautify(text), 'lune_capture', 'Source captured by Lune dynamic execution'
+                    return self._beautify(self._repair_source(text)), 'lune_capture', 'Source captured by Lune dynamic execution'
                 if len(text) > 100:
                     return text, 'lune_string', 'String captured by Lune'
             except Exception:
@@ -109,7 +107,7 @@ class DeobfEngine:
             if isinstance(item, bytes) and self._is_lua51_bytecode(item):
                 decompiled, _ = self._run_unluac(item)
                 if decompiled and self._looks_decoded(decompiled):
-                    return self._beautify(decompiled), 'sandbox_unluac', 'Sandbox bytecode decompiled by unluac'
+                    return self._beautify(self._repair_source(decompiled)), 'sandbox_unluac', 'Sandbox bytecode decompiled by unluac'
 
         if all_text and len(all_text[0]) > 200:
             return all_text[0], 'memory_dump', 'Largest captured string from sandbox memory'
@@ -117,21 +115,11 @@ class DeobfEngine:
         reason = lifter_diag or sandbox_diag or 'No readable content extracted'
         return source, 'unable', reason
 
-    # ── Helpers ────────────────────────────────────────────────────────────
-
     @staticmethod
     def _repair_source(code):
-        """
-        Repair common syntax artifacts left by Lua obfuscators.
-        These transformations are idempotent and safe — they never
-        break valid Lua.
-        """
-        # Insert space between digit and following letter/underscore (e.g. 1end -> 1 end)
         code = re.sub(r'(\d)([a-zA-Z_])', r'\1 \2', code)
-        # Fix incomplete exponent: 1e followed by non-digit/not '+'/'-' → replace 'e' with 'e0'
         code = re.sub(r'(\d)\.?(\d*)e([^0-9+\-])', r'\1.\2e0\3', code)
         code = re.sub(r'(\d)e([^0-9+\-])', r'\1e0\2', code)
-        # Remove stray non-printable characters that sometimes leak through
         code = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', code)
         return code
 

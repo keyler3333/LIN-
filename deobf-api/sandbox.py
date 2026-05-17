@@ -33,7 +33,10 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
         drv = os.path.join(temp_dir, 'driver.lua')
 
         try:
-            raw_bytes = bytes((min(ord(c), 255) for c in source))
+            if isinstance(source, bytes):
+                raw_bytes = source
+            else:
+                raw_bytes = source.encode('utf-8', errors='replace')
             with open(inp, 'wb') as f:
                 f.write(raw_bytes)
         except Exception as e:
@@ -49,7 +52,7 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
             shutil.rmtree(temp_dir, ignore_errors=True)
             return [], [], f"READ_RUNTIME_ERROR: {e}"
 
-        out_dir = temp_dir.replace('\\', '/')
+        out_dir  = temp_dir.replace('\\', '/')
         inp_path = inp.replace('\\', '/')
 
         driver = (runtime
@@ -162,19 +165,13 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
                 with open(errf, encoding='utf-8', errors='replace') as f:
                     data = f.read()
                 if data:
-                    if diag:
-                        diag = data + "\n---\n" + diag
-                    else:
-                        diag = data
+                    diag = data + "\n---\n" + diag if diag else data
             except Exception as e:
                 error_log.append(f"READ_ERROR_FILE_ERROR: {e}")
 
         if error_log:
             err_summary = "\n".join(error_log)
-            if diag:
-                diag = err_summary + "\n---\n" + diag
-            else:
-                diag = err_summary
+            diag = err_summary + "\n---\n" + diag if diag else err_summary
 
         if not layers and not caps and not diag:
             diag = "NO_OUTPUT: Sandbox produced no output files"
@@ -182,9 +179,6 @@ def execute_sandbox(source, use_emulator=False, timeout=90):
     except Exception as e:
         diag = f"SANDBOX_FATAL: {e}\n{traceback.format_exc()}"
     finally:
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     return layers, caps, diag

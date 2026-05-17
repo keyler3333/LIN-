@@ -4,16 +4,8 @@ import subprocess
 import tempfile
 import base64
 import urllib.request
-import asyncio
 from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
-from errors import (
-    logger, timer, validate_input,
-    Stage, StageResult, PipelineResult,
-    InputError, StaticLiftError, SandboxError, SandboxTimeoutError,
-    CaptureError, DecompileError, LuneNotInstalledError, UnluacNotFoundError
-)
-from lune_executor import execute_and_capture
 
 UNLUAC_JAR_URL = "https://github.com/HansWessels/unluac/releases/download/v2023.10.24/unluac.jar"
 UNLUAC_LOCAL_PATH = os.environ.get('UNLUAC_PATH') or os.path.join(
@@ -25,40 +17,12 @@ class DeobfEngine:
         self.lifter = WeAreDevsLifter()
         self.unluac_path = UNLUAC_LOCAL_PATH
 
-    async def process(self, raw_source):
-        stages = []
+    def process(self, source):
+        lifted = self.lifter.transform(source)
+        if lifted and lifted != source and self._looks_decoded(lifted):
+            return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
-        try:
-            source = validate_input(raw_source)
-        except InputError as e:
-            return PipelineResult(success=False, stages=stages, error=e)
-
-        logger.info(f"Pipeline started - input size: {len(source)} chars")
-
-        with timer() as t:
-            try:
-                lifted = self.lifter.transform(source)
-                if lifted and lifted != source and self._looks_decoded(lifted):
-                    sr = StageResult(
-                        stage=Stage.STATIC_LIFT, success=True,
-                        output=lifted, duration_ms=t.ms,
-                        note="Pattern matched and reversed"
-                    )
-                    stages.append(sr)
-                    logger.info(f"Static lift succeeded in {t.ms:.0f}ms")
-                    return PipelineResult(success=True, output=self._beautify(lifted), stages=stages)
-                else:
-                    stages.append(StageResult(
-                        stage=Stage.STATIC_LIFT, success=False,
-                        duration_ms=t.ms, note="No pattern matched"
-                    ))
-            except Exception as e:
-                stages.append(StageResult(
-                    stage=Stage.STATIC_LIFT, success=False,
-                    error=StaticLiftError(str(e)), duration_ms=t.ms,
-                    note=f"Transformer crashed: {type(e).__name__}"
-                ))
-                logger.warning(f"Static lift crashed: {e!r}")
+        lifter_diag = self.lifter.diagnostic or ''
 
         decoded_chunks = self._run_decode_pipeline(source)
         extracted_bc = None
@@ -70,99 +34,42 @@ class DeobfEngine:
                 if idx != -1 and idx + 5 <= len(full) and full[idx+4] == 0x51:
                     extracted_bc = full[idx:]
 
-        raw_bytes = raw_source if isinstance(raw_source, bytes) else raw_source.encode("latin-1")
-        if raw_bytes[:4] == b"\x1bLua" and not extracted_bc:
+        raw_bytes = source.encode('latin-1')
+        if not extracted_bc and raw_bytes[:4] == b'\x1bLua':
             extracted_bc = raw_bytes
 
         if extracted_bc:
-            with timer() as t:
-                decompiled, decompile_err = self._run_unluac(extracted_bc)
+            decompiled, decompile_err = self._run_unluac(extracted_bc)
             if decompiled and self._looks_decoded(decompiled):
-                stages.append(StageResult(
-                    stage=Stage.DECOMPILE, success=True,
-                    output=decompiled, duration_ms=t.ms,
-                    note="Bytecode decompiled"
-                ))
-                return PipelineResult(success=True, output=self._beautify(decompiled), stages=stages)
-            if decompiled:
-                stages.append(StageResult(
-                    stage=Stage.DECOMPILE, success=True,
-                    output=decompiled, duration_ms=t.ms,
-                    note="Decompiled (low confidence)"
-                ))
-                return PipelineResult(success=True, output=decompiled, stages=stages)
-            stages.append(StageResult(
-                stage=Stage.DECOMPILE, success=False,
-                error=decompile_err, duration_ms=t.ms,
-                note="unluac failed"
-            ))
+                return self._beautify(decompiled), 'unluac', 'Decompiled by unluac'
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
-            hint = "Bytecode extracted but decompilation failed."
-            return PipelineResult(success=False, raw_bytecode=extracted_bc, stages=stages, error=DecompileError("unluac", "decompilation failed"))
+            hint = "Bytecode extracted but unluac failed."
+            return bc_b64, 'bytecode', hint
 
-        logger.info("Attempting dynamic execution via Lune")
-        async with timer() as t:
-            try:
-                captured = await execute_and_capture(source)
-            except RuntimeError as e:
-                stages.append(StageResult(
-                    stage=Stage.DYNAMIC_EXEC, success=False,
-                    error=LuneNotInstalledError(), duration_ms=t.ms,
-                    note="Lune not found"
-                ))
-                logger.error(f"Lune not installed: {e}")
-                return PipelineResult(success=False, stages=stages, error=LuneNotInstalledError())
+        layers, caps, diag = execute_sandbox(source, timeout=90)
 
-        if captured:
-            stages.append(StageResult(
-                stage=Stage.DYNAMIC_EXEC, success=True,
-                output=captured, duration_ms=t.ms,
-                note=f"Captured {len(captured)} bytes"
-            ))
-            logger.info(f"Captured {len(captured)} bytes in {t.ms:.0f}ms")
+        all_text = []
+        for cap in caps:
+            if isinstance(cap, str) and len(cap) > 20:
+                all_text.append(cap)
+        for layer in layers:
+            if isinstance(layer, str) and len(layer) > 20:
+                all_text.append(layer)
 
-            with timer() as t:
-                decompiled, decompile_err = self._run_unluac(captured)
-            if decompiled and self._looks_decoded(decompiled):
-                stages.append(StageResult(
-                    stage=Stage.DECOMPILE, success=True,
-                    output=decompiled, duration_ms=t.ms,
-                    note="Captured bytecode decompiled"
-                ))
-                return PipelineResult(success=True, output=self._beautify(decompiled), stages=stages)
-            stages.append(StageResult(
-                stage=Stage.DECOMPILE, success=False,
-                error=decompile_err, duration_ms=t.ms,
-                note="unluac failed on captured bytecode"
-            ))
-            return PipelineResult(success=False, raw_bytecode=captured, stages=stages, error=decompile_err)
-
-        err = CaptureError("loadstring was never called")
-        stages.append(StageResult(
-            stage=Stage.DYNAMIC_EXEC, success=False,
-            error=err, duration_ms=t.ms,
-            note="Script ran but hook never fired"
-        ))
-        logger.warning("Dynamic execution completed but nothing was captured")
-
-        layers, caps, diag = execute_sandbox(source, timeout=30)
-        all_text = [t for t in caps if isinstance(t, str) and len(t) > 20]
-        all_text += [t for t in layers if isinstance(t, str) and len(t) > 20]
         all_text.sort(key=len, reverse=True)
 
         best = ''
         for text in all_text:
-            if len(text) > len(best) and self._looks_decoded(text):
+            if len(text) > len(best) and ('function' in text or 'local' in text or 'print' in text or 'end' in text):
                 best = text
         if best:
-            stages.append(StageResult(
-                stage=Stage.FALLBACK, success=True,
-                output=best, duration_ms=0,
-                note="Sandbox string capture"
-            ))
-            return PipelineResult(success=True, output=self._beautify(best), stages=stages)
+            return self._beautify(best), 'sandbox_capture', 'Readable source captured'
 
-        return PipelineResult(success=False, stages=stages, error=err)
+        if all_text and len(all_text[0]) > 200:
+            return all_text[0], 'memory_dump', 'Largest captured string'
+
+        reason = lifter_diag or diag or 'No readable content decoded.'
+        return source, 'unable', reason
 
     def _run_decode_pipeline(self, source):
         cmap = self.lifter._build_char_map(source)
@@ -193,10 +100,10 @@ class DeobfEngine:
         if not os.path.isfile(self.unluac_path):
             self._ensure_unluac_jar()
         if not os.path.isfile(self.unluac_path):
-            return None, UnluacNotFoundError()
+            return None, "unluac.jar not found"
         java_bin = shutil.which('java')
         if not java_bin:
-            return None, DecompileError("unluac", "java not found")
+            return None, "java not found"
         try:
             with tempfile.NamedTemporaryFile(suffix='.luac', delete=False) as tmp:
                 tmp.write(bytecode)
@@ -208,11 +115,11 @@ class DeobfEngine:
             os.unlink(tmp_path)
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout, None
-            return None, DecompileError("unluac", result.stderr)
+            return None, result.stderr
         except subprocess.TimeoutExpired:
-            return None, DecompileError("unluac", "timeout after 30s")
+            return None, "unluac timed out"
         except Exception as e:
-            return None, DecompileError("unluac", str(e))
+            return None, str(e)
 
     def _ensure_unluac_jar(self):
         try:

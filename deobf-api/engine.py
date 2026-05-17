@@ -47,16 +47,16 @@ class DeobfEngine:
                 pass
 
         lifted = self.lifter.transform(cleaned)
-        if lifted and lifted != cleaned and self._looks_decoded(lifted):
-            return self._beautify(self._repair_source(lifted)), 'static_lift', 'Deobfuscated by static lifter'
+        if lifted and lifted != cleaned and self._is_valid_lua(lifted):
+            return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
 
         lifter_diag = self.lifter.diagnostic or ''
 
         for decoder in self.static_decoders:
             try:
                 result = decoder.transform(cleaned)
-                if result and result != cleaned and self._looks_decoded(result):
-                    return self._beautify(self._repair_source(result)), 'static_decode', decoder.__class__.__name__
+                if result and result != cleaned and self._is_valid_lua(result):
+                    return self._beautify(result), 'static_decode', decoder.__class__.__name__
             except Exception:
                 pass
 
@@ -67,8 +67,8 @@ class DeobfEngine:
 
         if extracted_bc:
             decompiled, err = self._run_unluac(extracted_bc)
-            if decompiled and self._looks_decoded(decompiled):
-                return self._beautify(self._repair_source(decompiled)), 'unluac', 'Decompiled by unluac'
+            if decompiled and self._is_valid_lua(decompiled):
+                return self._beautify(decompiled), 'unluac', 'Decompiled by unluac'
             bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
             hint = f"Bytecode extracted but unluac failed ({err or 'unknown reason'})"
             return bc_b64, 'bytecode', hint
@@ -77,14 +77,14 @@ class DeobfEngine:
         if captured:
             if self._is_lua51_bytecode(captured):
                 decompiled, err = self._run_unluac(captured)
-                if decompiled and self._looks_decoded(decompiled):
-                    return self._beautify(self._repair_source(decompiled)), 'lune_unluac', 'Lune captured bytecode, decompiled by unluac'
+                if decompiled and self._is_valid_lua(decompiled):
+                    return self._beautify(decompiled), 'lune_unluac', 'Lune captured bytecode, decompiled by unluac'
                 bc_b64 = base64.b64encode(captured).decode('ascii')
                 return bc_b64, 'bytecode', 'Lune captured bytecode; unluac unavailable/failed'
             try:
                 text = captured.decode('utf-8', errors='replace')
-                if self._looks_decoded(text):
-                    return self._beautify(self._repair_source(text)), 'lune_capture', 'Source captured by Lune dynamic execution'
+                if self._is_valid_lua(text):
+                    return self._beautify(text), 'lune_capture', 'Source captured by Lune dynamic execution'
                 if len(text) > 100:
                     return text, 'lune_string', 'String captured by Lune'
             except Exception:
@@ -100,17 +100,14 @@ class DeobfEngine:
 
         if all_text:
             combined = '\n'.join(all_text)
-            if self._looks_decoded(combined):
+            if self._is_valid_lua(combined):
                 return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
 
         for item in layers:
             if isinstance(item, bytes) and self._is_lua51_bytecode(item):
                 decompiled, _ = self._run_unluac(item)
-                if decompiled and self._looks_decoded(decompiled):
-                    return self._beautify(self._repair_source(decompiled)), 'sandbox_unluac', 'Sandbox bytecode decompiled by unluac'
-
-        if all_text and len('\n'.join(all_text)) > 200:
-            return '\n'.join(all_text), 'memory_dump', 'Largest captured string from sandbox memory'
+                if decompiled and self._is_valid_lua(decompiled):
+                    return self._beautify(decompiled), 'sandbox_unluac', 'Sandbox bytecode decompiled by unluac'
 
         reason = lifter_diag or sandbox_diag or 'No readable content extracted'
         return '', 'unable', reason
@@ -125,6 +122,35 @@ class DeobfEngine:
         code = re.sub(r'(\d)e([^0-9+\-])', r'\1e0\2', code)
         code = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', code)
         return code
+
+    @staticmethod
+    def _is_valid_lua(code):
+        if not code or len(code) < 30:
+            return False
+        try:
+            from luaparser import ast
+            ast.parse(code)
+            return True
+        except Exception:
+            pass
+        return DeobfEngine._looks_decoded(code)
+
+    @staticmethod
+    def _looks_decoded(code):
+        if not code or len(code) < 30:
+            return False
+        lines = code.split('\n')
+        if max((len(l) for l in lines), default=0) > 4000:
+            return False
+        keywords = [
+            'function', 'local', 'end', 'if', 'then', 'else',
+            'for', 'while', 'do', 'return', 'print', 'require',
+        ]
+        kw_count = sum(1 for kw in keywords if kw in code)
+        if kw_count < 2:
+            return False
+        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
+        return (alpha / max(len(code), 1)) > 0.15
 
     def _extract_bytecode(self, source):
         cmap = self.lifter._build_char_map(source)
@@ -204,23 +230,6 @@ class DeobfEngine:
             urllib.request.urlretrieve(UNLUAC_JAR_URL, self.unluac_path)
         except Exception:
             pass
-
-    @staticmethod
-    def _looks_decoded(code):
-        if not code or len(code) < 30:
-            return False
-        lines = code.split('\n')
-        if max((len(l) for l in lines), default=0) > 4000:
-            return False
-        keywords = [
-            'function', 'local', 'end', 'if', 'then', 'else',
-            'for', 'while', 'do', 'return', 'print', 'require',
-        ]
-        kw_count = sum(1 for kw in keywords if kw in code)
-        if kw_count < 2:
-            return False
-        alpha = sum(1 for ch in code if ch.isalpha() or ch in ' \t\n_.,;(){}[]=')
-        return (alpha / max(len(code), 1)) > 0.15
 
     def _beautify(self, code):
         try:

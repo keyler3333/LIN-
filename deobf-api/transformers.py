@@ -451,6 +451,37 @@ class WeAreDevsLifter(Transformer):
         return None
 
     @staticmethod
+    def _unescape_lua_string(s):
+        result = []
+        i = 0
+        while i < len(s):
+            if s[i] == '\\' and i + 1 < len(s):
+                next_char = s[i+1]
+                if next_char.isdigit():
+                    j = i + 1
+                    while j < len(s) and s[j].isdigit() and j - i <= 3:
+                        j += 1
+                    digits = s[i+1:j]
+                    if digits:
+                        val = int(digits)
+                        if val < 256:
+                            result.append(chr(val))
+                            i = j
+                            continue
+                elif next_char == 'x' and i + 3 < len(s):
+                    hex_digits = s[i+2:i+4]
+                    if re.match(r'^[0-9a-fA-F]{2}$', hex_digits):
+                        val = int(hex_digits, 16)
+                        result.append(chr(val))
+                        i += 4
+                        continue
+                result.append(s[i])
+            else:
+                result.append(s[i])
+            i += 1
+        return ''.join(result)
+
+    @staticmethod
     def _is_lua51_bytecode(data):
         return len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51
 
@@ -506,8 +537,7 @@ class WeAreDevsLifter(Transformer):
             kpart, vpart = assign.split('=', 1)
             key = kpart.strip().strip('"').strip("'").strip('[').strip(']')
             if key.startswith('\\'):
-                try: key = chr(int(key[1:]))
-                except Exception: pass
+                key = self._unescape_lua_string(key)
             expr = vpart.strip().replace(' ', '')
             try:
                 val = eval(expr)

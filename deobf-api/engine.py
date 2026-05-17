@@ -16,6 +16,44 @@ UNLUAC_LOCAL_PATH = os.environ.get('UNLUAC_PATH') or os.path.join(
 
 MAX_LAYERS = 4
 
+_DIAG_PATTERNS = [
+    r'^SIZE:\s+\d+\s+bytes$',
+    r'^MISSING:\s+',
+    r'^TRACE:\s+',
+    r'^RUNTIME:\s+',
+    r'^MEMORY_SCAN_START$',
+    r'^MEMORY_SCAN_END:',
+    r'^OPEN_ERROR$',
+    r'^READ_ERROR$',
+    r'^PARSE:',
+    r'^LAYER_\d+\s+\d+\s+bytes$',
+    r'^DUMPED\s+\d+\s+bytes$',
+    r'^RETURNED\s+\d+\s+bytes$',
+    r'^STRING\.DUMP\s+captured',
+    r'^GENV_MISS:',
+    r'^STUB_GLOBAL:',
+    r'^CAPTURE_SUCCESS:',
+    r'^CAPTURE_FAILED:',
+    r'^RUNTIME_ERROR:',
+    r'^\[C\]:',
+    r'^/tmp/',
+    r'^00000000-0000-0000-0000-000000000000$',
+    r'^[\x00-\x1f\x7f-\xff]+$',
+]
+
+
+def _is_diagnostic_line(line):
+    for pat in _DIAG_PATTERNS:
+        if re.match(pat, line):
+            return True
+    return False
+
+
+def _filter_diagnostic(text):
+    lines = text.split('\n')
+    filtered = [l for l in lines if not _is_diagnostic_line(l.strip())]
+    return '\n'.join(filtered).strip()
+
 
 class DeobfEngine:
     def __init__(self):
@@ -44,14 +82,20 @@ class DeobfEngine:
                     label = 'sandbox_unluac' if depth == 0 else f'sandbox_unluac_l{depth+1}'
                     return self._beautify(decompiled), label, f'Sandbox bytecode -> unluac (layer {depth+1})'
 
-            if text_items:
-                combined = '\n'.join(text_items)
+            cleaned_items = []
+            for t in text_items:
+                cleaned = _filter_diagnostic(t)
+                if len(cleaned) > 20:
+                    cleaned_items.append(cleaned)
+
+            if cleaned_items:
+                combined = '\n'.join(cleaned_items)
                 if len(combined) > 200 and self._is_valid_lua(combined):
                     label = 'sandbox_capture' if depth == 0 else f'sandbox_capture_l{depth+1}'
                     return self._beautify(combined), label, f'Readable source captured by sandbox (layer {depth+1})'
 
             next_source = None
-            for t in text_items:
+            for t in cleaned_items:
                 if len(t) > 100 and any(kw in t for kw in ('loadstring', 'local ', 'function ')):
                     next_source = t
                     break

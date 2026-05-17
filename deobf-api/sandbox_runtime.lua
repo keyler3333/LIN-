@@ -168,17 +168,15 @@ local Players = {
         PlayerScripts = _new_proxy(), Team = nil, membershipType = 0
     },
     GetPlayers = function() return {} end,
-    GetPlayerByUserId = function(id) return Players.LocalPlayer end,
-    PlayerAdded = { connect = function() return { disconnect = function() end } end },
-    PlayerRemoving = { connect = function() return { disconnect = function() end } end }
+    GetPlayerByUserId = function(id) return Players.LocalPlayer end
 }
 
 local game = {
     PlaceId = 12345678,
     JobId = "00000000-0000-0000-0000-000000000000",
     GetService = function(self, name)
-        if name == "Players" then return Players
-        else return _new_proxy() end
+        if name == "Players" then return Players end
+        return _new_proxy()
     end,
     IsLoaded = function() return true end
 }
@@ -192,7 +190,7 @@ local _safe_env = {
     ipairs = ipairs, next = next, pairs = pairs, pcall = _orig_pcall,
     rawequal = _orig_rawequal, rawget = rawget, rawlen = rawlen, rawset = rawset,
     select = _orig_select, setmetatable = setmetatable, getmetatable = getmetatable,
-    tonumber = tonumber, tostring = tostring, type = type, typeof = _orig_type,
+    tonumber = tonumber, tostring = tostring, type = type,
     xpcall = _orig_xpcall, unpack = _orig_unpack or table.unpack,
     getfenv = getfenv, setfenv = setfenv, loadstring = loadstring, load = load,
     newproxy = function(add)
@@ -232,7 +230,8 @@ local _safe_env = {
     Lighting = _new_proxy(), StarterGui = _new_proxy(), StarterPack = _new_proxy(),
     SoundService = _new_proxy(), HttpService = _new_proxy(),
     TeleportService = _new_proxy(), Chat = _new_proxy(), InsertService = _new_proxy(),
-    RunService = _new_proxy(), Instance = { new = function() return _new_proxy() end },
+    RunService = _new_proxy(),
+    Instance = { new = function() return _new_proxy() end },
     Vector3 = { new = function(x, y, z) return { X = x or 0, Y = y or 0, Z = z or 0 } end },
     CFrame = { new = function() return {} end, Angles = function() return {} end },
     Color3 = { new = function(r, g, b) return { R = r or 0, G = g or 0, B = b or 0 } end },
@@ -267,8 +266,6 @@ local _safe_env = {
 
 _safe_env._G = _safe_env
 _safe_env._ENV = _safe_env
-_safe_env.shared = {}
-_safe_env.Shared = _safe_env.shared
 
 local _env_mt = {
     __index = function(t, k)

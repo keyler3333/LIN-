@@ -1,16 +1,10 @@
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 import base64
 import urllib.request
-
-from transformers import (
-    WeAreDevsLifter,
-    Lua51Parser,
-    Lua51Decompiler,
-)
+from transformers import WeAreDevsLifter
 from sandbox import execute_sandbox
 
 UNLUAC_JAR_URL = "https://github.com/scratchminer/unluac/releases/download/v2023.03.22/unluac.jar"
@@ -18,29 +12,22 @@ UNLUAC_LOCAL_PATH = os.environ.get('UNLUAC_PATH') or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'unluac.jar'
 )
 
-
 class DeobfEngine:
     def __init__(self):
         self.lifter = WeAreDevsLifter()
         self.unluac_path = UNLUAC_LOCAL_PATH
 
     def process(self, source):
-        extracted_bc = self._extract_bytecode(source)
-
-        if extracted_bc:
-            decompiled, err = self._run_unluac(extracted_bc)
+        bc = self._extract_bytecode(source)
+        if bc:
+            decompiled, err = self._run_unluac(bc)
             if decompiled and self._is_valid_lua(decompiled):
                 return self._beautify(decompiled), 'unluac', 'Decompiled by unluac'
-            bc_b64 = base64.b64encode(extracted_bc).decode('ascii')
-            hint = f"Bytecode extracted ({len(extracted_bc)} bytes). unluac failed: {err or 'unknown'}"
-            return bc_b64, 'bytecode', hint
+            b64 = base64.b64encode(bc).decode('ascii')
+            return b64, 'bytecode', f'Bytecode extracted ({len(bc)} bytes). unluac: {err or "unknown"}'
 
-        lifted = self.lifter.transform(source)
-        if lifted and lifted != source and self._is_valid_lua(lifted):
-            return self._beautify(lifted), 'static_lift', 'Deobfuscated by static lifter'
-
-        layers, caps, sandbox_diag = execute_sandbox(source, timeout=90)
-        all_text = [item for item in caps + layers if isinstance(item, str) and len(item) > 20]
+        layers, caps, diag = execute_sandbox(source, timeout=90)
+        all_text = [t for t in caps + layers if isinstance(t, str) and len(t) > 20]
         combined = '\n'.join(all_text)
         if len(combined) > 200 and self._is_valid_lua(combined):
             return self._beautify(combined), 'sandbox_capture', 'Readable source captured by sandbox'
@@ -65,17 +52,13 @@ class DeobfEngine:
         if not decoded:
             return None
         for chunk in decoded:
-            if self._is_lua51_bytecode(chunk):
+            if len(chunk) >= 12 and chunk[:4] == b'\x1bLua' and chunk[4] == 0x51:
                 return chunk
         full = b''.join(decoded)
         idx = full.find(b'\x1bLua')
         if idx != -1 and idx + 5 <= len(full) and full[idx + 4] == 0x51:
             return full[idx:]
         return None
-
-    @staticmethod
-    def _is_lua51_bytecode(data):
-        return len(data) >= 12 and data[:4] == b'\x1bLua' and data[4] == 0x51
 
     def _run_unluac(self, bytecode):
         if not os.path.isfile(self.unluac_path):
@@ -91,7 +74,7 @@ class DeobfEngine:
                 tmp_path = tmp.name
             result = subprocess.run(
                 [java_bin, '-jar', self.unluac_path, tmp_path],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30
             )
             os.unlink(tmp_path)
             if result.returncode == 0 and result.stdout.strip():
